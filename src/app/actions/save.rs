@@ -76,6 +76,7 @@ impl App {
     pub(super) fn save_options(&self) -> SaveOptions {
         SaveOptions {
             jpeg_quality: self.prefs.jpeg_quality,
+            webp_quality: self.prefs.webp_quality,
         }
     }
 
@@ -101,6 +102,7 @@ impl App {
             info,
             format,
             jpeg_quality: self.prefs.jpeg_quality,
+            webp_quality: self.prefs.webp_quality,
             dir: dir.clone(),
         };
         // 自動保存の OFF→ON などで同じ結果を連番ファイルとして増やさない
@@ -429,7 +431,7 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.image.cache_key = Some((0, 0, None));
+        app.image.cache_key = Some(app.prefs.trim_options());
         app.prefs.tolerance = 1;
         app.schedule_trim(&ctx, true, false, false);
 
@@ -440,7 +442,7 @@ mod tests {
 
         // 完了後に新しい設定の結果で保存される
         assert!(poll_trim_until_idle(&mut app, &ctx));
-        assert_eq!(app.image.cache_key, Some((1, 0, None)));
+        assert_eq!(app.image.cache_key, Some(app.prefs.trim_options()));
         let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("自動保存"));
         assert!(done, "status = {}", app.status);
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);

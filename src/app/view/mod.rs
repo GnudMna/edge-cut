@@ -67,6 +67,20 @@ impl App {
                 {
                     self.batch.errors_open = true;
                 }
+                // 手動指定の解除忘れを防ぐため、指定中は常に表示する
+                if let Some(c) = self.prefs.bg_override {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(
+                        rect,
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]),
+                    );
+                    ui.label(
+                        egui::RichText::new("背景色: 手動指定").color(ui.visuals().warn_fg_color),
+                    )
+                    .on_hover_text("設定パネルの「↺ 自動に戻す」で解除できる");
+                }
                 if let Some(ref info) = self.image.info {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let detail = if self.prefs.compact_mode {

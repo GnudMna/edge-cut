@@ -5,7 +5,9 @@
 use image::{DynamicImage, GenericImageView};
 use rayon::prelude::*;
 
+use super::aspect::{Rect, fit_aspect};
 use super::background::detect_background_with;
+use super::options::TrimOptions;
 use super::types::{TrimBounds, TrimInfo};
 use crate::consts::{
     ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, TOL_MAX, TOL_SCALE_DENOM,
@@ -17,8 +19,8 @@ use crate::consts::{
 // ======================================================================
 /// 画像を切り出さずにトリミング矩形と背景色だけを求める
 ///
-/// 判定規則は [`trim`] と同じ。プレビューのように矩形だけが必要な場面で
-/// 切り抜き画像の複製を省くために使う
+/// 四辺共通の余白で、四辺すべてを除去する。判定規則は [`trim`] と同じ
+/// 辺ごとの余白・辺の指定・アスペクト比は [`detect_trim_with_options`] で指定する
 ///
 /// # Arguments
 /// * `img`         - トリミング元の画像
@@ -35,11 +37,26 @@ pub fn detect_trim(
     padding: u32,
     bg_override: Option<[u8; 4]>,
 ) -> TrimBounds {
+    detect_trim_with_options(img, &TrimOptions::new(tol, padding, bg_override))
+}
+
+/// 設定に従って、画像を切り出さずにトリミング矩形と背景色だけを求める
+///
+/// プレビューのように矩形だけが必要な場面で切り抜き画像の複製を省くために使う
+///
+/// # Arguments
+/// * `img`  - トリミング元の画像
+/// * `opts` - トリミングの設定
+///
+/// # Returns
+/// * `TrimBounds` - トリミング情報と使用した背景色
+#[must_use]
+pub fn detect_trim_with_options(img: &DynamicImage, opts: &TrimOptions) -> TrimBounds {
     let (w, h) = (img.width(), img.height());
 
     // 0x0 画像は演算がアンダーフローするため全体を対象とする
     if w == 0 || h == 0 {
-        let background = bg_override.unwrap_or([255, 255, 255, 255]);
+        let background = opts.bg_override.unwrap_or([255, 255, 255, 255]);
         return TrimBounds {
             info: full_info(w, h, background),
             background,
@@ -51,7 +68,7 @@ pub fn detect_trim(
     macro_rules! detect_raw {
         ($buf:expr, $channels:literal, $to_rgba8:expr) => {{
             let raw = $buf.as_raw();
-            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+            detect_trim_with(w, h, opts, |x, y| {
                 $to_rgba8(raw_pixel::<_, $channels>(raw, w, x, y))
             })
         }};
@@ -94,9 +111,7 @@ pub fn detect_trim(
                 [f32_to_u8(r), f32_to_u8(g), f32_to_u8(b), u8::MAX]
             })
         }
-        other => detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
-            other.get_pixel(x, y).0
-        }),
+        other => detect_trim_with(w, h, opts, |x, y| other.get_pixel(x, y).0),
     }
 }
 
@@ -213,23 +228,22 @@ fn find_content_bounds(
 /// 画素読み出し関数を使って余白トリミング境界を求める
 ///
 /// # Arguments
-/// * `w`, `h`      - 画像の幅と高さ (px)。いずれも 1 以上
-/// * `tol`         - 余白検出の許容度 (0–100)
-/// * `padding`     - トリミング後に残す余白ピクセル数
-/// * `bg_override` - 手動指定の背景色。`None` のとき四辺から自動検出する
-/// * `pixel`       - 座標 `(x, y)` の RGBA8 値を返す関数
+/// * `w`, `h` - 画像の幅と高さ (px)。いずれも 1 以上
+/// * `opts`   - トリミングの設定
+/// * `pixel`  - 座標 `(x, y)` の RGBA8 値を返す関数
 ///
 /// # Returns
 /// * `TrimBounds` - トリミング情報と使用した背景色
 fn detect_trim_with(
     w: u32,
     h: u32,
-    tol: u32,
-    padding: u32,
-    bg_override: Option<[u8; 4]>,
+    opts: &TrimOptions,
     pixel: impl Fn(u32, u32) -> [u8; 4] + Sync,
 ) -> TrimBounds {
-    let bg = bg_override.unwrap_or_else(|| detect_background_with(w, h, &pixel));
+    let tol = opts.tolerance;
+    let bg = opts
+        .bg_override
+        .unwrap_or_else(|| detect_background_with(w, h, &pixel));
     // ほぼ透明な背景色は最頻の実際の色 (例: [0,0,0,3]) になりうるため、余白は完全透明で塗る
     let fill = if bg[3] < ALPHA_TRANSPARENT_THRESHOLD {
         [bg[0], bg[1], bg[2], 0]
@@ -271,51 +285,79 @@ fn detect_trim_with(
     };
 
     // 許容度最大はアルファ差を含めすべてのピクセルを背景とみなすため走査を省く
-    let bounds = if tol >= TOL_MAX {
+    // 除去する辺がなければ内容の位置は不要なので、走査を省く
+    let bounds = if tol >= TOL_MAX || !opts.sides.any() {
         None
     } else {
         find_content_bounds(w, h, parallel, is_bg)
     };
-    let Some(bounds) = bounds else {
-        // 背景しかない → 画像全体を対象とする
-        return TrimBounds {
-            info: full_info(w, h, fill),
-            background: bg,
-        };
-    };
-
-    // padding を四辺に加算し、画像内は切り出し、画像端を越えた分は範囲外の余白とする
-    let px_top = bounds.top.saturating_sub(padding);
-    let px_left = bounds.left.saturating_sub(padding);
-    let px_bottom = bounds.bottom.saturating_add(padding).min(h - 1);
-    let px_right = bounds.right.saturating_add(padding).min(w - 1);
-    let extend_top = padding.saturating_sub(bounds.top);
-    let extend_left = padding.saturating_sub(bounds.left);
-    let extend_bottom = bounds.bottom.saturating_add(padding).saturating_sub(h - 1);
-    let extend_right = bounds.right.saturating_add(padding).saturating_sub(w - 1);
-
-    let tw = (px_right - px_left + 1)
-        .saturating_add(extend_left)
-        .saturating_add(extend_right);
-    let th = (px_bottom - px_top + 1)
-        .saturating_add(extend_top)
-        .saturating_add(extend_bottom);
-    let info = TrimInfo {
-        orig_w: w,
-        orig_h: h,
-        trim_w: tw,
-        trim_h: th,
-        offset_x: px_left,
-        offset_y: px_top,
-        extend_left,
-        extend_top,
-        extend_right,
-        extend_bottom,
-        fill,
+    // 背景しかない → 画像全体を対象とする
+    let rect = bounds.map_or_else(|| full_rect(w, h), |b| content_rect(&b, w, h, opts));
+    let rect = match opts.aspect {
+        Some(ratio) => fit_aspect(rect, ratio, w, h),
+        None => rect,
     };
     TrimBounds {
-        info,
+        info: info_from_rect(rect, w, h, fill),
         background: bg,
+    }
+}
+
+/// 画像全体の矩形
+fn full_rect(w: u32, h: u32) -> Rect {
+    Rect {
+        x0: 0,
+        y0: 0,
+        x1: i64::from(w),
+        y1: i64::from(h),
+    }
+}
+
+/// 内容の矩形に辺ごとの余白を加えた矩形を求める
+///
+/// 除去しない辺は元画像の端を使い、余白も加えない
+/// 余白により元画像の端を越える分は、範囲外の矩形として残す
+fn content_rect(bounds: &ContentBounds, w: u32, h: u32, opts: &TrimOptions) -> Rect {
+    let (m, sides) = (opts.margins, opts.sides);
+    let edge = |enabled: bool, content: u32, margin: u32, image_edge: u32, sign: i64| -> i64 {
+        if enabled {
+            i64::from(content) + sign * i64::from(margin)
+        } else {
+            i64::from(image_edge)
+        }
+    };
+    Rect {
+        x0: edge(sides.left, bounds.left, m.left, 0, -1),
+        y0: edge(sides.top, bounds.top, m.top, 0, -1),
+        x1: edge(sides.right, bounds.right + 1, m.right, w, 1),
+        y1: edge(sides.bottom, bounds.bottom + 1, m.bottom, h, 1),
+    }
+}
+
+/// 元画像の座標系の矩形を、切り出し位置と範囲外へ拡張する余白に分けて `TrimInfo` にする
+///
+/// `rect` が元画像と重ならない場合は画像全体を対象とする
+fn info_from_rect(rect: Rect, w: u32, h: u32, fill: [u8; 4]) -> TrimInfo {
+    let (img_w, img_h) = (i64::from(w), i64::from(h));
+    let (cx0, cy0) = (rect.x0.max(0), rect.y0.max(0));
+    let (cx1, cy1) = (rect.x1.min(img_w), rect.y1.min(img_h));
+    if cx0 >= cx1 || cy0 >= cy1 {
+        return full_info(w, h, fill);
+    }
+    // 矩形の大きさは上限サイズ内か、元画像と余白 (各 PADDING_MAX) の和なので u32 に収まる
+    let to_u32 = |v: i64| u32::try_from(v).unwrap_or(u32::MAX);
+    TrimInfo {
+        orig_w: w,
+        orig_h: h,
+        trim_w: to_u32(rect.x1 - rect.x0),
+        trim_h: to_u32(rect.y1 - rect.y0),
+        offset_x: to_u32(cx0),
+        offset_y: to_u32(cy0),
+        extend_left: to_u32(cx0 - rect.x0),
+        extend_top: to_u32(cy0 - rect.y0),
+        extend_right: to_u32(rect.x1 - cx1),
+        extend_bottom: to_u32(rect.y1 - cy1),
+        fill,
     }
 }
 

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::image_output::{OutputFormat, SaveOptions};
+use crate::trim::TrimOptions;
 
 // ======================================================================
 // パラメータ・結果
@@ -10,12 +11,8 @@ use crate::image_output::{OutputFormat, SaveOptions};
 /// 一括トリミングのトリム設定
 #[derive(Debug, Clone, Copy)]
 pub struct BatchTrimParams {
-    /// 余白検出の許容度 (0–100)
-    pub tolerance: u32,
-    /// トリミング後に残す余白ピクセル数
-    pub padding: u32,
-    /// 手動指定の背景色。`None` のとき四辺から自動検出する
-    pub bg_override: Option<[u8; 4]>,
+    /// トリミングの設定 (許容度・辺ごとの余白・除去する辺・アスペクト比・背景色)
+    pub trim: TrimOptions,
     /// 出力形式
     pub format: OutputFormat,
     /// 保存時のエンコード設定

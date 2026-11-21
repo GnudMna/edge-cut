@@ -19,15 +19,13 @@ use image::DynamicImage;
 use super::image_convert::to_preview_color_image;
 use super::state::{TrimPreview, TrimWorkerResult};
 use crate::panic_message::catch_panic;
-use crate::trim::detect_trim;
+use crate::trim::{TrimOptions, detect_trim_with_options};
 
 /// ワーカーへ送るトリミング要求
 pub(super) struct TrimJob {
     pub request_id: u64,
     pub original: Arc<DynamicImage>,
-    pub tolerance: u32,
-    pub padding: u32,
-    pub bg_override: Option<[u8; 4]>,
+    pub options: TrimOptions,
     pub refresh_orig_tex: bool,
     pub ctx: egui::Context,
 }
@@ -82,14 +80,9 @@ fn run_job(job: &TrimJob) -> TrimPreview {
     let orig_color = job
         .refresh_orig_tex
         .then(|| to_preview_color_image(job.original.as_ref()));
-    let bounds = detect_trim(
-        job.original.as_ref(),
-        job.tolerance,
-        job.padding,
-        job.bg_override,
-    );
+    let bounds = detect_trim_with_options(job.original.as_ref(), &job.options);
     TrimPreview {
-        params: (job.tolerance, job.padding, job.bg_override),
+        params: job.options,
         info: bounds.info,
         orig_color,
         background: bounds.background,
@@ -143,9 +136,7 @@ mod tests {
             handle.submit(TrimJob {
                 request_id: id,
                 original: Arc::clone(&original),
-                tolerance: 0,
-                padding: 0,
-                bg_override: None,
+                options: TrimOptions::default(),
                 refresh_orig_tex: false,
                 ctx: ctx.clone(),
             });
@@ -176,9 +167,7 @@ mod tests {
         let job = TrimJob {
             request_id: 7,
             original: solid_image(),
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            options: TrimOptions::default(),
             refresh_orig_tex: false,
             ctx: egui::Context::default(),
         };
@@ -202,9 +191,7 @@ mod tests {
         let job = |request_id, refresh_orig_tex| TrimJob {
             request_id,
             original: Arc::clone(&original),
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            options: TrimOptions::default(),
             refresh_orig_tex,
             ctx: ctx.clone(),
         };

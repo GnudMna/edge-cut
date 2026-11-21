@@ -4,9 +4,11 @@ use eframe::egui;
 
 use crate::app::state::App;
 use crate::consts::{
-    JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN,
+    ASPECT_PART_MAX, ASPECT_PART_MIN, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN,
+    TOL_MAX, TOL_MIN, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
 use crate::image_output::OutputFormat;
+use crate::trim::{AspectFit, Margins};
 
 /// 設定パネルの既定の幅
 const PANEL_DEFAULT_WIDTH: f32 = 270.0;
@@ -19,6 +21,9 @@ const SLIDER_VALUE_WIDTH: f32 = 64.0;
 
 /// セクション間の余白
 const SECTION_SPACING: f32 = 10.0;
+
+/// アスペクト比のプリセット (幅, 高さ)
+const ASPECT_PRESETS: [(u32, u32); 7] = [(1, 1), (4, 3), (3, 2), (16, 9), (3, 4), (2, 3), (9, 16)];
 
 // ======================================================================
 // 設定パネル
@@ -55,41 +60,178 @@ impl App {
         set_panel_open(ctx, open);
     }
 
-    /// 許容度・余白のスライダー
+    /// 許容度・除去する辺・余白・アスペクト比
     fn render_trim_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        fit_slider_width(ui);
+        // 値が変わったときの再実行要求。`Some(true)` はドラッグ中などでデバウンスする
+        let mut request = None;
 
         ui.label("許容度");
-        let tol_resp = ui.add(
-            egui::Slider::new(&mut self.prefs.tolerance, TOL_MIN..=TOL_MAX)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if slider_needs_trim(&tol_resp, ctx, &mut self.prefs.tolerance, TOL_MIN, TOL_MAX) {
-            let debounce = tol_resp.dragged() && !tol_resp.drag_stopped();
-            self.schedule_trim(ctx, debounce, false, false);
-        }
-        tol_resp.on_hover_text("背景色との類似度。値が大きいほど広い範囲を余白とみなす");
-
-        ui.add_space(4.0);
-        ui.label("余白");
-        let pad_resp = ui.add(
-            egui::Slider::new(&mut self.prefs.padding, PADDING_MIN..=PADDING_MAX)
-                .suffix(" px")
-                .clamping(egui::SliderClamping::Always),
-        );
-        if slider_needs_trim(
-            &pad_resp,
+        fit_slider_width(ui);
+        request = trim_slider(
+            ui,
             ctx,
-            &mut self.prefs.padding,
-            PADDING_MIN,
-            PADDING_MAX,
-        ) {
-            let debounce = pad_resp.dragged() && !pad_resp.drag_stopped();
+            &mut self.prefs.tolerance,
+            (TOL_MIN, TOL_MAX),
+            "",
+            "背景色との類似度。値が大きいほど広い範囲を余白とみなす",
+        )
+        .or(request);
+
+        ui.add_space(6.0);
+        request = self.render_side_controls(ui).or(request);
+        ui.add_space(6.0);
+        request = self.render_margin_controls(ui, ctx).or(request);
+        ui.add_space(6.0);
+        request = self.render_aspect_controls(ui).or(request);
+
+        if let Some(debounce) = request {
             self.schedule_trim(ctx, debounce, false, false);
         }
-        pad_resp.on_hover_text(
-            "トリミング後に四辺へ追加する余白ピクセル数。画像の端を越える分は背景色で塗って追加する",
-        );
+    }
+
+    /// 余白を除去する辺の選択
+    fn render_side_controls(&mut self, ui: &mut egui::Ui) -> Option<bool> {
+        let mut changed = false;
+        ui.label("除去する辺")
+            .on_hover_text("チェックを外した辺は元画像の端を維持する (その辺の余白も加えない)");
+        ui.horizontal(|ui| {
+            let sides = &mut self.prefs.sides;
+            for (label, enabled) in [
+                ("上", &mut sides.top),
+                ("右", &mut sides.right),
+                ("下", &mut sides.bottom),
+                ("左", &mut sides.left),
+            ] {
+                changed |= ui.checkbox(enabled, label).changed();
+            }
+        });
+        changed.then_some(false)
+    }
+
+    /// 余白のスライダー (四辺連動 / 辺ごと)
+    fn render_margin_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<bool> {
+        let mut request = None;
+        ui.horizontal(|ui| {
+            ui.label("余白");
+            let resp = ui
+                .checkbox(&mut self.prefs.link_margins, "四辺を連動")
+                .on_hover_text("チェックを外すと、辺ごとに別々の余白を指定できる");
+            if resp.changed() {
+                if !self.prefs.link_margins {
+                    // 連動を外した直後は、見た目が変わらないよう現在の余白を引き継ぐ
+                    self.prefs.margins = Margins::uniform(self.prefs.padding);
+                }
+                request = Some(false);
+            }
+        });
+
+        let hover = "トリミング後に残す余白ピクセル数。画像の端を越える分は背景色で塗って追加する";
+        let range = (PADDING_MIN, PADDING_MAX);
+        if self.prefs.link_margins {
+            fit_slider_width(ui);
+            return trim_slider(ui, ctx, &mut self.prefs.padding, range, " px", hover).or(request);
+        }
+
+        let sides = self.prefs.sides;
+        let margins = &mut self.prefs.margins;
+        for (label, value, enabled) in [
+            ("上", &mut margins.top, sides.top),
+            ("右", &mut margins.right, sides.right),
+            ("下", &mut margins.bottom, sides.bottom),
+            ("左", &mut margins.left, sides.left),
+        ] {
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    fit_slider_width(ui);
+                    request = trim_slider(ui, ctx, value, range, " px", hover).or(request);
+                });
+            })
+            .response
+            .on_disabled_hover_text("除去しない辺には余白を加えない");
+        }
+        request
+    }
+
+    /// アスペクト比の固定
+    fn render_aspect_controls(&mut self, ui: &mut egui::Ui) -> Option<bool> {
+        let mut request = None;
+        let prefs = &mut self.prefs;
+        if ui
+            .checkbox(&mut prefs.aspect_enabled, "アスペクト比を固定")
+            .on_hover_text(
+                "余白を加えた後の範囲を、中央を基準に指定の比率へ合わせる\n\
+                 結果が上限サイズを超える場合は比率を合わせない",
+            )
+            .changed()
+        {
+            request = Some(false);
+        }
+        if !prefs.aspect_enabled {
+            return request;
+        }
+
+        ui.horizontal(|ui| {
+            let range = ASPECT_PART_MIN..=ASPECT_PART_MAX;
+            let w_changed = ui
+                .add(egui::DragValue::new(&mut prefs.aspect_w).range(range.clone()))
+                .changed();
+            ui.label(":");
+            let h_changed = ui
+                .add(egui::DragValue::new(&mut prefs.aspect_h).range(range))
+                .changed();
+            if w_changed || h_changed {
+                request = Some(true);
+            }
+            if ui
+                .button("↔ 入替")
+                .on_hover_text("幅と高さの比を入れ替える")
+                .clicked()
+            {
+                std::mem::swap(&mut prefs.aspect_w, &mut prefs.aspect_h);
+                request = Some(false);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("比率");
+            let current = (prefs.aspect_w, prefs.aspect_h);
+            egui::ComboBox::from_id_salt("aspect_preset")
+                .selected_text(aspect_preset_label(current))
+                .show_ui(ui, |ui| {
+                    for preset in ASPECT_PRESETS {
+                        if ui
+                            .selectable_label(current == preset, aspect_label(preset))
+                            .clicked()
+                        {
+                            (prefs.aspect_w, prefs.aspect_h) = preset;
+                            request = Some(false);
+                        }
+                    }
+                });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("合わせ方");
+            egui::ComboBox::from_id_salt("aspect_fit")
+                .selected_text(prefs.aspect_fit.label())
+                .show_ui(ui, |ui| {
+                    for fit in AspectFit::ALL {
+                        if ui
+                            .selectable_value(&mut prefs.aspect_fit, fit, fit.label())
+                            .changed()
+                        {
+                            request = Some(false);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "「余白を足す」は内容を削らず、背景色で塗って足す\n\
+                     「切り詰める」は長い方の辺を中央から削る (内容が欠ける場合がある)",
+                );
+        });
+        request
     }
 
     /// 背景色の表示と、手動指定・スポイト・自動検出への切替
@@ -159,7 +301,7 @@ impl App {
         });
     }
 
-    /// 出力形式・JPEG 品質・自動保存
+    /// 出力形式・JPEG / WebP 品質・自動保存
     fn render_output_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.label("形式");
@@ -184,6 +326,28 @@ impl App {
             .on_hover_text(
                 "JPEG で保存するときの品質 (1-100)\n\
                  大きいほど高画質でファイルサイズも大きくなる",
+            );
+        }
+
+        // WebP で出力されうる形式のときだけ品質を選べるようにする
+        if matches!(
+            self.prefs.output_format,
+            OutputFormat::Webp | OutputFormat::Original
+        ) {
+            ui.add_space(4.0);
+            fit_slider_width(ui);
+            ui.label("WebP 品質");
+            ui.add(
+                egui::Slider::new(
+                    &mut self.prefs.webp_quality,
+                    WEBP_QUALITY_MIN..=WEBP_QUALITY_MAX,
+                )
+                .clamping(egui::SliderClamping::Always),
+            )
+            .on_hover_text(
+                "WebP で保存するときの品質 (1-100)\n\
+                 大きいほど高画質でファイルサイズも大きくなる\n\
+                 100 のときだけロスレスで保存する",
             );
         }
 
@@ -268,6 +432,51 @@ fn section_heading(ui: &mut egui::Ui, title: &str) {
 fn fit_slider_width(ui: &mut egui::Ui) {
     let width = ui.available_width() - SLIDER_VALUE_WIDTH - ui.spacing().item_spacing.x;
     ui.spacing_mut().slider_width = width.max(80.0);
+}
+
+/// アスペクト比の表示名 (例: `16:9`)
+fn aspect_label((w, h): (u32, u32)) -> String {
+    format!("{w}:{h}")
+}
+
+/// 現在の比率に一致するプリセットの表示名。一致しなければ「カスタム」
+fn aspect_preset_label(current: (u32, u32)) -> String {
+    if ASPECT_PRESETS.contains(&current) {
+        aspect_label(current)
+    } else {
+        "カスタム".to_owned()
+    }
+}
+
+/// 値のスライダーを描画し、トリミングの再実行が必要かを返す
+///
+/// # Arguments
+/// * `ui`     - 描画先
+/// * `ctx`    - egui コンテキスト
+/// * `value`  - 編集する値
+/// * `range`  - 値の範囲 `(最小, 最大)`
+/// * `suffix` - 値の後ろに付ける単位
+/// * `hover`  - ホバー時の説明
+///
+/// # Returns
+/// * `Option<bool>` - 再実行が必要なとき `Some(デバウンスするか)`。不要なら `None`
+fn trim_slider(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    value: &mut u32,
+    range: (u32, u32),
+    suffix: &str,
+    hover: &str,
+) -> Option<bool> {
+    let resp = ui.add(
+        egui::Slider::new(value, range.0..=range.1)
+            .suffix(suffix)
+            .clamping(egui::SliderClamping::Always),
+    );
+    let needs_trim = slider_needs_trim(&resp, ctx, value, range.0, range.1);
+    let debounce = resp.dragged() && !resp.drag_stopped();
+    resp.on_hover_text(hover);
+    needs_trim.then_some(debounce)
 }
 
 /// スライダーのレスポンスを受け取り、トリミングを再実行すべきかどうかを返す

@@ -4,7 +4,10 @@ use std::path::Path;
 use image::{ColorType, DynamicImage, ImageFormat, Luma, LumaA, Rgba, RgbaImage};
 
 use super::*;
-use crate::consts::{JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN};
+use crate::consts::{
+    JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, WEBP_QUALITY_DEFAULT,
+    WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
+};
 use crate::image_load::open_image_with_icc;
 
 /// 左半分が完全透明、右半分が不透明な赤の RGBA 画像
@@ -74,6 +77,7 @@ fn save_image_with_applies_jpeg_quality() {
             &path,
             SaveOptions {
                 jpeg_quality: quality,
+                ..SaveOptions::default()
             },
         )
         .expect("JPEG 保存");
@@ -87,10 +91,56 @@ fn save_image_with_applies_jpeg_quality() {
     assert_eq!(size_at(200), size_at(JPEG_QUALITY_MAX));
 }
 
-/// 既定のオプションが `JPEG_QUALITY_DEFAULT` で、`save_image` と同じ出力になること
+/// WebP 品質が出力サイズに反映され、最大値だけがロスレスになり、範囲外の値は丸められること
+#[test]
+fn save_image_with_applies_webp_quality() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    // ノイズを含む画像で品質差をファイルサイズに出す
+    let noisy = RgbaImage::from_fn(64, 64, |x, y| {
+        Rgba([
+            u8::try_from((x * 37 + y * 11) % 256).unwrap(),
+            u8::try_from((x * 5 + y * 53) % 256).unwrap(),
+            u8::try_from((x * y) % 256).unwrap(),
+            255,
+        ])
+    });
+    let img = DynamicImage::ImageRgba8(noisy.clone());
+    let save_at = |quality: u8| {
+        let path = dir.join(format!("q{quality}.webp"));
+        save_image_with(
+            &img,
+            None,
+            &path,
+            SaveOptions {
+                webp_quality: quality,
+                ..SaveOptions::default()
+            },
+        )
+        .expect("WebP 保存");
+        path
+    };
+    let size_at = |quality: u8| fs::metadata(save_at(quality)).expect("metadata").len();
+
+    // 品質が高いほどサイズが大きい
+    assert!(size_at(20) < size_at(90));
+    assert!(size_at(90) < size_at(WEBP_QUALITY_MAX));
+    // 範囲外の値は有効範囲の端と同じ結果になる
+    assert_eq!(size_at(0), size_at(WEBP_QUALITY_MIN));
+    assert_eq!(size_at(200), size_at(WEBP_QUALITY_MAX));
+
+    // 最大値は画素が完全に一致するロスレス、それ未満は一致しない
+    let lossless = image::open(save_at(WEBP_QUALITY_MAX)).expect("再読み込み");
+    assert_eq!(lossless.to_rgba8(), noisy);
+    let lossy = image::open(save_at(90)).expect("再読み込み");
+    assert_ne!(lossy.to_rgba8(), noisy);
+}
+
+/// 既定のオプションが各品質の既定値で、`save_image` と同じ出力になること
 #[test]
 fn save_options_default_matches_save_image() {
     assert_eq!(SaveOptions::default().jpeg_quality, JPEG_QUALITY_DEFAULT);
+    assert_eq!(SaveOptions::default().webp_quality, WEBP_QUALITY_DEFAULT);
 
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();

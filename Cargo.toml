@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -34,6 +34,7 @@ semver = "1.0.28"
 sha2 = "0.11.1"
 ureq = { version = "3.4.2", features = ["json"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+webp = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 minisign = "0.10.0"

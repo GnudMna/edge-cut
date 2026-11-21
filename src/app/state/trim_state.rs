@@ -6,10 +6,10 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::app::trim_worker::TrimWorkerHandle;
-use crate::trim::TrimInfo;
+use crate::trim::{TrimInfo, TrimOptions};
 
-/// トリミング結果を決めるパラメータ `(tolerance, padding, bg_override)`
-pub(in crate::app) type TrimParams = (u32, u32, Option<[u8; 4]>);
+/// トリミング結果を決めるパラメータ (トリミングの設定そのもの)
+pub(in crate::app) type TrimParams = TrimOptions;
 
 /// バックグラウンドのプレビュートリミング結果
 pub(in crate::app) struct TrimWorkerResult {

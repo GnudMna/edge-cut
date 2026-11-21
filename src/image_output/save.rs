@@ -13,24 +13,32 @@ use super::error::SaveError;
 use super::format::OutputFormat;
 use super::path::trimmed_file_stem;
 use super::temp_file::TempFile;
-use crate::consts::{JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX};
+use crate::consts::{
+    JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX,
+    WEBP_QUALITY_DEFAULT, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
+};
 
 // ======================================================================
 // 保存オプション
 // ======================================================================
 /// 保存時のエンコード設定
 ///
-/// `Default` は既定値 (JPEG 品質 `JPEG_QUALITY_DEFAULT`) を表す
+/// `Default` は既定値 (JPEG 品質 `JPEG_QUALITY_DEFAULT`、WebP 品質 `WEBP_QUALITY_DEFAULT`) を表す
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaveOptions {
     /// JPEG のエンコード品質。`JPEG_QUALITY_MIN` 〜 `JPEG_QUALITY_MAX` に丸めて使う
     pub jpeg_quality: u8,
+    /// WebP のエンコード品質。`WEBP_QUALITY_MIN` 〜 `WEBP_QUALITY_MAX` に丸めて使う
+    ///
+    /// `WEBP_QUALITY_MAX` のときだけロスレスで保存する
+    pub webp_quality: u8,
 }
 
 impl Default for SaveOptions {
     fn default() -> Self {
         Self {
             jpeg_quality: JPEG_QUALITY_DEFAULT,
+            webp_quality: WEBP_QUALITY_DEFAULT,
         }
     }
 }
@@ -39,6 +47,11 @@ impl SaveOptions {
     /// JPEG 品質を有効範囲に丸めた値
     pub(super) fn clamped_jpeg_quality(self) -> u8 {
         self.jpeg_quality.clamp(JPEG_QUALITY_MIN, JPEG_QUALITY_MAX)
+    }
+
+    /// WebP 品質を有効範囲に丸めた値
+    pub(super) fn clamped_webp_quality(self) -> u8 {
+        self.webp_quality.clamp(WEBP_QUALITY_MIN, WEBP_QUALITY_MAX)
     }
 }
 
@@ -68,6 +81,7 @@ pub fn save_image(
 ///
 /// 形式は拡張子から判定する。JPEG は透過を `JPEG_FLATTEN_BACKGROUND` に合成して
 /// RGB 化し、品質 `options.jpeg_quality` でエンコードする
+/// WebP は品質 `options.webp_quality` でエンコードし、最大値のときだけロスレスにする
 /// ICC プロファイルは PNG / JPEG / TIFF / WebP に埋め込む。BMP / GIF など非対応の形式や、
 /// プロファイルの色空間が出力画像と合わない場合は埋め込まない
 /// エンコードをメモリ上で済ませ、同じディレクトリの一時ファイルへ書き込んでから置き換えるため、

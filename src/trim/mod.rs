@@ -1,18 +1,22 @@
 //! 画像余白トリミングロジックを提供
 //!
-//! 背景色の検出 (`background`)、余白の矩形検出 (`detect`)、切り出し (`crop`)、
-//! 結果の型 (`types`) に分け、ここでは公開 API の再エクスポートと `trim` を持つ。
+//! 背景色の検出 (`background`)、余白の矩形検出 (`detect`)、アスペクト比の固定 (`aspect`)、
+//! 切り出し (`crop`)、設定 (`options`)、結果の型 (`types`) に分け、
+//! ここでは公開 API の再エクスポートと `trim` を持つ。
 
+mod aspect;
 mod background;
 mod crop;
 mod detect;
+mod options;
 mod types;
 
 use image::{DynamicImage, GenericImageView};
 
 pub use self::background::detect_background_rgba;
 pub use self::crop::apply_trim;
-pub use self::detect::detect_trim;
+pub use self::detect::{detect_trim, detect_trim_with_options};
+pub use self::options::{AspectFit, AspectRatio, Margins, TrimOptions, TrimSides};
 pub use self::types::{TrimBounds, TrimInfo, TrimResult};
 
 // ======================================================================
@@ -48,6 +52,7 @@ pub fn sample_pixel(img: &DynamicImage, px: u32, py: u32) -> Option<[u8; 4]> {
 /// `padding` はトリミング後に四辺に追加する余白ピクセル数
 /// 元画像の端を越える分は背景色で塗って追加するため、内容から四辺まで常に `padding` の幅になる
 /// 背景しかない画像には余白を追加しない
+/// 辺ごとの余白・辺の指定・アスペクト比は [`trim_with_options`] で指定する
 ///
 /// # Arguments
 /// * `img`         - トリミング元の画像
@@ -64,7 +69,25 @@ pub fn trim(
     padding: u32,
     bg_override: Option<[u8; 4]>,
 ) -> TrimResult {
-    let bounds = detect_trim(img, tol, padding, bg_override);
+    trim_with_options(img, &TrimOptions::new(tol, padding, bg_override))
+}
+
+/// 設定に従って画像をトリミングする
+///
+/// 余白の検出と判定規則は [`trim`] と同じ。次の指定を加えられる
+/// * 辺ごとの余白 (`margins`)
+/// * 余白を除去する辺 (`sides`)。除去しない辺は元画像の端を維持し、その辺の余白も加えない
+/// * アスペクト比 (`aspect`)。余白を加えた後の矩形を、中央を基準に指定の比率へ合わせる
+///
+/// # Arguments
+/// * `img`  - トリミング元の画像
+/// * `opts` - トリミングの設定
+///
+/// # Returns
+/// * `TrimResult` - トリミング後の画像、トリミング情報、使用した背景色
+#[must_use]
+pub fn trim_with_options(img: &DynamicImage, opts: &TrimOptions) -> TrimResult {
+    let bounds = detect_trim_with_options(img, opts);
     TrimResult {
         image: apply_trim(img, &bounds.info),
         info: bounds.info,

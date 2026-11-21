@@ -124,10 +124,12 @@ fn evaluate_update(
     response: &VersionApiResponse,
     arch: &str,
 ) -> UpdateCheckOutcome {
-    let latest_raw = strip_version_prefix(&response.tag);
+    // 前後の空白を除去したタグだけを以降の判定・保存先・URL に使う
+    let tag = response.tag.trim();
+    let latest_raw = strip_version_prefix(tag);
     let Ok(latest) = parse_semver(latest_raw) else {
         return UpdateError::LatestVersionInvalid {
-            tag: response.tag.clone(),
+            tag: tag.to_string(),
         }
         .into();
     };
@@ -144,11 +146,11 @@ fn evaluate_update(
         let err = if has_msi {
             UpdateError::AssetArchMissing {
                 arch: arch.to_string(),
-                tag: response.tag.clone(),
+                tag: tag.to_string(),
             }
         } else {
             UpdateError::AssetMissing {
-                tag: response.tag.clone(),
+                tag: tag.to_string(),
             }
         };
         return err.into();
@@ -174,7 +176,7 @@ fn evaluate_update(
     UpdateCheckOutcome::Available(AvailableUpdate {
         current_version: current_raw.to_string(),
         latest_version: latest_raw.to_string(),
-        tag: response.tag.clone(),
+        tag: tag.to_string(),
         asset_name: asset.name.clone(),
         size: asset.size,
         sha256,
@@ -275,6 +277,25 @@ mod tests {
                 assert_eq!(update.asset_name, "edge-cut-0.1.1-x86_64.msi");
                 assert_eq!(update.size, 42);
                 assert_eq!(update.sha256, "a".repeat(64));
+            }
+            other => panic!("想定外: {other:?}"),
+        }
+    }
+
+    /// タグ前後の空白を除去した値を `latest_version` と `tag` に使うこと
+    #[test]
+    fn evaluate_update_trims_tag_whitespace() {
+        let current = Version::parse("0.1.0").expect("semver");
+        let response = VersionApiResponse {
+            tag: " v0.1.1\n".to_string(),
+            assets: vec![asset("edge-cut-0.1.1-x86_64.msi", 42)],
+        };
+
+        let outcome = evaluate_update("0.1.0", &current, &response, "x86_64");
+        match outcome {
+            UpdateCheckOutcome::Available(update) => {
+                assert_eq!(update.latest_version, "0.1.1");
+                assert_eq!(update.tag, "v0.1.1");
             }
             other => panic!("想定外: {other:?}"),
         }

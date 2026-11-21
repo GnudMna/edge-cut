@@ -156,6 +156,8 @@ pub(in crate::app) struct AutoSaveKey {
     pub format: OutputFormat,
     /// JPEG のエンコード品質
     pub jpeg_quality: u8,
+    /// WebP のエンコード品質
+    pub webp_quality: u8,
     /// 保存先ディレクトリ
     pub dir: PathBuf,
 }

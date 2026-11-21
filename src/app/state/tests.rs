@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use eframe::Storage;
 
 use super::*;
-use crate::consts::{JPEG_QUALITY_DEFAULT, PADDING_MAX, TOL_MAX};
+use crate::consts::{JPEG_QUALITY_DEFAULT, PADDING_MAX, TOL_MAX, WEBP_QUALITY_DEFAULT};
 
 /// `App::default()` が画像なしで初期化されること
 #[test]
@@ -72,38 +72,35 @@ fn save_settings_clamps_out_of_range_values() {
     assert_eq!(s.tolerance, TOL_MAX);
     assert_eq!(s.padding, PADDING_MAX);
 }
-/// `save_settings` が手動背景色を保存すること
+/// `save_settings` が手動背景色を保存しないこと
 #[test]
-fn save_settings_includes_bg_override() {
-    let manual = [10, 20, 30, 255];
+fn save_settings_excludes_bg_override() {
     let app = App {
         prefs: Settings {
-            bg_override: Some(manual),
+            bg_override: Some([10, 20, 30, 255]),
             ..Settings::default()
         },
         ..App::default()
     };
     let s = save_and_load(&app);
-    assert_eq!(s.bg_override, Some(manual));
+    assert_eq!(s.bg_override, None);
 }
 
-/// 起動時に保存済みの手動背景色がアプリ状態へ復元されること
+/// 保存データに手動背景色があっても、起動時は自動検出から始まること
+///
+/// 旧バージョンが保存した `bg_override` を読み込んでも無視する
 #[test]
-fn app_new_restores_bg_override_from_settings() {
-    let manual = [40, 50, 60, 200];
+fn app_new_ignores_saved_bg_override() {
     let mut storage = TestStorage::default();
-    eframe::set_value(
-        &mut storage,
+    storage.set_string(
         SETTINGS_KEY,
-        &Settings {
-            bg_override: Some(manual),
-            ..Settings::default()
-        },
+        "(tolerance: 5, bg_override: Some((40, 50, 60, 200)))".to_owned(),
     );
 
     let app = App::new(Some(&storage));
-    assert_eq!(app.prefs.bg_override, Some(manual));
-    assert_eq!(app.background.bg_color, Some(manual));
+    assert_eq!(app.prefs.tolerance, 5);
+    assert_eq!(app.prefs.bg_override, None);
+    assert_eq!(app.background.bg_color, None);
 }
 
 /// 保存データに一部のフィールドしかなくても、残りを既定値で補って読み込めること
@@ -124,6 +121,7 @@ fn app_new_fills_missing_settings_fields_with_defaults() {
     assert_eq!(app.prefs.padding, defaults.padding);
     assert_eq!(app.prefs.dark_mode, defaults.dark_mode);
     assert_eq!(app.prefs.jpeg_quality, JPEG_QUALITY_DEFAULT);
+    assert_eq!(app.prefs.webp_quality, WEBP_QUALITY_DEFAULT);
 }
 
 /// 保存データに未知のフィールドがあっても、他の設定を読み込めること

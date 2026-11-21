@@ -19,7 +19,7 @@
 //!
 //! | モジュール | 責務 |
 //! | ---------- | ---- |
-//! | [`trim`] | 背景色検出・余白の矩形検出・切り出し |
+//! | [`trim`] | 背景色検出・余白の矩形検出・アスペクト比の固定・切り出し |
 //! | [`image_load`] | サイズ上限付きの画像読み込み (ICC プロファイル取得を含む) |
 //! | [`image_output`] | 出力形式の決定・画像保存 (ICC プロファイル再埋め込み)・出力パス生成 |
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
@@ -61,6 +61,7 @@ pub use image_output::{
     trimmed_output_path,
 };
 pub use trim::{
-    TrimBounds, TrimInfo, TrimResult, apply_trim, detect_background_rgba, detect_trim,
-    sample_pixel, trim,
+    AspectFit, AspectRatio, Margins, TrimBounds, TrimInfo, TrimOptions, TrimResult, TrimSides,
+    apply_trim, detect_background_rgba, detect_trim, detect_trim_with_options, sample_pixel, trim,
+    trim_with_options,
 };

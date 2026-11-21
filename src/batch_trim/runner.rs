@@ -15,7 +15,7 @@ use crate::consts::{BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK
 use crate::image_load::{LoadedImage, open_image_with_icc, probe_decoded_bytes};
 use crate::image_output::save_trimmed_output_with;
 use crate::panic_message::catch_panic;
-use crate::trim::trim;
+use crate::trim::trim_with_options;
 
 // ======================================================================
 // 一括処理
@@ -242,7 +242,7 @@ fn process_one(
     let _permit = budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR));
 
     let LoadedImage { image, icc_profile } = open_image_with_icc(path)?;
-    let trimmed = trim(&image, params.tolerance, params.padding, params.bg_override);
+    let trimmed = trim_with_options(&image, &params.trim);
     // エンコード中のピークを見積もり内に収めるため、元画像は切り出し後すぐに解放する
     drop(image);
     let (_, file_renamed) = save_trimmed_output_with(

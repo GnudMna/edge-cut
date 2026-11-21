@@ -85,9 +85,7 @@ impl App {
             return;
         }
 
-        let tolerance = self.prefs.tolerance;
-        let padding = self.prefs.padding;
-        let bg_override = self.prefs.bg_override;
+        let trim = self.prefs.trim_options();
         let format = self.prefs.output_format;
         let save_options = self.save_options();
         let ctx_clone = ctx.clone();
@@ -117,9 +115,7 @@ impl App {
                 &paths,
                 &out_dir,
                 BatchTrimParams {
-                    tolerance,
-                    padding,
-                    bg_override,
+                    trim,
                     format,
                     save_options,
                 },

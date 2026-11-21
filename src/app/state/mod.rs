@@ -66,7 +66,7 @@ impl App {
             .normalize();
         Self {
             image: ImageState::default(),
-            background: BackgroundState::restore_from_settings(s.bg_override),
+            background: BackgroundState::default(),
             prefs: s,
             status: "「画像を開く」で画像を選択してください".into(),
             clipboard: None,

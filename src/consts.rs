@@ -57,6 +57,12 @@ pub const PADDING_MIN: u32 = 0;
 /// 余白ピクセル数の最大値
 pub const PADDING_MAX: u32 = 100;
 
+/// アスペクト比の幅・高さの最小値
+pub const ASPECT_PART_MIN: u32 = 1;
+
+/// アスペクト比の幅・高さの最大値
+pub const ASPECT_PART_MAX: u32 = 9999;
+
 /// スライダー操作時にプレビュートリミングを再実行するまでの待機時間 (ms)
 pub const TRIM_DEBOUNCE_MS: u64 = 150;
 
@@ -107,6 +113,17 @@ pub const JPEG_QUALITY_MIN: u8 = 1;
 
 /// JPEG 保存時のエンコード品質の最大値
 pub const JPEG_QUALITY_MAX: u8 = 100;
+
+/// WebP 保存時のエンコード品質の既定値
+pub const WEBP_QUALITY_DEFAULT: u8 = 90;
+
+/// WebP 保存時のエンコード品質の最小値
+pub const WEBP_QUALITY_MIN: u8 = 1;
+
+/// WebP 保存時のエンコード品質の最大値
+///
+/// この値のときだけロスレスで保存する
+pub const WEBP_QUALITY_MAX: u8 = 100;
 
 /// JPEG 保存時に透過ピクセルを合成する背景色 (RGB)
 pub const JPEG_FLATTEN_BACKGROUND: [u8; 3] = [255, 255, 255];
@@ -207,6 +224,14 @@ mod tests {
         assert!(JPEG_QUALITY_MIN >= 1);
         assert!(JPEG_QUALITY_MAX <= 100);
         assert!((JPEG_QUALITY_MIN..=JPEG_QUALITY_MAX).contains(&JPEG_QUALITY_DEFAULT));
+    }
+
+    /// WebP 品質の既定値が有効範囲 (1–100) 内で、ロスレス指定 (最大値) ではないこと
+    #[test]
+    fn webp_quality_is_in_valid_range() {
+        assert!(WEBP_QUALITY_MIN >= 1);
+        assert!(WEBP_QUALITY_MAX <= 100);
+        assert!((WEBP_QUALITY_MIN..WEBP_QUALITY_MAX).contains(&WEBP_QUALITY_DEFAULT));
     }
 
     /// 画像読み込み上限が正の値であること

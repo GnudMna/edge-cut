@@ -34,11 +34,7 @@ impl App {
             return;
         }
 
-        let key = (
-            self.prefs.tolerance,
-            self.prefs.padding,
-            self.prefs.bg_override,
-        );
+        let key = self.prefs.trim_options();
         // 処理中のジョブは別の値で動いている可能性があるため、完了済みの結果と一致し、
         // かつ処理中・デバウンス待ちのジョブがない場合のみスキップする
         if self.image.info.is_some()
@@ -164,9 +160,7 @@ impl App {
         };
 
         let request_id = self.trim_worker.request_id;
-        let tolerance = self.prefs.tolerance;
-        let padding = self.prefs.padding;
-        let bg_override = self.prefs.bg_override;
+        let options = self.prefs.trim_options();
         // 結果が後続の要求で破棄されてもテクスチャを作り直せるよう、
         // フラグは送信時ではなくテクスチャを反映した時点で下ろす
         let refresh_orig_tex = self.trim_worker.refresh_orig_tex;
@@ -175,9 +169,7 @@ impl App {
         self.trim_worker.handle.submit(TrimJob {
             request_id,
             original,
-            tolerance,
-            padding,
-            bg_override,
+            options,
             refresh_orig_tex,
             ctx: ctx.clone(),
         });
@@ -245,6 +237,7 @@ mod tests {
         make_test_image, poll_trim_until_idle, trimmed_image_state,
     };
     use crate::app::state::{App, ImageState, TrimWorkerResult};
+    use crate::trim::TrimOptions;
 
     // ======================================================================
     // schedule_trim() / poll_trim_work()
@@ -322,7 +315,7 @@ mod tests {
         };
         app.schedule_trim(&ctx, false, true, false);
         assert!(poll_trim_until_idle(&mut app, &ctx));
-        assert_eq!(app.image.cache_key, Some((0, 0, None)));
+        assert_eq!(app.image.cache_key, Some(TrimOptions::default()));
 
         // tol=1 のジョブの結果が届く前に tol=0 へ戻す
         app.prefs.tolerance = 1;
@@ -334,7 +327,7 @@ mod tests {
         // tol=1 の結果を無効化する新しい要求が出ていること
         assert_ne!(app.trim_worker.request_id, in_flight_id);
         assert!(poll_trim_until_idle(&mut app, &ctx));
-        assert_eq!(app.image.cache_key, Some((0, 0, None)));
+        assert_eq!(app.image.cache_key, Some(TrimOptions::default()));
     }
 
     /// `cache_key` に受信時点の UI の値ではなく、ジョブで使った値を記録すること
@@ -354,7 +347,7 @@ mod tests {
         app.prefs.tolerance = 0;
 
         assert!(poll_trim_until_idle(&mut app, &ctx));
-        assert_eq!(app.image.cache_key, Some((1, 0, None)));
+        assert_eq!(app.image.cache_key, Some(TrimOptions::new(1, 0, None)));
     }
 
     /// ジョブの panic による失敗結果を受け取ると、処理中を解除して古い結果を破棄すること
@@ -365,7 +358,7 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.image.cache_key = Some((0, 0, None));
+        app.image.cache_key = Some(TrimOptions::default());
         let (tx, rx) = mpsc::channel();
         app.trim_worker.result_rx = rx;
         app.trim_worker.in_flight = true;

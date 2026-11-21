@@ -83,7 +83,7 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.image.cache_key = Some((0, 0, None));
+        app.image.cache_key = Some(app.prefs.trim_options());
         app.status = "初期".into();
 
         // スライダー操作直後 (デバウンス待ち) の状態にする

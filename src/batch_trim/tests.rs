@@ -6,6 +6,7 @@ use super::runner::{run_batch_trim_with_workers, run_batch_with};
 use super::*;
 use crate::image_output::{OutputFormat, SaveOptions};
 use crate::test_helpers::bordered_rgba;
+use crate::trim::TrimOptions;
 
 // ======================================================================
 // ヘルパー
@@ -30,9 +31,7 @@ fn write_bordered_png(path: &Path) {
 
 fn default_params() -> BatchTrimParams {
     BatchTrimParams {
-        tolerance: 0,
-        padding: 0,
-        bg_override: None,
+        trim: TrimOptions::default(),
         format: OutputFormat::Original,
         save_options: SaveOptions::default(),
     }
@@ -57,9 +56,7 @@ fn batch_saves_all_files() {
         &inputs,
         &out,
         BatchTrimParams {
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            trim: TrimOptions::default(),
             format: OutputFormat::Original,
             save_options: SaveOptions::default(),
         },
@@ -91,9 +88,7 @@ fn batch_preserves_icc_profile() {
         &[input],
         &out,
         BatchTrimParams {
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            trim: TrimOptions::default(),
             format: OutputFormat::Original,
             save_options: SaveOptions::default(),
         },
@@ -121,9 +116,7 @@ fn batch_saves_in_specified_format() {
         &[input],
         &out,
         BatchTrimParams {
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            trim: TrimOptions::default(),
             format: OutputFormat::Jpeg,
             save_options: SaveOptions::default(),
         },
@@ -156,9 +149,7 @@ fn batch_avoids_overwriting_existing_output() {
         &[input],
         &out,
         BatchTrimParams {
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            trim: TrimOptions::default(),
             format: OutputFormat::Original,
             save_options: SaveOptions::default(),
         },
@@ -222,9 +213,7 @@ fn batch_collects_per_file_errors_and_continues() {
         &[good.clone(), bad],
         &out,
         BatchTrimParams {
-            tolerance: 0,
-            padding: 0,
-            bg_override: None,
+            trim: TrimOptions::default(),
             format: OutputFormat::Original,
             save_options: SaveOptions::default(),
         },

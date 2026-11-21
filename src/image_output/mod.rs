@@ -10,6 +10,7 @@ mod format;
 mod path;
 mod save;
 mod temp_file;
+mod webp_lossy;
 
 pub use self::error::SaveError;
 pub use self::format::OutputFormat;

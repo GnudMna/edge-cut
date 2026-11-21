@@ -38,7 +38,7 @@ pub(in crate::app) struct ImageState {
     pub views: [PaneView; 2],
     /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
     pub info: Option<TrimInfo>,
-    /// 直近のトリミング実行時の `(tolerance, padding, bg_override)`。同じ値なら再実行をスキップする
+    /// 直近のトリミング実行時のトリミング設定。同じ値なら再実行をスキップする
     pub cache_key: Option<TrimParams>,
 }
 
@@ -81,14 +81,6 @@ pub(in crate::app) struct BackgroundState {
 }
 
 impl BackgroundState {
-    /// 保存済みの手動背景色から状態を復元する
-    pub(super) fn restore_from_settings(bg_override: Option<[u8; 4]>) -> Self {
-        Self {
-            bg_color: bg_override,
-            pick_mode: false,
-        }
-    }
-
     /// 表示色を手動指定へ同期し、スポイトを終了する
     ///
     /// 画像の読み込み後・クリア後に呼ぶ

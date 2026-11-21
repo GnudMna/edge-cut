@@ -24,10 +24,12 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | パス | 責務 |
 | :--- | :--- |
 | `background` | 背景色検出。四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA を選ぶ |
-| `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の最小矩形を求める |
+| `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の最小矩形を求め、辺ごとの余白・除去する辺・アスペクト比を適用して `TrimInfo` にする |
+| `aspect` | アスペクト比の固定。範囲外を含む矩形 (`Rect`) を、中央を基準に指定の比率へ広げる・切り詰める |
+| `options` | トリミングの設定 (`TrimOptions` / `Margins` / `TrimSides` / `AspectRatio`)。プレビューの再計算を省く判定のキーも兼ねる |
 | `crop` | `TrimInfo` に従った切り出しと、範囲外へ拡張する余白の追加 |
 | `types` | `TrimInfo` / `TrimResult` / `TrimBounds` |
-| `mod` | 公開 API の再エクスポートと `trim` / `sample_pixel` |
+| `mod` | 公開 API の再エクスポートと `trim` / `trim_with_options` / `sample_pixel` |
 
 `src/image_output/` の構成:
 
@@ -36,6 +38,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `format` | 出力形式 (`OutputFormat`) |
 | `save` | 保存オプション (`SaveOptions`)・上書き保存・連番保存 (衝突時は連番サフィックス) |
 | `encode` | 形式に合わせた変換 (JPEG の透過合成など)・エンコード・ICC プロファイルの再埋め込み |
+| `webp_lossy` | ロッシー WebP のエンコード (libwebp)・ICC プロファイルの `ICCP` チャンク挿入 |
 | `temp_file` | 同じディレクトリへ書いてから置き換える一時ファイル |
 | `path` | 出力ファイル名・パスの生成 |
 | `error` | `SaveError` |

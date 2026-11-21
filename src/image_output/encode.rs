@@ -1,6 +1,7 @@
 //! 保存形式に合わせた画像のエンコード
 //!
-//! JPEG の透過合成、エンコーダ非対応のカラータイプの変換、ICC プロファイルの再埋め込みを担う。
+//! JPEG の透過合成、エンコーダ非対応のカラータイプの変換、ICC プロファイルの再埋め込み、
+//! WebP のロスレス / ロッシーの切り替えを担う。
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -15,7 +16,8 @@ use image::{
 };
 
 use super::save::SaveOptions;
-use crate::consts::JPEG_FLATTEN_BACKGROUND;
+use super::webp_lossy::encode_lossy;
+use crate::consts::{JPEG_FLATTEN_BACKGROUND, WEBP_QUALITY_MAX};
 
 // ======================================================================
 // エンコード
@@ -45,9 +47,15 @@ pub(super) fn encode_image(
         }
         ImageFormat::Png => write_with_icc(&img, icc_profile, PngEncoder::new(&mut cursor))?,
         ImageFormat::Tiff => write_with_icc(&img, icc_profile, TiffEncoder::new(&mut cursor))?,
-        // `write_to` と同じロスレス設定
+        // 最大品質のときだけロスレス (`write_to` と同じ設定)、それ以外は libwebp のロッシー
         ImageFormat::WebP => {
-            write_with_icc(&img, icc_profile, WebPEncoder::new_lossless(&mut cursor))?;
+            let quality = options.clamped_webp_quality();
+            if quality >= WEBP_QUALITY_MAX {
+                write_with_icc(&img, icc_profile, WebPEncoder::new_lossless(&mut cursor))?;
+            } else {
+                let icc = icc_profile.filter(|icc| icc_matches_color(icc, &img));
+                return encode_lossy(&img, icc, quality);
+            }
         }
         _ => img.write_to(&mut cursor, format)?,
     }

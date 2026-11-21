@@ -8,7 +8,10 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use edge_cut::trim::{TrimInfo, sample_pixel};
+use edge_cut::trim::{
+    AspectFit, AspectRatio, Margins, TrimInfo, TrimOptions, TrimSides, sample_pixel,
+    trim_with_options,
+};
 use edge_cut::{OutputFormat, open_image, save_image, trim, trimmed_output_path};
 use image::DynamicImage;
 
@@ -227,4 +230,43 @@ fn open_image_rejects_non_image_file() {
         msg.contains("読み込みエラー"),
         "エラーメッセージに読み込みエラーが含まれる: {msg}"
     );
+}
+
+/// 辺ごとの余白・除去する辺・アスペクト比の指定が、保存後のファイルにも反映されること
+#[test]
+fn trim_with_options_persists_after_save() {
+    let ws = TempWorkspace::new();
+    let input = ws.path("options_input.png");
+    let output = ws.path("options_output.png");
+
+    // 20x20 の白地に、縁 5 px を除いた 10x10 の青い内容
+    write_bordered_png(&input, 20, 20, 5, [255, 255, 255, 255], [0, 0, 255, 255]);
+    let img = open_image(&input).expect("open input");
+
+    let opts = TrimOptions {
+        margins: Margins {
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 2,
+        },
+        // 下辺は除去せず元画像の端まで残す
+        sides: TrimSides {
+            bottom: false,
+            ..TrimSides::ALL
+        },
+        aspect: Some(AspectRatio {
+            w: 1,
+            h: 1,
+            fit: AspectFit::Expand,
+        }),
+        ..TrimOptions::default()
+    };
+    let trimmed = trim_with_options(&img, &opts);
+    save_image(&trimmed.image, None, &output).expect("save output");
+    let reloaded = open_image(&output).expect("reload output");
+
+    // 左 2 + 内容 10 = 幅 12、上の内容端 5 から下端 20 までで高さ 15。1:1 に広げて 15x15
+    assert_eq!((trimmed.info.trim_w, trimmed.info.trim_h), (15, 15));
+    assert_eq!((reloaded.width(), reloaded.height()), (15, 15));
 }

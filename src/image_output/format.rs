@@ -18,7 +18,7 @@ pub enum OutputFormat {
     Png,
     /// JPEG (透過は `JPEG_FLATTEN_BACKGROUND` に合成する)
     Jpeg,
-    /// WebP (ロスレス)
+    /// WebP (品質が最大のときだけロスレス)
     Webp,
     /// BMP
     Bmp,

@@ -411,3 +411,234 @@ fn sample_pixel_converts_non_rgba8_pixel() {
     assert_eq!(sample_pixel(&img, 4, 0), None);
     assert_eq!(sample_pixel(&img, 0, 3), None);
 }
+
+// ======================================================================
+// 辺ごとの余白・除去する辺・アスペクト比
+// ======================================================================
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+const RED: [u8; 4] = [255, 0, 0, 255];
+
+/// 20x12 の白地に、x=6..=11・y=4..=7 の赤い 6x4 の内容を置いた画像
+fn offset_content() -> DynamicImage {
+    let mut img = RgbaImage::from_pixel(20, 12, Rgba(WHITE));
+    for y in 4..8 {
+        for x in 6..12 {
+            img.put_pixel(x, y, Rgba(RED));
+        }
+    }
+    DynamicImage::ImageRgba8(img)
+}
+
+/// 四辺共通の設定が従来の `trim` と同じ結果になること
+#[test]
+fn trim_with_options_matches_legacy_trim() {
+    let img = offset_content();
+    for (tol, padding) in [(0, 0), (10, 3), (100, 0)] {
+        let legacy = trim(&img, tol, padding, None);
+        let result = trim_with_options(&img, &TrimOptions::new(tol, padding, None));
+        assert_eq!(legacy.info, result.info);
+        assert_eq!(legacy.image, result.image);
+    }
+}
+
+/// 辺ごとに別々の余白を残せること
+#[test]
+fn trim_with_per_side_margins() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        margins: Margins {
+            top: 1,
+            right: 2,
+            bottom: 3,
+            left: 4,
+        },
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    let info = result.info;
+    // 内容 6x4 に左 4・右 2・上 1・下 3 の余白が加わる
+    assert_eq!((info.offset_x, info.offset_y), (2, 3));
+    assert_eq!((info.trim_w, info.trim_h), (12, 8));
+    assert!(!info.is_extended());
+    assert_eq!(sample_pixel(&result.image, 4, 1), Some(RED));
+    assert_eq!(sample_pixel(&result.image, 3, 1), Some(WHITE));
+}
+
+/// 画像の端を越える辺ごとの余白が、その辺の範囲外として背景色で追加されること
+#[test]
+fn trim_with_per_side_margins_beyond_image_extends_only_that_side() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        margins: Margins {
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 9,
+        },
+        ..TrimOptions::default()
+    };
+    let info = trim_with_options(&img, &opts).info;
+    // 左の内容端は x=6 のため、9 px の余白のうち 3 px が範囲外になる
+    assert_eq!((info.extend_left, info.extend_top), (3, 0));
+    assert_eq!((info.extend_right, info.extend_bottom), (0, 0));
+    assert_eq!(info.offset_x, 0);
+    assert_eq!(info.trim_w, 9 + 6);
+}
+
+/// 除去しない辺は元画像の端を維持し、余白も加えないこと
+#[test]
+fn trim_keeps_disabled_sides_at_image_edge() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        margins: Margins::uniform(2),
+        sides: TrimSides {
+            top: true,
+            right: false,
+            bottom: true,
+            left: false,
+        },
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    let info = result.info;
+    // 左右は元画像の全幅、上下は内容に余白 2 px を加えた範囲
+    assert_eq!((info.offset_x, info.trim_w), (0, 20));
+    assert_eq!((info.offset_y, info.trim_h), (2, 8));
+    assert!(!info.is_extended());
+    assert_eq!(result.image.width(), 20);
+}
+
+/// どの辺も除去しない設定では画像全体を返すこと
+#[test]
+fn trim_with_no_sides_returns_whole_image() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        margins: Margins::uniform(5),
+        sides: TrimSides {
+            top: false,
+            right: false,
+            bottom: false,
+            left: false,
+        },
+        ..TrimOptions::default()
+    };
+    assert_eq!(trim_with_options(&img, &opts).image, img);
+}
+
+/// 余白を足すアスペクト比固定で、内容を削らずに指定の比率になること
+#[test]
+fn trim_aspect_expand_pads_shorter_side_with_background() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        aspect: Some(AspectRatio {
+            w: 1,
+            h: 1,
+            fit: AspectFit::Expand,
+        }),
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    let info = result.info;
+    // 内容 6x4 が 6x6 になり、上下に 1 px ずつ広がる (元画像の範囲内なので白地を含む)
+    assert_eq!((info.trim_w, info.trim_h), (6, 6));
+    assert_eq!((result.image.width(), result.image.height()), (6, 6));
+    // 上端は広げた白の行、その下から内容が始まる
+    assert_eq!(sample_pixel(&result.image, 0, 0), Some(WHITE));
+    assert_eq!(sample_pixel(&result.image, 0, 1), Some(RED));
+    assert_eq!(sample_pixel(&result.image, 0, 4), Some(RED));
+}
+
+/// 元画像の端に接する内容を広げるとき、足りない分が背景色で塗られること
+#[test]
+fn trim_aspect_expand_beyond_image_fills_with_background() {
+    let mut buf = RgbaImage::from_pixel(8, 4, Rgba(WHITE));
+    for x in 0..8 {
+        for y in 0..4 {
+            buf.put_pixel(x, y, Rgba(RED));
+        }
+    }
+    let img = DynamicImage::ImageRgba8(buf);
+    let opts = TrimOptions {
+        bg_override: Some(WHITE),
+        aspect: Some(AspectRatio {
+            w: 1,
+            h: 1,
+            fit: AspectFit::Expand,
+        }),
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    assert_eq!((result.image.width(), result.image.height()), (8, 8));
+    assert_eq!(result.info.extend_top + result.info.extend_bottom, 4);
+    assert_eq!(sample_pixel(&result.image, 0, 0), Some(WHITE));
+    assert_eq!(sample_pixel(&result.image, 0, 2), Some(RED));
+    assert_eq!(sample_pixel(&result.image, 0, 7), Some(WHITE));
+}
+
+/// 切り詰めるアスペクト比固定で、長い辺が中央から削られること
+#[test]
+fn trim_aspect_crop_cuts_longer_side_from_center() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        aspect: Some(AspectRatio {
+            w: 1,
+            h: 1,
+            fit: AspectFit::Crop,
+        }),
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    let info = result.info;
+    // 内容 6x4 の幅が 4 に削られ、左右 1 px ずつ内容が欠ける
+    assert_eq!((info.trim_w, info.trim_h), (4, 4));
+    assert_eq!((info.offset_x, info.offset_y), (7, 4));
+    assert_eq!(sample_pixel(&result.image, 0, 0), Some(RED));
+}
+
+/// 全面が背景の画像でも、アスペクト比を固定すると指定の比率になること
+#[test]
+fn trim_aspect_applies_to_background_only_image() {
+    let img = solid_rgba(8, 4, WHITE);
+    let opts = TrimOptions {
+        aspect: Some(AspectRatio {
+            w: 1,
+            h: 1,
+            fit: AspectFit::Expand,
+        }),
+        ..TrimOptions::default()
+    };
+    let result = trim_with_options(&img, &opts);
+    assert_eq!((result.image.width(), result.image.height()), (8, 8));
+}
+
+/// プレビュー用の矩形検出と切り出しの結果が、組み合わせた設定でも一致すること
+#[test]
+fn detect_matches_trim_for_combined_options() {
+    let img = offset_content();
+    let opts = TrimOptions {
+        tolerance: 5,
+        margins: Margins {
+            top: 3,
+            right: 1,
+            bottom: 8,
+            left: 12,
+        },
+        sides: TrimSides {
+            top: true,
+            right: true,
+            bottom: true,
+            left: false,
+        },
+        aspect: Some(AspectRatio {
+            w: 16,
+            h: 9,
+            fit: AspectFit::Expand,
+        }),
+        bg_override: None,
+    };
+    let bounds = detect_trim_with_options(&img, &opts);
+    let result = trim_with_options(&img, &opts);
+    assert_eq!(bounds.info, result.info);
+    assert_eq!(result.image.width(), bounds.info.trim_w);
+    assert_eq!(result.image.height(), bounds.info.trim_h);
+}
