@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -333,28 +333,30 @@ impl Release {
     }
 }
 
-/// 更新作業フォルダ (`%TEMP%\edge-cut-update\<version>`) を破棄時に削除する
-struct WorkDirGuard(PathBuf);
+/// テストごとに独立した更新作業フォルダの親を用意し、破棄時に削除する
+///
+/// 実環境の `%TEMP%\edge-cut-update` を使わないため、並列実行や起動中のアプリと衝突しない
+struct WorkDirGuard {
+    root: tempfile::TempDir,
+    dir: PathBuf,
+}
 
 impl WorkDirGuard {
-    /// 指定バージョンの作業フォルダを管理対象にする
-    ///
-    /// 作業フォルダはバージョンごとに決まるため、テストごとに異なるバージョンを使う
+    /// 指定バージョンの作業フォルダを持つ一時ディレクトリを作る
     fn new(version: &str) -> Self {
-        let dir = std::env::temp_dir().join("edge-cut-update").join(version);
-        let _ = fs::remove_dir_all(&dir);
-        Self(dir)
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join(version);
+        Self { root, dir }
+    }
+
+    /// 作業フォルダの親ディレクトリ
+    fn root(&self) -> &Path {
+        self.root.path()
     }
 
     /// 作業フォルダ内のアセットのパス
     fn archive(&self, asset_name: &str) -> PathBuf {
-        self.0.join(asset_name)
-    }
-}
-
-impl Drop for WorkDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.dir.join(asset_name)
     }
 }
 
@@ -385,10 +387,11 @@ fn assert_apply_error(outcome: &UpdateApplyOutcome, expected: &UpdateError) {
 /// 更新確認から適用 (`msiexec` は起動しない) までを通しで実行する
 fn check_and_apply(
     server: &TestServer,
+    guard: &WorkDirGuard,
     trusted_keys: &[&str],
 ) -> (AvailableUpdate, UpdateApplyOutcome) {
     let update = expect_available(check_for_update_at(&server.base_url, CURRENT_VERSION, ARCH));
-    let outcome = apply_update_at(&update, &server.base_url, false, trusted_keys);
+    let outcome = apply_update_at(&update, &server.base_url, guard.root(), false, trusted_keys);
     (update, outcome)
 }
 
@@ -404,7 +407,7 @@ fn full_update_flow_saves_verified_msi() {
     let guard = WorkDirGuard::new(&release.version);
     let server = TestServer::start(release.routes());
 
-    let (update, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (update, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     // 確認結果が version API の内容と一致する
     assert_eq!(update.current_version, CURRENT_VERSION);
@@ -591,7 +594,7 @@ fn missing_signature_blocks_asset_download() {
     routes.remove(&release.signature_path());
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(
         &outcome,
@@ -611,7 +614,7 @@ fn oversized_signature_is_rejected() {
     routes.insert(release.signature_path(), Reply::ok(vec![b'a'; 64 * 1024]));
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::SignatureDownloadFailed);
     assert!(!server.requested_paths().contains(&release.asset_path()));
@@ -627,7 +630,7 @@ fn malformed_signature_deletes_downloaded_msi() {
     routes.insert(release.signature_path(), Reply::ok("garbage signature"));
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::SignatureInvalid);
     assert!(!guard.archive(&release.asset_name).exists());
@@ -645,7 +648,7 @@ fn asset_http_error_is_reported() {
     routes.insert(release.asset_path(), Reply::status(500));
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::DownloadHttp { status: 500 });
     assert!(!guard.archive(&release.asset_name).exists());
@@ -662,7 +665,7 @@ fn tampered_asset_fails_integrity_check() {
     routes.insert(release.asset_path(), Reply::ok(tampered));
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::IntegrityFailed);
     assert!(!guard.archive(&release.asset_name).exists());
@@ -679,7 +682,7 @@ fn shorter_asset_fails_size_check() {
     routes.insert(release.asset_path(), Reply::ok(short));
     let server = TestServer::start(routes);
 
-    let (update, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (update, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(
         &outcome,
@@ -702,7 +705,7 @@ fn longer_asset_is_cut_off_at_declared_size() {
     routes.insert(release.asset_path(), Reply::ok(longer));
     let server = TestServer::start(routes);
 
-    let (update, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (update, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(
         &outcome,
@@ -724,7 +727,7 @@ fn interrupted_asset_download_fails() {
     routes.insert(release.asset_path(), interrupted);
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::DownloadFailed);
     assert!(!guard.archive(&release.asset_name).exists());
@@ -750,7 +753,7 @@ fn asset_signed_by_untrusted_key_is_rejected() {
     );
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::SignatureUntrustedKey);
     assert!(!guard.archive(&release.asset_name).exists());
@@ -774,7 +777,7 @@ fn replaced_asset_with_matching_digest_fails_signature() {
     routes.insert(release.asset_path(), Reply::ok(malicious));
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     // サイズと SHA-256 は通るが、署名が元の MSI のものなので拒否される
     assert_apply_error(&outcome, &UpdateError::SignatureInvalid);
@@ -797,7 +800,7 @@ fn signature_for_another_version_is_rejected() {
     );
     let server = TestServer::start(routes);
 
-    let (_, outcome) = check_and_apply(&server, &[&release.public_key()]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[&release.public_key()]);
 
     assert_apply_error(&outcome, &UpdateError::SignatureMetadataMismatch);
     assert!(!guard.archive(&release.asset_name).exists());
@@ -810,7 +813,7 @@ fn apply_without_trusted_keys_makes_no_download_request() {
     let guard = WorkDirGuard::new(&release.version);
     let server = TestServer::start(release.routes());
 
-    let (_, outcome) = check_and_apply(&server, &[]);
+    let (_, outcome) = check_and_apply(&server, &guard, &[]);
 
     assert_apply_error(&outcome, &UpdateError::SignatureKeyMissing);
     // 確認用の version API 以外は要求されない
@@ -836,7 +839,7 @@ fn download_key_is_sent_as_bearer_and_enforced() {
     let signature_url = format!("{}{}", server.base_url, release.signature_path());
     let asset_url = format!("{}{}", server.base_url, release.asset_path());
     let dest = guard.archive(&release.asset_name);
-    fs::create_dir_all(&guard.0).expect("create work dir");
+    fs::create_dir_all(&guard.dir).expect("create work dir");
 
     // キーなしと誤ったキーは認証失敗になる
     assert_eq!(

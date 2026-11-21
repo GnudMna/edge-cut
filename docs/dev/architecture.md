@@ -25,9 +25,9 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | パス | 責務 |
 | :--- | :--- |
 | `background` | 背景色検出。四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA を選ぶ |
-| `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の最小矩形を求め、辺ごとの余白・除去する辺・アスペクト比を適用して `TrimInfo` にする |
+| `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の画素が `ignore_pixels` (ノイズ除外) を超える行・列から最小矩形を求め、辺ごとの余白・除去する辺・アスペクト比を適用して `TrimInfo` にする |
 | `aspect` | アスペクト比の固定。範囲外を含む矩形 (`Rect`) を、中央を基準に指定の比率へ広げる・切り詰める |
-| `options` | トリミングの設定 (`TrimOptions` / `Margins` / `TrimSides` / `AspectRatio`)。プレビューの再計算を省く判定のキーも兼ねる |
+| `options` | トリミングの設定 (`TrimOptions` / `Margins` / `TrimSides` / `AspectRatio` / `AspectFit`)。プレビューの再計算を省く判定のキーも兼ねる |
 | `crop` | `TrimInfo` に従った切り出しと、範囲外へ拡張する余白の追加 |
 | `types` | `TrimInfo` / `TrimResult` / `TrimBounds` |
 | `mod` | 公開 API の再エクスポートと `trim` / `trim_with_options` / `sample_pixel` |
@@ -59,7 +59,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | :--- | :--- |
 | `state/` | アプリの状態。`App` 本体と、責務ごとの部分構造体 (`settings` / `image_state` / `trim_state` / `io_state` / `batch_state` / `update_state`) |
 | `bundled` | 配布物に同梱した文書 (利用者向けドキュメント・LICENSE・THIRD_PARTY_NOTICES) の探索と、Windows の既定のアプリでの起動。同梱先は実行ファイルの位置から MSI の配布レイアウトに従って求める |
-| `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` に分割し、ボタンに添える線画アイコンを `icons` に置く |
+| `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` / `close_dialog` に分割し、ボタンに添える線画アイコンを `icons` に置く |
 | `theme` | ライト / ダークの配色・余白・角丸 (`egui::Style`) と、カードなど共通の枠 |
 | `actions/` | 操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割 |
 | `trim_worker` / `clipboard_worker` / `load_worker` | プレビュー用・コピーと貼り付け用・画像読み込み用の常駐ワーカースレッド |
@@ -87,7 +87,8 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 
 - コアロジック (`trim` / `image_load` / `dpi` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
 - 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す。プレビュー・クリップボード・読み込みは常駐ワーカー、ファイルダイアログ・保存・一括トリミング・ドロップされたフォルダの展開・更新確認はその都度起こすスレッドで行い、結果はチャネル経由で UI スレッドへ返す。ワーカーの panic は `catch_panic` で捕捉して失敗として通知する
-- ウィンドウを閉じる要求があったフレームでウィンドウを非表示にし (`view` の `hide_window_on_close`)、保存スレッドと一括トリミングは `App` の `Drop` で完了を待ってからプロセスを終える (期限を 1 つだけ決めて全スレッドで共有するため、待つのは合計で最大 10 秒で、超えたら切り離して終了する) (一括トリミングは未着手のファイルをキャンセルする)
+- ウィンドウを閉じる要求があったフレームでウィンドウを非表示にし (`view` の `hide_window_on_close`)、保存スレッドと一括トリミングは `IoState` / `BatchState` の `Drop` で完了を待ってからプロセスを終える。一括トリミングは未着手のファイルをキャンセルする。待機の期限は最初に破棄された側が 1 つだけ決めて共有するため、待つのは合計で最大 10 秒で、超えたら切り離して終了する (`App` に `Drop` を実装すると構造体更新構文が使えなくなるため、フィールド側で待つ)
+- 一括トリミングの実行中は閉じる要求を取り消し、終了確認ダイアログ (`view` の `close_dialog`) を出す。「中止して終了」で改めて閉じる要求を送り、上記の手順で終了する
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する。ライブラリとしての使い方は `src/lib.rs` の doc コメント (`cargo doc --open`) を参照
 - 対応 OS は Windows のみ。`cfg(windows)` などの OS 分岐は置かず、Windows 専用 API を直接使う
 

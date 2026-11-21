@@ -57,6 +57,12 @@ pub const PADDING_MIN: u32 = 0;
 /// 余白ピクセル数の最大値
 pub const PADDING_MAX: u32 = 100;
 
+/// 無視するゴミの画素数の最小値
+pub const SPECK_MIN: u32 = 0;
+
+/// 無視するゴミの画素数の最大値
+pub const SPECK_MAX: u32 = 50;
+
 /// アスペクト比の幅・高さの最小値
 pub const ASPECT_PART_MIN: u32 = 1;
 

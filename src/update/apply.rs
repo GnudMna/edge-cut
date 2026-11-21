@@ -1,3 +1,8 @@
+//! 更新アセットのダウンロード・検証と MSI の適用
+//!
+//! 一時ディレクトリ配下の版ごとの作業フォルダへ MSI と署名を取得し、署名・サイズ・SHA-256 を検証してから
+//! `msiexec` を起動する。現在の版以外の作業フォルダは起動時に削除する。
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +29,13 @@ use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, bridge_download_key};
 /// # Returns
 /// * `UpdateApplyOutcome` - 適用結果
 pub(crate) fn apply_update(update: &AvailableUpdate) -> UpdateApplyOutcome {
-    apply_update_at(update, BRIDGE_BASE_URL, true, embedded_signing_keys())
+    apply_update_at(
+        update,
+        BRIDGE_BASE_URL,
+        &update_work_root(),
+        true,
+        embedded_signing_keys(),
+    )
 }
 
 /// 過去の更新で残った作業フォルダのうち、現在のバージョン以外を削除する
@@ -39,6 +50,7 @@ pub(crate) fn cleanup_stale_update_dirs() {
 /// # Arguments
 /// * `update` - 確認済みの更新アセット情報
 /// * `base_url` - bridge のベース URL (末尾スラッシュなし)
+/// * `work_root` - バージョンごとの作業フォルダを置く親ディレクトリ
 /// * `launch_msi` - `msiexec` を起動するか
 /// * `trusted_keys` - 署名検証に使う minisign 公開鍵 (Base64)
 ///
@@ -47,6 +59,7 @@ pub(crate) fn cleanup_stale_update_dirs() {
 pub(crate) fn apply_update_at(
     update: &AvailableUpdate,
     base_url: &str,
+    work_root: &Path,
     launch_msi: bool,
     trusted_keys: &[&str],
 ) -> UpdateApplyOutcome {
@@ -54,7 +67,7 @@ pub(crate) fn apply_update_at(
     if let Err(err) = validate_asset_name(&update.asset_name) {
         return err.into();
     }
-    let work_dir = match update_work_dir(&update.latest_version) {
+    let work_dir = match update_work_dir(work_root, &update.latest_version) {
         Ok(dir) => dir,
         Err(err) => return err.into(),
     };
@@ -144,8 +157,8 @@ fn update_work_root() -> PathBuf {
 }
 
 /// 更新作業用ディレクトリを用意する
-fn update_work_dir(version: &str) -> Result<PathBuf, UpdateError> {
-    let base = update_work_root().join(version);
+fn update_work_dir(root: &Path, version: &str) -> Result<PathBuf, UpdateError> {
+    let base = root.join(version);
     fs::create_dir_all(&base).map_err(|_| UpdateError::WorkDirCreate)?;
     Ok(base)
 }
@@ -278,7 +291,13 @@ mod tests {
         let update = sample_update("../edge-cut-0.1.3-x86_64.msi");
 
         // 接続できない URL でも検証で先に失敗するためネットワークへは出ない
-        let outcome = apply_update_at(&update, "http://127.0.0.1:9", false, &["unused"]);
+        let outcome = apply_update_at(
+            &update,
+            "http://127.0.0.1:9",
+            Path::new("unused-work-root"),
+            false,
+            &["unused"],
+        );
         match outcome {
             UpdateApplyOutcome::Error { message } => {
                 assert_eq!(message, UpdateError::AssetNameInvalid.to_string());

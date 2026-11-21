@@ -21,6 +21,11 @@ const DOWNLOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// 低速回線でも MSI を受信しきれる余裕を持たせつつ、無期限には待たない
 const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// HTTPS 以外への接続とリダイレクトを拒否するか
+///
+/// テストはローカルの HTTP サーバーを使うため、テストビルドでのみ無効にする
+const HTTPS_ONLY: bool = !cfg!(test);
+
 // ======================================================================
 // パブリック関数
 // ======================================================================
@@ -29,7 +34,12 @@ const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_mins(10);
 /// # Returns
 /// * `Agent` - 接続と全体にタイムアウトを設定した `Agent`
 pub(crate) fn small_request_agent() -> Agent {
+    build_small_request_agent(HTTPS_ONLY)
+}
+
+fn build_small_request_agent(https_only: bool) -> Agent {
     Agent::config_builder()
+        .https_only(https_only)
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_global(Some(SMALL_REQUEST_TIMEOUT))
         .build()
@@ -41,7 +51,12 @@ pub(crate) fn small_request_agent() -> Agent {
 /// # Returns
 /// * `Agent` - 接続・応答ヘッダー・本体受信にタイムアウトを設定した `Agent`
 pub(crate) fn download_agent() -> Agent {
+    build_download_agent(HTTPS_ONLY)
+}
+
+fn build_download_agent(https_only: bool) -> Agent {
     Agent::config_builder()
+        .https_only(https_only)
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(DOWNLOAD_RESPONSE_TIMEOUT))
         .timeout_recv_body(Some(DOWNLOAD_BODY_TIMEOUT))
@@ -80,6 +95,16 @@ mod tests {
         assert!(is_timeout_io(
             ureq::Error::Timeout(ureq::Timeout::RecvBody).into_io()
         ));
+    }
+
+    /// HTTPS 限定の `Agent` が http への接続を拒否すること
+    #[test]
+    fn https_only_agents_reject_http() {
+        let url = "http://127.0.0.1:9/";
+        let err = build_small_request_agent(true).get(url).call().unwrap_err();
+        assert!(matches!(err, ureq::Error::RequireHttpsOnly(_)));
+        let err = build_download_agent(true).get(url).call().unwrap_err();
+        assert!(matches!(err, ureq::Error::RequireHttpsOnly(_)));
     }
 
     /// OS レベルの `TimedOut` をタイムアウトと判定すること

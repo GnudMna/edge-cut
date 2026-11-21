@@ -11,7 +11,7 @@ use super::options::TrimOptions;
 use super::types::{TrimBounds, TrimInfo};
 use crate::consts::{
     ALPHA_TRANSPARENT_THRESHOLD, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH,
-    MAX_RGB_SQ_DIST, PADDING_MAX, TOL_MAX, TOL_SCALE_DENOM, TRIM_PARALLEL_MIN_PIXELS,
+    MAX_RGB_SQ_DIST, PADDING_MAX, SPECK_MAX, TOL_MAX, TOL_SCALE_DENOM, TRIM_PARALLEL_MIN_PIXELS,
     TRIM_ROW_BLOCK_PIXELS,
 };
 
@@ -20,7 +20,7 @@ use crate::consts::{
 // ======================================================================
 /// 画像を切り出さずにトリミング矩形と背景色だけを求める
 ///
-/// 四辺共通の余白で、四辺すべてを除去する。判定規則は [`trim`] と同じ
+/// 四辺共通の余白で、四辺すべてを除去する。判定規則は [`super::trim`] と同じ
 /// 辺ごとの余白・辺の指定・アスペクト比は [`detect_trim_with_options`] で指定する
 ///
 /// # Arguments
@@ -171,8 +171,67 @@ struct ContentBounds {
     right: u32,
 }
 
-/// 背景以外のピクセルが存在する最小矩形を走査する
+/// 背景以外の画素が `ignore` 個を超える行・列だけを内容とみなし、最小矩形を走査する
+///
+/// `ignore` が 0 のときは早期終了する走査で、1 画素でも内容とする
+/// 1 以上のときは行・列ごとの画素数を数える。内容とみなせる列が 1 つもない場合は `None`
 fn find_content_bounds(
+    w: u32,
+    h: u32,
+    parallel: bool,
+    ignore: u32,
+    is_bg: impl Fn(u32, u32) -> bool + Sync,
+) -> Option<ContentBounds> {
+    if ignore == 0 {
+        return find_any_content_bounds(w, h, parallel, is_bg);
+    }
+    let block_rows = usize::try_from(TRIM_ROW_BLOCK_PIXELS / u64::from(w))
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let (width, height) = (w as usize, h as usize);
+
+    // 行ごとの内容画素数と列ごとの内容画素数を 1 回の走査で数える
+    let mut rows = vec![0u32; height];
+    let count_block = |mut cols: Vec<u32>, (i, chunk): (usize, &mut [u32])| {
+        for (j, row_count) in chunk.iter_mut().enumerate() {
+            let y = u32::try_from(i * block_rows + j).unwrap_or(u32::MAX);
+            for x in 0..w {
+                if !is_bg(x, y) {
+                    *row_count += 1;
+                    cols[x as usize] += 1;
+                }
+            }
+        }
+        cols
+    };
+    let cols = if parallel {
+        rows.par_chunks_mut(block_rows)
+            .enumerate()
+            .fold(|| vec![0u32; width], count_block)
+            .reduce(
+                || vec![0u32; width],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
+                    a
+                },
+            )
+    } else {
+        rows.chunks_mut(block_rows)
+            .enumerate()
+            .fold(vec![0u32; width], count_block)
+    };
+
+    let is_content = |&count: &u32| count > ignore;
+    Some(ContentBounds {
+        top: u32::try_from(rows.iter().position(is_content)?).ok()?,
+        bottom: u32::try_from(rows.iter().rposition(is_content)?).ok()?,
+        left: u32::try_from(cols.iter().position(is_content)?).ok()?,
+        right: u32::try_from(cols.iter().rposition(is_content)?).ok()?,
+    })
+}
+
+/// 背景以外の画素が 1 つでもある行・列を内容とし、最小矩形を走査する
+fn find_any_content_bounds(
     w: u32,
     h: u32,
     parallel: bool,
@@ -294,7 +353,7 @@ fn detect_trim_with(
     let bounds = if tol >= TOL_MAX || !opts.sides.any() {
         None
     } else {
-        find_content_bounds(w, h, parallel, is_bg)
+        find_content_bounds(w, h, parallel, opts.ignore_pixels.min(SPECK_MAX), is_bg)
     };
     // 背景しかない → 画像全体を対象とする
     let rect = bounds.map_or_else(|| full_rect(w, h), |b| content_rect(&b, w, h, opts));
@@ -432,6 +491,40 @@ mod tests {
             let result = trim(&img, tol, padding, None);
             assert_eq!(bounds.info, result.info);
             assert_eq!(bounds.background, result.background);
+        }
+    }
+
+    /// 行・列あたりの画素数が閾値以下のゴミを無視して矩形を求めること
+    ///
+    /// 逐次走査と並列走査の両方で同じ結果になる
+    #[test]
+    fn detect_trim_ignores_specks_up_to_threshold() {
+        for (w, h) in [(40, 30), (3000, 2000)] {
+            let mut img = RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255]));
+            // 内容 (10x10) とは離れた位置の孤立したゴミ 1 画素
+            for y in 10..20 {
+                for x in 10..20 {
+                    img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+                }
+            }
+            img.put_pixel(2, 3, Rgba([0, 0, 0, 255]));
+            let img = DynamicImage::ImageRgba8(img);
+            let rect = |ignore_pixels| {
+                let b = detect_trim_with_options(
+                    &img,
+                    &TrimOptions {
+                        ignore_pixels,
+                        ..TrimOptions::new(0, 0, None)
+                    },
+                )
+                .info;
+                (b.offset_x, b.offset_y, b.trim_w, b.trim_h)
+            };
+            // 0 ではゴミも内容として残り、1 以上では内容だけに絞られる
+            assert_eq!(rect(0), (2, 3, 18, 17), "{w}x{h}");
+            assert_eq!(rect(1), (10, 10, 10, 10), "{w}x{h}");
+            // 内容の行・列の画素数 (10) 以上を指定すると内容も無視される
+            assert_eq!(rect(10), (0, 0, w, h), "{w}x{h}");
         }
     }
 

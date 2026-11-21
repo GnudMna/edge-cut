@@ -19,7 +19,7 @@
 //!
 //! | モジュール | 責務 |
 //! | ---------- | ---- |
-//! | [`trim`] | 背景色検出・余白の矩形検出・アスペクト比の固定・切り出し |
+//! | [`mod@trim`] | 背景色検出・余白の矩形検出・アスペクト比の固定・切り出し |
 //! | [`image_load`] | サイズ上限付きの画像読み込み (ICC プロファイル・解像度の取得、複数フレームの検出を含む) |
 //! | [`image_output`] | 出力形式の決定・画像保存 (ICC プロファイル・解像度の再埋め込み)・出力パス生成 |
 //! | [`dpi`] | 解像度 (DPI) の型と、PNG / JPEG / TIFF からの読み取り・書き込み |
@@ -61,7 +61,7 @@ pub use image_load::{
 pub use image_output::{
     OutputFormat, SaveError, SaveOptions, save_image, save_image_unique, save_image_unique_with,
     save_image_with, save_trimmed_output, save_trimmed_output_with, trimmed_file_name,
-    trimmed_output_path,
+    trimmed_file_stem, trimmed_output_path,
 };
 pub use trim::{
     AspectFit, AspectRatio, Margins, TrimBounds, TrimInfo, TrimOptions, TrimResult, TrimSides,

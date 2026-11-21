@@ -1,7 +1,9 @@
 //! 出力形式 (`OutputFormat`) の定義
 
+use std::io::BufReader;
 use std::path::Path;
 
+use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{DEFAULT_IMAGE_EXTENSION, is_supported_image_extension};
@@ -105,8 +107,10 @@ impl OutputFormat {
 
     /// 元画像をこの形式で出力するときの拡張子を返す
     ///
-    /// `Original` は元の拡張子を小文字にして維持し、拡張子がない・未対応の場合は
-    /// `DEFAULT_IMAGE_EXTENSION` とする
+    /// `Original` は元ファイルの先頭バイトから判定した形式を維持する (読み込みと同じ判定)
+    /// 拡張子が判定結果と同じ形式ならその拡張子 (小文字) を使い、食い違う場合は判定結果の
+    /// 拡張子とする。ファイルを読めない・判定できない場合は元の拡張子を小文字にして使い、
+    /// 拡張子がない・未対応の場合は `DEFAULT_IMAGE_EXTENSION` とする
     ///
     /// # Arguments
     /// * `self` - 出力形式
@@ -116,16 +120,73 @@ impl OutputFormat {
     /// * `String` - 出力ファイルの拡張子 (小文字、ドットなし)
     #[must_use]
     pub fn output_extension(self, source: &Path) -> String {
+        self.resolve_extension(source, sniff_format(source))
+    }
+
+    /// 判定済みの元画像の形式を使って出力拡張子を返す
+    ///
+    /// `output_extension` と同じ規則だが、ファイルを開かず `detected` を中身の判定結果として使う
+    /// 読み込み時に判定した形式を保存まで持ち回るときに使う
+    ///
+    /// # Arguments
+    /// * `self` - 出力形式
+    /// * `source` - 元画像のファイル名またはパス (拡張子の参照にだけ使う)
+    /// * `detected` - 読み込み時に中身から判定した形式。判定できなかった場合は `None`
+    ///
+    /// # Returns
+    /// * `String` - 出力ファイルの拡張子 (小文字、ドットなし)
+    #[must_use]
+    pub fn resolve_extension(self, source: &Path, detected: Option<Self>) -> String {
         if let Some(ext) = self.extensions().first() {
             return (*ext).into();
         }
-        source
+        let ext = source
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
-            .filter(|ext| is_supported_image_extension(ext))
-            .unwrap_or_else(|| DEFAULT_IMAGE_EXTENSION.into())
+            .filter(|ext| is_supported_image_extension(ext));
+        match (detected, ext) {
+            (Some(detected), Some(ext)) if Self::from_extension(&ext) == Some(detected) => ext,
+            (Some(detected), _) => detected.extensions()[0].into(),
+            (None, Some(ext)) => ext,
+            (None, None) => DEFAULT_IMAGE_EXTENSION.into(),
+        }
     }
+
+    /// `image` クレートの形式から出力可能な形式へ変換する
+    ///
+    /// # Arguments
+    /// * `format` - 読み込み時に判定した形式
+    ///
+    /// # Returns
+    /// * `Option<Self>` - 対応する出力形式。出力非対応の形式は `None`
+    pub(crate) fn from_image_format(format: ImageFormat) -> Option<Self> {
+        match format {
+            ImageFormat::Png => Some(Self::Png),
+            ImageFormat::Jpeg => Some(Self::Jpeg),
+            ImageFormat::WebP => Some(Self::Webp),
+            ImageFormat::Bmp => Some(Self::Bmp),
+            ImageFormat::Tiff => Some(Self::Tiff),
+            ImageFormat::Gif => Some(Self::Gif),
+            _ => None,
+        }
+    }
+}
+
+/// ファイルの先頭バイトから出力可能な形式を判定する
+///
+/// # Arguments
+/// * `source` - 画像ファイルのパス
+///
+/// # Returns
+/// * `Option<OutputFormat>` - 判定できた形式。読めない・出力非対応の形式は `None`
+fn sniff_format(source: &Path) -> Option<OutputFormat> {
+    let file = std::fs::File::open(source).ok()?;
+    let format = ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .ok()?
+        .format()?;
+    OutputFormat::from_image_format(format)
 }
 
 // ======================================================================
@@ -162,6 +223,58 @@ mod tests {
             assert!(is_supported_image_extension(&ext), "{format:?}: {ext}");
             assert_eq!(OutputFormat::from_extension(&ext), Some(format));
         }
+    }
+
+    /// `Original` は中身が PNG の `.jpg` を PNG として出力し、一致する拡張子は維持すること
+    #[test]
+    fn original_output_extension_follows_content() {
+        let dir = std::env::temp_dir().join(format!("edge_cut_sniff_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 0]));
+        let mismatched = dir.join("a.JPG");
+        img.save_with_format(&mismatched, ImageFormat::Png)
+            .expect("save png");
+        let matched = dir.join("b.png");
+        img.save_with_format(&matched, ImageFormat::Png)
+            .expect("save png");
+
+        // 中身と拡張子が食い違う場合は中身に従う
+        assert_eq!(OutputFormat::Original.output_extension(&mismatched), "png");
+        // 一致する場合は拡張子を維持する
+        assert_eq!(OutputFormat::Original.output_extension(&matched), "png");
+        // 存在しないファイルは拡張子に従う
+        assert_eq!(
+            OutputFormat::Original.output_extension(&dir.join("none.jpeg")),
+            "jpeg"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判定済みの形式を渡した場合はファイルを開かず、その形式に従うこと
+    #[test]
+    fn resolve_extension_uses_detected_format() {
+        let jpg = Path::new("missing.JPG");
+        let original = OutputFormat::Original;
+        // 食い違う場合は判定結果、一致する場合は拡張子 (小文字)
+        assert_eq!(
+            original.resolve_extension(jpg, Some(OutputFormat::Png)),
+            "png"
+        );
+        assert_eq!(
+            original.resolve_extension(jpg, Some(OutputFormat::Jpeg)),
+            "jpg"
+        );
+        // 判定できない場合は拡張子、拡張子もなければ既定
+        assert_eq!(original.resolve_extension(jpg, None), "jpg");
+        assert_eq!(
+            original.resolve_extension(Path::new("clipboard"), None),
+            DEFAULT_IMAGE_EXTENSION
+        );
+        // 形式を指定した場合は判定結果に関わらず指定に従う
+        assert_eq!(
+            OutputFormat::Webp.resolve_extension(jpg, Some(OutputFormat::Png)),
+            "webp"
+        );
     }
 
     /// 未知の保存値は `Original` として読み込むこと

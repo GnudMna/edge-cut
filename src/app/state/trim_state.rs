@@ -16,6 +16,10 @@ pub(in crate::app) struct TrimWorkerResult {
     pub request_id: u64,
     /// 検出結果。処理中に panic した場合は `Err(panic メッセージ)`
     pub outcome: Result<TrimPreview, String>,
+    /// 元画像のプレビュー画像。要求があり生成できた場合のみ `Some`
+    ///
+    /// 検出が失敗した場合でも元画像を表示できるよう、`outcome` とは独立して返す
+    pub orig_color: Option<egui::ColorImage>,
 }
 
 /// プレビュートリミングの検出結果
@@ -23,7 +27,6 @@ pub(in crate::app) struct TrimPreview {
     /// このジョブで使ったパラメータ。受信時点の UI の値とは異なりうる
     pub params: TrimParams,
     pub info: TrimInfo,
-    pub orig_color: Option<egui::ColorImage>,
     pub background: [u8; 4],
 }
 

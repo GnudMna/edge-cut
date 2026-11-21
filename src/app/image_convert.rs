@@ -37,6 +37,23 @@ pub(super) fn to_preview_color_image(img: &DynamicImage, icc_profile: Option<&[u
     rgba8_to_color_image(&rgba)
 }
 
+/// 余白の塗り色を画像本体と同じ ICC 変換でプレビュー用の sRGB へ変換する
+///
+/// # Arguments
+/// * `fill` - 変換前の RGBA 塗り色
+/// * `icc_profile` - 元画像の ICC プロファイル。`None` や変換できないプロファイルは変換しない
+///
+/// # Returns
+/// * `[u8; 4]` - プレビューで塗る RGBA 色
+pub(super) fn to_preview_fill(fill: [u8; 4], icc_profile: Option<&[u8]>) -> [u8; 4] {
+    let Some(icc) = icc_profile else {
+        return fill;
+    };
+    let mut px = RgbaImage::from_pixel(1, 1, image::Rgba(fill));
+    convert_to_srgb(&mut px, icc);
+    px.get_pixel(0, 0).0
+}
+
 /// RGBA8 画像を ICC プロファイルの色空間から sRGB へ変換する
 ///
 /// RGB と GRAY 以外のプロファイルや壊れたプロファイル、変換の失敗時は画像を変更しない
@@ -182,6 +199,17 @@ mod tests {
         let converted = to_preview_color_image(&img, Some(&icc));
         assert_ne!(converted.pixels[0], plain.pixels[0]);
         assert_eq!(converted.pixels[0].a(), plain.pixels[0].a());
+    }
+
+    /// 余白の塗り色が画像本体と同じ ICC 変換を受けること
+    #[test]
+    fn preview_fill_matches_converted_image_pixel() {
+        let icc = ColorProfile::new_display_p3().encode().unwrap();
+        let fill = [200, 100, 50, 255];
+        let body = to_preview_color_image(&solid_rgba(1, 1, fill), Some(&icc)).pixels[0];
+        assert_eq!(to_preview_fill(fill, Some(&icc)), body.to_array());
+        // プロファイルが無い場合は変換しない
+        assert_eq!(to_preview_fill(fill, None), fill);
     }
 
     /// リニアな GRAY プロファイルを指定すると sRGB へ変換され、明るくなること

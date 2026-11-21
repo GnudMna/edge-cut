@@ -312,6 +312,20 @@ fn save_image_skips_mismatched_icc_color_space() {
     );
 }
 
+/// グレー + アルファ画像を TIFF で保存すると RGBA になり、GRAY プロファイルは埋め込まれないこと
+///
+/// TIFF エンコーダが GRAY + アルファを書けないための仕様
+#[test]
+fn save_image_skips_gray_icc_for_gray_alpha_tiff() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("out.tif");
+    let img = DynamicImage::ImageLumaA8(image::ImageBuffer::from_pixel(2, 2, LumaA([10, 128])));
+    save_image(&img, Some(&fake_icc(*b"GRAY")), None, &path).expect("保存");
+    let loaded = open_image_with_icc(&path).expect("再読み込み");
+    assert_eq!(loaded.image.color(), ColorType::Rgba8);
+    assert!(loaded.icc_profile.is_none());
+}
+
 /// グレースケールのプロファイルは、JPEG 化で RGB になった画像には埋め込まないこと
 #[test]
 fn save_image_skips_gray_icc_after_rgb_conversion() {

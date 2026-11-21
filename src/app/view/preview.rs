@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use super::icons::{self, Icon};
+use crate::app::image_convert::to_preview_fill;
 use crate::app::shortcuts;
 use crate::app::state::{App, PaneView};
 use crate::app::theme;
@@ -93,7 +94,16 @@ impl App {
             let trim_dims = self.image.info.map(|info| [info.trim_w, info.trim_h]);
             let trim_uv = self.image.info.as_ref().map(trim_uv_rect);
             let trim_clip = self.image.info.zip(trim_uv).map(|(info, uv)| {
-                let [r, g, b, a] = info.fill;
+                // 画像本体と同じ ICC 変換を通した色で塗る
+                let [r, g, b, a] = match self.image.preview_fill {
+                    Some((src, converted)) if src == info.fill => converted,
+                    _ => {
+                        let converted =
+                            to_preview_fill(info.fill, self.image.icc_profile.as_deref());
+                        self.image.preview_fill = Some((info.fill, converted));
+                        converted
+                    }
+                };
                 CropView::Clip {
                     uv,
                     fill: egui::Color32::from_rgba_unmultiplied(r, g, b, a),

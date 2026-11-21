@@ -23,8 +23,9 @@ cargo test --all-targets                  # ユニット・統合テスト
 cargo test --doc                          # doctest
 cargo test <テスト名>                      # 単一テスト
 cargo deny check                          # 依存の脆弱性・ライセンス監査
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items # rustdoc のリンク切れ検出
 
-# 完了前の品質チェック一式 (fmt / clippy / deny / test / doctest)
+# 完了前の品質チェック一式 (fmt / clippy / doc / 許可リスト同期 / deny / test / doctest)
 ./scripts/windows/check.ps1
 ```
 
@@ -37,7 +38,7 @@ cargo deny check                          # 依存の脆弱性・ライセンス
 - 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す。ワーカーの panic は `catch_panic` で捕捉して失敗として通知する
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する
 - 対応 OS は Windows のみ。`cfg(windows)` などの OS 分岐は置かない
-- 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える
+- 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える (差分は `check.ps1` が検出する)
 - `build.rs` は Windows のアイコン・バージョン情報、ビルド時環境変数 `EDGE_CUT_KEY` (更新ダウンロードキー)、`keys/update-signing/*.pub` (minisign 公開鍵) を埋め込む
 - `src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える
 - リリースは `scripts/windows/release.ps1` で行う ([docs/dev/release.md](docs/dev/release.md))。指示がない限り実行しない

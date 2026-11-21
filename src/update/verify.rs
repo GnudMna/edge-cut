@@ -1,3 +1,8 @@
+//! 更新アセットの検証とダウンロード
+//!
+//! アセット名・宣言サイズ・digest を検証し、サイズ上限付きでダウンロードしながら SHA-256 を照合する。
+//! 署名の検証は `signature` が担う。
+
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;

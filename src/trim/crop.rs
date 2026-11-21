@@ -15,7 +15,7 @@ use super::types::TrimInfo;
 ///
 /// # Arguments
 /// * `img`  - 切り出し元の画像 (`info` を求めた画像)
-/// * `info` - [`detect_trim`] で求めたトリミング情報
+/// * `info` - [`super::detect_trim`] で求めたトリミング情報
 ///
 /// # Returns
 /// * `DynamicImage` - 切り出した画像

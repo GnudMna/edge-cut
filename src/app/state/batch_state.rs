@@ -5,6 +5,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+/// 一括トリミング中に閉じる要求があったときの終了確認の状態
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::app) enum CloseConfirm {
+    /// 確認していない
+    None,
+    /// 確認ダイアログを表示中
+    Asking,
+    /// 中止を承諾済み。閉じる要求を止めない
+    Confirmed,
+}
+
 /// 一括トリミングのバックグラウンド処理
 pub(in crate::app) struct BatchState {
     /// バックグラウンドスレッドからの進捗受信チャネル
@@ -21,6 +32,8 @@ pub(in crate::app) struct BatchState {
     pub errors_open: bool,
     /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
     pub skipped_inputs: usize,
+    /// 実行中にウィンドウを閉じようとした際の終了確認の状態
+    pub close_confirm: CloseConfirm,
     /// 終了時の待機期限 (`IoState` と共有する)
     pub shutdown_deadline: super::SharedDeadline,
 }
@@ -35,6 +48,7 @@ impl Default for BatchState {
             last_error_details: Vec::new(),
             errors_open: false,
             skipped_inputs: 0,
+            close_confirm: CloseConfirm::None,
             shutdown_deadline: super::SharedDeadline::default(),
         }
     }

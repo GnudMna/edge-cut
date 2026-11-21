@@ -91,15 +91,8 @@ impl App {
                 continue;
             }
 
-            let preview = match result.outcome {
-                Ok(preview) => preview,
-                Err(msg) => {
-                    self.trim_worker.in_flight = false;
-                    self.fail_trim(format!("トリミング中に内部エラーが発生: {msg}"));
-                    continue;
-                }
-            };
-            if let Some(orig) = preview.orig_color {
+            // 検出が失敗しても元画像は表示できるよう、先にテクスチャを反映する
+            if let Some(orig) = result.orig_color {
                 // 縮小表示時のちらつきを抑えるためミップマップを使う
                 // 拡大時は画素を滲ませず、トリミング境界を画素単位で確認できるようにする
                 let options = egui::TextureOptions {
@@ -110,6 +103,15 @@ impl App {
                 self.image.orig_tex = Some(ctx.load_texture("orig", orig, options));
                 self.trim_worker.refresh_orig_tex = false;
             }
+
+            let preview = match result.outcome {
+                Ok(preview) => preview,
+                Err(msg) => {
+                    self.trim_worker.in_flight = false;
+                    self.fail_trim(format!("トリミング中に内部エラーが発生: {msg}"));
+                    continue;
+                }
+            };
             self.image.info = Some(preview.info);
             self.background.bg_color = Some(preview.background);
             self.image.cache_key = Some(preview.params);
@@ -367,6 +369,7 @@ mod tests {
         tx.send(TrimWorkerResult {
             request_id: app.trim_worker.request_id,
             outcome: Err("boom".into()),
+            orig_color: None,
         })
         .unwrap();
 
@@ -379,6 +382,37 @@ mod tests {
         assert!(app.image.cache_key.is_none());
         assert!(!app.has_current_trim());
         assert!(app.status.contains("boom"), "status: {}", app.status);
+    }
+
+    /// 検出が失敗しても、同じ結果で届いた元画像テクスチャは反映すること
+    #[test]
+    fn poll_trim_work_keeps_orig_tex_when_detection_fails() {
+        let ctx = egui::Context::default();
+        let mut app = App {
+            image: ImageState {
+                original: Some(Arc::new(make_test_image())),
+                ..ImageState::default()
+            },
+            ..App::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        app.trim_worker.result_rx = rx;
+        app.trim_worker.in_flight = true;
+        app.trim_worker.refresh_orig_tex = true;
+        tx.send(TrimWorkerResult {
+            request_id: app.trim_worker.request_id,
+            outcome: Err("boom".into()),
+            orig_color: Some(egui::ColorImage::example()),
+        })
+        .unwrap();
+
+        app.poll_trim_work(&ctx);
+
+        // 元画像は表示でき、トリミング結果は未確定のまま
+        assert!(app.image.orig_tex.is_some());
+        assert!(!app.trim_worker.refresh_orig_tex);
+        assert!(app.image.info.is_none());
+        assert!(!app.trim_worker.is_busy());
     }
 
     /// ワーカーが終了して結果チャネルが切断されると、処理中を解除してワーカーを再起動すること

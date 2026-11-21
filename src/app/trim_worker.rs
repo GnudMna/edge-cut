@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use eframe::egui;
+use eframe::egui::{self, ColorImage};
 use image::DynamicImage;
 
 use super::image_convert::to_preview_color_image;
@@ -45,7 +45,7 @@ impl TrimWorkerHandle {
         let thread = thread::spawn(move || {
             while let Ok(job) = job_rx.recv() {
                 let job = take_latest(job, &job_rx);
-                let _ = result_tx.send(run_guarded(&job, run_job));
+                let _ = result_tx.send(run_guarded(&job, make_orig_color, detect_job));
                 job.ctx.request_repaint();
             }
         });
@@ -63,30 +63,46 @@ impl TrimWorkerHandle {
 
 /// ジョブを実行し、panic を失敗結果に変換する
 ///
+/// 元画像のプレビュー画像の生成と検出は別々に捕捉する
+/// (どちらかが panic しても、もう一方の結果は失わない)
+///
 /// # Arguments
 /// * `job` - 実行するジョブ
-/// * `run` - ジョブの処理本体
+/// * `make_orig` - 元画像のプレビュー画像の生成
+/// * `detect` - トリミング矩形の検出
 ///
 /// # Returns
-/// * `TrimWorkerResult` - 処理結果。panic した場合は `outcome` が `Err(panic メッセージ)`
-fn run_guarded(job: &TrimJob, run: impl FnOnce(&TrimJob) -> TrimPreview) -> TrimWorkerResult {
+/// * `TrimWorkerResult` - 処理結果。検出が panic した場合は `outcome` が `Err(panic メッセージ)`、
+///   プレビュー画像の生成が panic した場合は `orig_color` が `None`
+fn run_guarded(
+    job: &TrimJob,
+    make_orig: impl FnOnce(&TrimJob) -> ColorImage,
+    detect: impl FnOnce(&TrimJob) -> TrimPreview,
+) -> TrimWorkerResult {
     // ジョブはワーカー外と可変状態を共有しないため、panic 後も不整合にならない
+    let orig_color = if job.refresh_orig_tex {
+        catch_panic(|| make_orig(job)).ok()
+    } else {
+        None
+    };
     TrimWorkerResult {
         request_id: job.request_id,
-        outcome: catch_panic(|| run(job)),
+        outcome: catch_panic(|| detect(job)),
+        orig_color,
     }
 }
 
-/// トリミング矩形を検出し、要求があれば元画像のプレビュー画像も生成する
-fn run_job(job: &TrimJob) -> TrimPreview {
-    let orig_color = job
-        .refresh_orig_tex
-        .then(|| to_preview_color_image(job.original.as_ref(), job.icc_profile.as_deref()));
+/// 元画像のプレビュー画像を生成する
+fn make_orig_color(job: &TrimJob) -> ColorImage {
+    to_preview_color_image(job.original.as_ref(), job.icc_profile.as_deref())
+}
+
+/// トリミング矩形を検出する
+fn detect_job(job: &TrimJob) -> TrimPreview {
     let bounds = detect_trim_with_options(job.original.as_ref(), &job.options);
     TrimPreview {
         params: job.options,
         info: bounds.info,
-        orig_color,
         background: bounds.background,
     }
 }
@@ -177,14 +193,37 @@ mod tests {
         };
 
         // panic は Err に変換される
-        let result = run_guarded(&job, |_| panic!("テスト用の panic"));
+        let result = run_guarded(&job, make_orig_color, |_| panic!("テスト用の panic"));
         assert_eq!(result.request_id, 7);
         assert_eq!(result.outcome.err().as_deref(), Some("テスト用の panic"));
 
         // 正常時は検出結果を返す
-        let result = run_guarded(&job, run_job);
+        let result = run_guarded(&job, make_orig_color, detect_job);
         assert_eq!(result.request_id, 7);
         assert!(result.outcome.is_ok());
+        assert!(result.orig_color.is_none());
+    }
+
+    /// 検出が panic しても、要求された元画像のプレビュー画像は返ること
+    #[test]
+    fn run_guarded_keeps_orig_color_when_detection_panics() {
+        let job = TrimJob {
+            request_id: 8,
+            original: solid_image(),
+            icc_profile: None,
+            options: TrimOptions::default(),
+            refresh_orig_tex: true,
+            ctx: egui::Context::default(),
+        };
+
+        let result = run_guarded(&job, make_orig_color, |_| panic!("テスト用の panic"));
+        assert!(result.outcome.is_err());
+        assert!(result.orig_color.is_some());
+
+        // 逆にプレビュー画像の生成が panic しても検出結果は返る
+        let result = run_guarded(&job, |_| panic!("テスト用の panic"), detect_job);
+        assert!(result.outcome.is_ok());
+        assert!(result.orig_color.is_none());
     }
 
     /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれること

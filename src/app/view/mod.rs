@@ -3,6 +3,7 @@
 //! パネルの組み立てを持ち、各部品の描画をサブモジュールへ分ける
 
 mod batch_errors;
+mod close_dialog;
 mod icons;
 mod input;
 mod preview;
@@ -12,7 +13,7 @@ mod update_dialog;
 
 use eframe::egui;
 
-use super::state::App;
+use super::state::{App, CloseConfirm};
 use super::theme;
 
 // ======================================================================
@@ -25,7 +26,11 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        hide_window_on_close(&ctx);
+        let needs_confirm =
+            self.batch.running && self.batch.close_confirm != CloseConfirm::Confirmed;
+        if hide_window_on_close(&ctx, needs_confirm) {
+            self.batch.close_confirm = CloseConfirm::Asking;
+        }
         self.poll_batch_result();
         self.poll_io(&ctx);
         self.poll_trim_work(&ctx);
@@ -42,6 +47,7 @@ impl eframe::App for App {
         self.render_central_panel(ui);
         self.render_batch_error_window(&ctx);
         self.render_update_dialog(&ctx);
+        self.render_close_confirm_dialog(&ctx);
     }
 }
 
@@ -156,13 +162,24 @@ fn panel_frame(ui: &egui::Ui, x: i8, y: i8) -> egui::Frame {
 ///
 /// 終了時は `IoState` / `BatchState` の drop が実行中の保存の完了を待つ
 /// その間イベントループが止まりウィンドウが応答なしに見えるため、待つ前に画面から消す
+/// 確認が必要なときは閉じる要求を取り消し、非表示にしない
 ///
 /// # Arguments
 /// * `ctx` - egui のコンテキスト
-fn hide_window_on_close(ctx: &egui::Context) {
-    if ctx.input(|i| i.viewport().close_requested()) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+/// * `needs_confirm` - 終了前に確認が必要か (一括トリミングの実行中)
+///
+/// # Returns
+/// * `bool` - 閉じる要求を取り消して確認を求める場合は `true`
+fn hide_window_on_close(ctx: &egui::Context, needs_confirm: bool) -> bool {
+    if !ctx.input(|i| i.viewport().close_requested()) {
+        return false;
     }
+    if needs_confirm {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        return true;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    false
 }
 
 /// アプリのテーマを egui とネイティブウィンドウ (タイトルバー) へ反映する
@@ -201,8 +218,11 @@ fn apply_title_bar_color(ctx: &egui::Context, frame: &eframe::Frame, dark_mode: 
 mod tests {
     use super::*;
 
-    /// 1 フレーム実行し、ウィンドウを非表示にするコマンドが送られたかを返す
-    fn hidden_after_frame(close_requested: bool) -> bool {
+    /// 1 フレーム実行し、送られたビューポートコマンドを返す
+    fn commands_after_frame(
+        close_requested: bool,
+        needs_confirm: bool,
+    ) -> (Vec<egui::ViewportCommand>, bool) {
         let ctx = egui::Context::default();
         let mut input = egui::RawInput::default();
         if close_requested {
@@ -210,24 +230,55 @@ mod tests {
             info.events.push(egui::ViewportEvent::Close);
             input.viewports.insert(egui::ViewportId::ROOT, info);
         }
-        let mut output = ctx.run_ui(input, |ui| hide_window_on_close(ui.ctx()));
+        let mut intercepted = false;
+        let mut output = ctx.run_ui(input, |ui| {
+            intercepted = hide_window_on_close(ui.ctx(), needs_confirm);
+        });
         // 描画しないため、未適用のテクスチャ差分は破棄する
         output.textures_delta.clear();
-        output.viewport_output[&egui::ViewportId::ROOT]
+        let commands = output.viewport_output[&egui::ViewportId::ROOT]
             .commands
-            .iter()
-            .any(|c| matches!(c, egui::ViewportCommand::Visible(false)))
+            .clone();
+        (commands, intercepted)
     }
 
     /// 閉じる要求があったフレームでウィンドウを非表示にすること
     #[test]
     fn hide_window_on_close_hides_when_close_requested() {
-        assert!(hidden_after_frame(true));
+        let (commands, intercepted) = commands_after_frame(true, false);
+        assert!(!intercepted);
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Visible(false)))
+        );
     }
 
     /// 閉じる要求がないフレームではウィンドウを非表示にしないこと
     #[test]
     fn hide_window_on_close_does_nothing_without_request() {
-        assert!(!hidden_after_frame(false));
+        let (commands, intercepted) = commands_after_frame(false, true);
+        assert!(!intercepted);
+        assert!(!commands.iter().any(|c| matches!(
+            c,
+            egui::ViewportCommand::Visible(_) | egui::ViewportCommand::CancelClose
+        )));
+    }
+
+    /// 確認が必要なときは閉じる要求を取り消し、非表示にしないこと
+    #[test]
+    fn hide_window_on_close_cancels_when_confirmation_needed() {
+        let (commands, intercepted) = commands_after_frame(true, true);
+        assert!(intercepted);
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Visible(false)))
+        );
     }
 }

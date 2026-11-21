@@ -8,6 +8,7 @@ use image::DynamicImage;
 
 use super::trim_state::TrimParams;
 use crate::dpi::Dpi;
+use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
 
 // ======================================================================
@@ -31,12 +32,18 @@ pub(in crate::app) struct ImageState {
     ///
     /// 出力ファイル名と、出力形式が `Original` のときの形式の決定に使う
     pub source_name: Option<PathBuf>,
+    /// 読み込み時にファイルの中身から判定した元画像の形式
+    ///
+    /// 出力形式が `Original` のときの形式の決定に使う。クリップボード由来・判定不能は `None`
+    pub source_format: Option<OutputFormat>,
     /// 元画像の ICC プロファイル。保存時に埋め込む。保存スレッドへ複製なしで渡すため `Arc` で保持する
     pub icc_profile: Option<Arc<[u8]>>,
     /// 元画像の解像度。保存時に書き込む
     pub dpi: Option<Dpi>,
     /// 元画像の GPU テクスチャ。トリミング後のプレビューも UV で切り出して共用する
     pub orig_tex: Option<egui::TextureHandle>,
+    /// 余白の塗り色の ICC 変換結果 (変換前の色, 変換後の色)。描画のたびにプロファイルを解析しないための保持
+    pub preview_fill: Option<([u8; 4], [u8; 4])>,
     /// プレビューのズームとパン。`[0]` が元画像、`[1]` がトリミング後のペイン
     pub views: [PaneView; 2],
     /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
@@ -49,6 +56,7 @@ impl ImageState {
     /// 新しい画像読み込み前にプレビュー関連の状態をリセットする
     pub(in crate::app) fn prepare_for_load(&mut self) {
         self.orig_tex = None;
+        self.preview_fill = None;
         self.views = [PaneView::default(); 2];
         self.info = None;
         self.cache_key = None;

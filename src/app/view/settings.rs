@@ -7,7 +7,7 @@ use crate::app::state::App;
 use crate::app::theme;
 use crate::consts::{
     ASPECT_PART_MAX, ASPECT_PART_MIN, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN,
-    TOL_MAX, TOL_MIN, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
+    SPECK_MAX, SPECK_MIN, TOL_MAX, TOL_MIN, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
 use crate::image_output::OutputFormat;
 use crate::trim::{AspectFit, Margins};
@@ -71,7 +71,7 @@ impl App {
         set_panel_open(ctx, open);
     }
 
-    /// 許容度・除去する辺・余白・アスペクト比
+    /// 許容度・ノイズ除外・除去する辺・余白・アスペクト比
     fn render_trim_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // 値が変わったときの再実行要求。`Some(true)` はドラッグ中などでデバウンスする
         let mut request = None;
@@ -85,6 +85,19 @@ impl App {
             (TOL_MIN, TOL_MAX),
             "",
             "背景色との類似度。値が大きいほど広い範囲を余白とみなす",
+        )
+        .or(request);
+
+        ui.add_space(6.0);
+        ui.label("ノイズ除外");
+        fit_slider_width(ui);
+        request = trim_slider(
+            ui,
+            ctx,
+            &mut self.prefs.ignore_pixels,
+            (SPECK_MIN, SPECK_MAX),
+            " px",
+            "行・列あたりこの画素数以下の小さなゴミ (スキャンの埃や JPEG ノイズ) を内容とみなさない。0 のとき 1 画素でも内容とする",
         )
         .or(request);
 

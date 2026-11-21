@@ -41,6 +41,9 @@ pub(super) enum ClipboardJob {
         request_id: u64,
         ctx: egui::Context,
     },
+    /// 実クリップボードに触れず、`IoMsg::Copied` の成功を返すだけのジョブ
+    #[cfg(test)]
+    Probe { ctx: egui::Context },
 }
 
 // ======================================================================
@@ -93,6 +96,11 @@ impl ClipboardWorkerHandle {
                             },
                         };
                         let _ = result_tx.send(msg);
+                        ctx.request_repaint();
+                    }
+                    #[cfg(test)]
+                    ClipboardJob::Probe { ctx } => {
+                        let _ = result_tx.send(IoMsg::Copied { result: Ok(()) });
                         ctx.request_repaint();
                     }
                 }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use crate::app::save_dir::default_auto_save_dir;
 use crate::consts::{
     ASPECT_PART_MAX, ASPECT_PART_MIN, JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN,
-    PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN, WEBP_QUALITY_DEFAULT, WEBP_QUALITY_MAX,
-    WEBP_QUALITY_MIN,
+    PADDING_MAX, PADDING_MIN, SPECK_MAX, SPECK_MIN, TOL_MAX, TOL_MIN, WEBP_QUALITY_DEFAULT,
+    WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
 use crate::image_output::OutputFormat;
 use crate::trim::{AspectFit, AspectRatio, Margins, TrimOptions, TrimSides};
@@ -33,6 +33,8 @@ pub(in crate::app) const SETTINGS_KEY: &str = "settings";
 pub(in crate::app) struct Settings {
     /// 余白検出の許容度 (0–100)
     pub tolerance: u32,
+    /// 無視するゴミの画素数 (行・列あたり)。0 のとき 1 画素でも内容とする
+    pub ignore_pixels: u32,
     /// トリミング後に残す余白ピクセル数。`link_margins` が有効なときの四辺共通の値
     ///
     /// 辺ごとの余白を導入する前から保存している設定をそのまま読めるよう、名前と意味を維持する
@@ -77,6 +79,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             tolerance: 0,
+            ignore_pixels: 0,
             padding: 0,
             link_margins: true,
             margins: Margins::default(),
@@ -117,6 +120,7 @@ impl Settings {
                 fit: self.aspect_fit,
             }),
             bg_override: self.bg_override,
+            ignore_pixels: self.ignore_pixels,
         }
     }
 
@@ -126,6 +130,7 @@ impl Settings {
     /// 読み込み時にクランプして安全に復元する
     pub(super) fn normalize(mut self) -> Self {
         self.tolerance = self.tolerance.clamp(TOL_MIN, TOL_MAX);
+        self.ignore_pixels = self.ignore_pixels.clamp(SPECK_MIN, SPECK_MAX);
         self.padding = self.padding.clamp(PADDING_MIN, PADDING_MAX);
         for side in [
             &mut self.margins.top,
@@ -275,6 +280,15 @@ mod tests {
         assert_eq!(s.sides, TrimSides::ALL);
         assert!(!s.aspect_enabled);
         assert_eq!(s.trim_options().margins, Margins::uniform(12));
+    }
+
+    /// 未知のアスペクト比の合わせ方を含んでも他の項目を読み込めること
+    #[test]
+    fn settings_deserialize_unknown_aspect_fit_keeps_other_fields() {
+        let json = r#"{"tolerance":5,"aspect_fit":"Unknown"}"#;
+        let s: Settings = serde_json::from_str(json).expect("未知の値を許容する");
+        assert_eq!(s.tolerance, 5);
+        assert_eq!(s.aspect_fit, AspectFit::Expand);
     }
 
     /// 空の自動保存先がデフォルトパスへ置き換わること

@@ -99,6 +99,8 @@ mod tests {
     }
 
     /// クリップボードのワーカーが終了していた場合、起動し直して再送すること
+    ///
+    /// 実クリップボードに依存しないよう、固定結果を返す `Probe` ジョブを使う
     #[test]
     fn submit_clipboard_job_restarts_terminated_worker() {
         let ctx = egui::Context::default();
@@ -108,14 +110,12 @@ mod tests {
             ..App::default()
         };
 
-        app.submit_clipboard_job(ClipboardJob::Paste {
-            request_id: app.io.load_request_id,
-            ctx: ctx.clone(),
-        });
+        app.submit_clipboard_job(ClipboardJob::Probe { ctx: ctx.clone() });
 
         // 失敗扱いにならず、起動し直したワーカーが結果を返す
         assert_ne!(app.status, "クリップボード処理が異常終了しました");
         let done = poll_io_until(&mut app, &ctx, |a| a.status != "初期");
         assert!(done, "再送されたジョブの結果を期待したが: {}", app.status);
+        assert_eq!(app.status, "クリップボードへコピーしました");
     }
 }

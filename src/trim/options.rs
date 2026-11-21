@@ -1,6 +1,6 @@
 //! トリミングの設定
 //!
-//! 許容度・辺ごとの余白・トリミングする辺・アスペクト比・背景色の指定をまとめる。
+//! 許容度・ノイズ除外・辺ごとの余白・トリミングする辺・アスペクト比・背景色の指定をまとめる。
 
 use serde::{Deserialize, Serialize};
 
@@ -94,11 +94,14 @@ impl Default for TrimSides {
 /// アスペクト比を合わせる方法
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum AspectFit {
-    /// 短い方の辺を背景色で塗って足し、内容を削らずに比率を合わせる
-    #[default]
-    Expand,
     /// 長い方の辺を削り、比率を合わせる。内容が欠ける場合がある
     Crop,
+    /// 短い方の辺を背景色で塗って足し、内容を削らずに比率を合わせる
+    ///
+    /// 未知の値を読み込んだ場合もこの値とする
+    #[default]
+    #[serde(other)]
+    Expand,
 }
 
 impl AspectFit {
@@ -150,6 +153,12 @@ pub struct TrimOptions {
     pub aspect: Option<AspectRatio>,
     /// 手動指定の背景色。`None` のとき四辺から自動検出する
     pub bg_override: Option<[u8; 4]>,
+    /// 無視するゴミの画素数 (行・列あたり)
+    ///
+    /// 背景以外の画素がこの数以下の行・列は内容とみなさない。0 のとき 1 画素でも内容とする
+    /// スキャンの埃や JPEG ノイズのような孤立した小さなゴミで、余白が残るのを防ぐ
+    /// 検出時に `consts::SPECK_MAX` を超える値は `SPECK_MAX` として扱う
+    pub ignore_pixels: u32,
 }
 
 impl TrimOptions {
@@ -170,6 +179,7 @@ impl TrimOptions {
             sides: TrimSides::ALL,
             aspect: None,
             bg_override,
+            ignore_pixels: 0,
         }
     }
 }

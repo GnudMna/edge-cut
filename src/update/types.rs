@@ -1,3 +1,8 @@
+//! 更新確認・適用で扱う型
+//!
+//! gh-release-bridge の version API のレスポンス、確認済みの更新 (`AvailableUpdate`)、
+//! 確認と適用の結果 (`UpdateCheckOutcome` / `UpdateApplyOutcome`) を定義する。
+
 use serde::Deserialize;
 
 use super::error::UpdateError;

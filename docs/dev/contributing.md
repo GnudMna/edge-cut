@@ -29,7 +29,9 @@ Claude Code 向けには、品質チェック (`/check`) と CHANGELOG 追記 (`
 | :--- | :--- | :--- |
 | `README.md` | 初めて使う人 | 概要・主な機能・動作要件とインストール・クイックスタート・ドキュメント索引 |
 | `docs/user/introduction.md` | 利用者 | 同梱ドキュメントの表紙 (概要・はじめて使う手順・ページ一覧) |
-| `docs/user/usage.md` | 利用者 | 操作方法 (背景色・自動保存・一括トリミング・出力形式・ショートカット・更新) |
+| `docs/user/usage.md` | 利用者 | 基本操作 (画面構成・基本的な流れ・プレビュー・メニュー・ショートカット・更新) |
+| `docs/user/adjust.md` | 利用者 | 仕上がりの調整 (トリミングの細かい設定・背景色) |
+| `docs/user/output.md` | 利用者 | 保存と一括処理 (出力形式・出力ファイル名・自動保存・一括トリミング) |
 | `docs/user/how-it-works.md` | 利用者 | 背景色の検出・余白の判定・トリミングの仕組み |
 | `docs/user/formats.md` | 利用者 | 対応形式・保存時の変換・ICC / EXIF の扱い・読み込み上限 |
 | `docs/user/troubleshooting.md` | 利用者 | 症状別の確認事項 |

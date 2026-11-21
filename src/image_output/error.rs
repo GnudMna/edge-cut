@@ -6,6 +6,8 @@ use std::io;
 
 use image::ImageError;
 
+use crate::image_load::image_error_message;
+
 // ======================================================================
 // エラー型
 // ======================================================================
@@ -33,7 +35,7 @@ impl From<io::Error> for SaveError {
 impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Encode(e) => write!(f, "保存エラー: {e}"),
+            Self::Encode(e) => write!(f, "保存エラー: {}", image_error_message(e)),
             Self::Io(e) => write!(f, "保存エラー: {e}"),
         }
     }

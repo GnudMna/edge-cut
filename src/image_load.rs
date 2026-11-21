@@ -8,6 +8,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use gif::{DecodeOptions, MemoryLimit};
+use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::error::LimitErrorKind;
 use image::metadata::Orientation;
@@ -18,6 +19,7 @@ use crate::consts::{
     MAX_IMAGE_WIDTH,
 };
 use crate::dpi::{Dpi, read_dpi};
+use crate::image_output::OutputFormat;
 
 /// デコーダ内部の作業領域として、画像バッファとは別に確保を許す量
 const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
@@ -38,10 +40,14 @@ pub struct LoadedImage {
     pub icc_profile: Option<Vec<u8>>,
     /// 埋め込まれていた解像度 (表示上の向きに合わせた値)。PNG / JPEG / TIFF 以外、記録が無い、または長さの単位でない場合は `None`
     pub dpi: Option<Dpi>,
-    /// 先頭フレーム以外にも画像を含むファイルか (アニメーション GIF / WebP、複数ページ TIFF)
+    /// 先頭フレーム以外にも画像を含むファイルか (アニメーション GIF / WebP / APNG、複数ページ TIFF)
     ///
     /// 読み込むのは先頭の 1 フレームだけで、残りは無視される。判定に失敗した場合は `false`
     pub has_extra_frames: bool,
+    /// 読み込み時にファイルの中身から判定した形式。出力非対応の形式・判定できない場合は `None`
+    ///
+    /// 出力形式が `Original` のときの保存形式の決定に使い、保存時にファイルを開き直さずに済ませる
+    pub source_format: Option<OutputFormat>,
 }
 
 // ======================================================================
@@ -138,8 +144,31 @@ impl fmt::Display for LoadError {
                     limit_mp = format_megapixels(MAX_IMAGE_PIXELS),
                 ),
             },
-            Self::Decode(e) => write!(f, "読み込みエラー: {e}"),
+            Self::Decode(e) => write!(f, "読み込みエラー: {}", image_error_message(e)),
         }
+    }
+}
+
+/// `image` クレートのエラーを利用者向けの日本語メッセージへ変換する
+///
+/// 元のエラー文は英語のため表示に使わない。詳細は `source()` から辿れる
+///
+/// # Arguments
+/// * `error` - 変換する `image` クレートのエラー
+///
+/// # Returns
+/// * `String` - 日本語のエラー概要
+pub(crate) fn image_error_message(error: &ImageError) -> String {
+    match error {
+        ImageError::Decoding(_) => {
+            "画像データを解析できません (ファイルが破損しているか、対応していない形式の可能性があります)"
+                .to_owned()
+        }
+        ImageError::Encoding(_) => "画像のエンコードに失敗しました".to_owned(),
+        ImageError::Parameter(_) => "画像の処理パラメータが不正です".to_owned(),
+        ImageError::Limits(_) => "画像が大きすぎて処理できません".to_owned(),
+        ImageError::Unsupported(_) => "対応していない画像形式または機能です".to_owned(),
+        ImageError::IoError(e) => e.to_string(),
     }
 }
 
@@ -260,6 +289,7 @@ pub(crate) fn open_image_with_icc_reserving<G>(
         icc_profile,
         dpi,
         has_extra_frames,
+        source_format: format.and_then(OutputFormat::from_image_format),
     };
     Ok((loaded, reserved))
 }
@@ -278,7 +308,7 @@ pub(crate) fn open_image_with_icc_reserving<G>(
 fn detect_extra_frames(file: &mut fs::File, format: ImageFormat) -> bool {
     if !matches!(
         format,
-        ImageFormat::Gif | ImageFormat::WebP | ImageFormat::Tiff
+        ImageFormat::Gif | ImageFormat::WebP | ImageFormat::Tiff | ImageFormat::Png
     ) || file.seek(SeekFrom::Start(0)).is_err()
     {
         return false;
@@ -287,6 +317,12 @@ fn detect_extra_frames(file: &mut fs::File, format: ImageFormat) -> bool {
     match format {
         ImageFormat::Gif => gif_has_extra_frames(reader),
         ImageFormat::WebP => WebPDecoder::new(reader).is_ok_and(|decoder| decoder.has_animation()),
+        // APNG はヘッダの acTL チャンクの有無で判定する
+        // `PngDecoder::new` は上限なしで iCCP を展開するため、読み込みと同じ上限を渡す
+        ImageFormat::Png => {
+            PngDecoder::with_limits(reader, construction_limits(Some(ImageFormat::Png)))
+                .is_ok_and(|decoder| decoder.is_apng().unwrap_or(false))
+        }
         _ => tiff::decoder::Decoder::new(reader).is_ok_and(|decoder| decoder.more_images()),
     }
 }
@@ -780,6 +816,44 @@ mod tests {
         }
     }
 
+    /// 静止画 PNG の IHDR 直後へ acTL チャンクを挿入して APNG とする
+    fn write_apng(path: &Path) {
+        write_test_png(path, 4, 4);
+        let mut bytes = fs::read(path).expect("read png");
+        let mut chunk = Vec::from(*b"acTL");
+        chunk.extend_from_slice(&2u32.to_be_bytes());
+        chunk.extend_from_slice(&0u32.to_be_bytes());
+        // CRC-32 (チャンク種別とデータが対象)
+        let mut crc = u32::MAX;
+        for byte in &chunk {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        // シグネチャ + IHDR (長さ・種別・データ・CRC) の直後
+        let out = 8 + 8 + 13 + 4;
+        let mut insert = 8u32.to_be_bytes().to_vec();
+        insert.extend_from_slice(&chunk);
+        insert.extend_from_slice(&(!crc).to_be_bytes());
+        bytes.splice(out..out, insert);
+        fs::write(path, bytes).expect("write apng");
+    }
+
+    /// APNG は追加フレームありと判定すること
+    #[test]
+    fn open_image_flags_extra_frames_for_apng() {
+        let dir = tempfile::tempdir().unwrap();
+        let apng = dir.path().join("anim.png");
+        write_apng(&apng);
+
+        assert!(open_image_with_icc(&apng).unwrap().has_extra_frames);
+    }
+
     /// アニメーション GIF と複数ページ TIFF は追加フレームありと判定すること
     #[test]
     fn open_image_flags_extra_frames_for_animated_gif_and_multipage_tiff() {
@@ -864,6 +938,20 @@ mod tests {
         )))
         .to_string();
         assert!(dimension.contains("16384"));
+    }
+
+    /// デコードエラーの表示が日本語になり、英語の元エラー文を含まないこと
+    #[test]
+    fn display_decode_error_is_japanese() {
+        use image::error::{ParameterError, ParameterErrorKind};
+
+        let err = LoadError::Decode(ImageError::Parameter(ParameterError::from_kind(
+            ParameterErrorKind::DimensionMismatch,
+        )));
+        let msg = err.to_string();
+        assert!(msg.starts_with("読み込みエラー: "));
+        assert!(msg.contains("パラメータ"));
+        assert!(!msg.contains("dimension"));
     }
 
     /// `FileTooLarge` の表示文字列に上限情報が含まれること

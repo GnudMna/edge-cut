@@ -635,6 +635,7 @@ fn detect_matches_trim_for_combined_options() {
             fit: AspectFit::Expand,
         }),
         bg_override: None,
+        ignore_pixels: 2,
     };
     let bounds = detect_trim_with_options(&img, &opts);
     let result = trim_with_options(&img, &opts);

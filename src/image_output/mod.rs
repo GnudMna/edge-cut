@@ -14,7 +14,7 @@ mod webp_lossy;
 
 pub use self::error::SaveError;
 pub use self::format::OutputFormat;
-pub use self::path::{trimmed_file_name, trimmed_output_path};
+pub use self::path::{trimmed_file_name, trimmed_file_stem, trimmed_output_path};
 pub use self::save::{
     SaveOptions, save_image, save_image_unique, save_image_unique_with, save_image_with,
     save_trimmed_output, save_trimmed_output_with,

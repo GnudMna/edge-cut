@@ -43,8 +43,17 @@ pub fn trimmed_output_path(source: &Path, out_dir: &Path, format: OutputFormat) 
     out_dir.join(trimmed_file_name(source, format))
 }
 
-/// 出力ファイル名の拡張子を除く部分 (`{元ファイル名}_trimmed`)。元の名前の欠落時は `image`
-pub(super) fn trimmed_file_stem(source: &Path) -> String {
+/// 出力ファイル名の拡張子を除く部分を返す
+///
+/// 元の名前が欠落している場合は `image` を使う
+///
+/// # Arguments
+/// * `source` - 元画像ファイルのパス
+///
+/// # Returns
+/// * `String` - `{元ファイル名}_trimmed`
+#[must_use]
+pub fn trimmed_file_stem(source: &Path) -> String {
     let stem = source
         .file_stem()
         .map_or_else(|| "image".into(), |s| s.to_string_lossy().into_owned());

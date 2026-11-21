@@ -179,6 +179,12 @@ fn read_jpeg(reader: &mut (impl Read + Seek)) -> Option<Dpi> {
         if reader.read_exact(&mut marker).is_err() || marker[0] != 0xFF {
             break;
         }
+        // マーカー前の 0xFF 埋めバイトは読み飛ばす
+        while marker[1] == 0xFF {
+            if reader.read_exact(&mut marker[1..]).is_err() {
+                return exif;
+            }
+        }
         match marker[1] {
             // SOS (画像データ) と EOI
             0xDA | 0xD9 => break,
@@ -537,6 +543,22 @@ mod tests {
         let mut encoder = JpegEncoder::new(&mut jpeg);
         encoder.set_pixel_density(Dpi::new(72.0, 96.0).unwrap().to_jpeg_density());
         img.write_with_encoder(encoder).unwrap();
+        let dpi = read_dpi(&mut Cursor::new(&jpeg), ImageFormat::Jpeg).unwrap();
+        assert_eq!(dpi, Dpi::new(72.0, 96.0).unwrap());
+    }
+
+    /// マーカー前に 0xFF の埋めバイトがあっても JFIF 密度を読めること
+    #[test]
+    fn jpeg_density_survives_fill_bytes() {
+        use image::codecs::jpeg::JpegEncoder;
+
+        let img = image::DynamicImage::new_rgb8(8, 8);
+        let mut jpeg = Vec::new();
+        let mut encoder = JpegEncoder::new(&mut jpeg);
+        encoder.set_pixel_density(Dpi::new(72.0, 96.0).unwrap().to_jpeg_density());
+        img.write_with_encoder(encoder).unwrap();
+        // SOI と APP0 の間に埋めバイトを挿入する
+        jpeg.splice(2..2, [0xFF, 0xFF]);
         let dpi = read_dpi(&mut Cursor::new(&jpeg), ImageFormat::Jpeg).unwrap();
         assert_eq!(dpi, Dpi::new(72.0, 96.0).unwrap());
     }

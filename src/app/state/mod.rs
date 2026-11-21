@@ -19,7 +19,7 @@ use super::clipboard_worker::ClipboardWorkerHandle;
 use super::load_worker::LoadWorkerHandle;
 use super::shortcuts::ShortcutTracker;
 
-pub(super) use self::batch_state::BatchState;
+pub(super) use self::batch_state::{BatchState, CloseConfirm};
 pub(super) use self::image_state::{BackgroundState, ImageState, PaneView};
 pub(super) use self::io_state::{
     AutoSaveKey, DialogResult, IoMsg, IoState, SaveKind, SaveRequest, ScannedDrop,

@@ -35,7 +35,9 @@ impl App {
         };
         let source = self.image.source_name.clone().unwrap_or_default();
         let format = self.prefs.output_format;
-        let ext = format.output_extension(&source);
+        // 形式は読み込み時に判定済みのものを使い、UI スレッドでファイルを開かない
+        let ext = format.resolve_extension(&source, self.image.source_format);
+        let file_name = format!("{}.{ext}", image_output::trimmed_file_stem(&source));
         let request = SaveRequest {
             original,
             info,
@@ -43,7 +45,6 @@ impl App {
             dpi: self.image.dpi,
             ext,
         };
-        let file_name = image_output::trimmed_file_name(&source, format);
         self.spawn_dialog(ctx, move |dialog| {
             let mut dialog = dialog.set_file_name(file_name);
             for f in save_dialog_formats(OutputFormat::from_extension(&request.ext)) {
@@ -128,17 +129,20 @@ impl App {
         let icc_profile = self.image.icc_profile.clone();
         let dpi = self.image.dpi;
         let source = self.image.source_name.clone().unwrap_or_default();
+        let stem = image_output::trimmed_file_stem(&source);
+        // 形式は読み込み時に判定済みのものを使い、保存時にファイルを開き直さない
+        let ext = format.resolve_extension(&source, self.image.source_format);
         let options = self.save_options();
         self.spawn_save(ctx, SaveKind::Auto, move || {
             fs::create_dir_all(&dir).map_err(|e| format!("自動保存フォルダの作成に失敗: {e}"))?;
             let img = apply_trim(&original, &info);
-            let (path, _) = image_output::save_trimmed_output_with(
+            let (path, _) = image_output::save_image_unique_with(
                 &img,
                 icc_profile.as_deref(),
                 dpi,
-                &source,
                 &dir,
-                format,
+                &stem,
+                &ext,
                 options,
             )
             .map_err(|e| {
@@ -414,6 +418,33 @@ mod tests {
         app.auto_save_if_enabled(&ctx);
         let webp = tmp.path().join("photo_trimmed.webp");
         assert!(poll_io_until(&mut app, &ctx, |_| webp.is_file()));
+    }
+
+    /// 自動保存が `Original` で、読み込み時に判定した形式が拡張子と食い違う場合は判定した形式で保存すること
+    ///
+    /// `source_name` はファイル名だけで、カレントディレクトリに実ファイルは存在しない
+    #[test]
+    fn auto_save_original_uses_detected_source_format() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: ImageState {
+                source_name: Some("photo.jpg".into()),
+                source_format: Some(OutputFormat::Png),
+                ..trimmed_image_state()
+            },
+            ..App::default()
+        };
+
+        app.auto_save_if_enabled(&ctx);
+        let saved = tmp.path().join("photo_trimmed.png");
+        assert!(poll_io_until(&mut app, &ctx, |_| saved.is_file()));
+        assert!(!tmp.path().join("photo_trimmed.jpg").exists());
     }
 
     /// `auto_save_if_enabled()` がディレクトリ作成に失敗した場合にエラーステータスを設定すること

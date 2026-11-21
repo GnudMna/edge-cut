@@ -1,6 +1,6 @@
 # ========================================================================
 # Script Name : check.ps1
-# Description : Windows用の品質チェックスクリプト(fmt / clippy / deny / test)
+# Description : Windows用の品質チェックスクリプト(fmt / clippy / doc / 許可リスト同期 / deny / test / doctest)
 # Usage       : ./check.ps1
 # Requires    : PowerShell 7.0+
 # ========================================================================
@@ -36,6 +36,26 @@ Invoke-ScriptMain {
     if ($LASTEXITCODE -ne 0) {
         throw "エラー: cargo clippy が終了コード $LASTEXITCODE で失敗しました"
     }
+    Write-Host ''
+
+    # ドキュメントを生成 (リンク切れなどの rustdoc 警告はエラー扱い)
+    Write-Host 'ドキュメントを検証中...'
+    $previousRustDocFlags = $env:RUSTDOCFLAGS
+    $env:RUSTDOCFLAGS = '-D warnings'
+    try {
+        cargo doc --no-deps --document-private-items
+        if ($LASTEXITCODE -ne 0) {
+            throw "エラー: cargo doc が終了コード $LASTEXITCODE で失敗しました"
+        }
+    }
+    finally {
+        $env:RUSTDOCFLAGS = $previousRustDocFlags
+    }
+    Write-Host ''
+
+    # deny.toml と about.toml の許可リストの一致を検証
+    Write-Host '許可ライセンスの同期を検証中...'
+    . (Join-Path $PSScriptRoot '..\common\license-allowlist-check.ps1')
     Write-Host ''
 
     # サプライチェーン監査を実行

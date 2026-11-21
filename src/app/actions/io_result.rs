@@ -45,8 +45,11 @@ impl App {
         self.status = status;
         self.image.original = Some(Arc::new(img));
         self.image.icc_profile = icc_profile.map(Arc::from);
+        self.image.preview_fill = None;
         self.image.dpi = dpi;
         self.image.source_name = Some(source_name);
+        // ファイルから読み込んだ場合は呼び出し側が判定済みの形式を設定する
+        self.image.source_format = None;
         self.background.reset_to_override(self.prefs.bg_override);
         self.schedule_trim(ctx, false, true, true);
     }
@@ -84,6 +87,7 @@ impl App {
                                 status,
                                 file_name.into(),
                             );
+                            self.image.source_format = loaded.source_format;
                         }
                         Err(msg) => self.status = format!("{msg}{note}"),
                     }
@@ -193,6 +197,7 @@ mod tests {
                         icc_profile: None,
                         dpi: None,
                         has_extra_frames,
+                        source_format: None,
                     }),
                 })
                 .unwrap();
@@ -262,6 +267,7 @@ mod tests {
                     icc_profile: None,
                     dpi: None,
                     has_extra_frames: false,
+                    source_format: None,
                 }),
             })
             .unwrap();
