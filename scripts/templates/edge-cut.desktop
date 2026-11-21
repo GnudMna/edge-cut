@@ -1,9 +1,0 @@
-[Desktop Entry]
-Name=EdgeCut
-Comment=画像の背景余白を自動検出・トリミングする GUI ツール
-Exec=edge-cut
-Icon=edge-cut
-Terminal=false
-Type=Application
-Categories=Graphics;Utility;
-StartupWMClass=EdgeCut

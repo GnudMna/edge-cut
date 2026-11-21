@@ -27,7 +27,7 @@
 //! | [`app`] | egui ベースの GUI (`app::run`) |
 //! | `panic_hook` | panic のログ記録と UI スレッドでのダイアログ通知 (クレート内部用) |
 //! | `panic_message` | panic の捕捉とメッセージ取り出し (クレート内部用) |
-//! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 (Windows) |
+//! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 |
 
 pub mod batch_trim;
 pub mod consts;
@@ -40,7 +40,6 @@ pub mod app;
 mod panic_hook;
 mod panic_message;
 
-#[cfg(windows)]
 mod update;
 
 #[cfg(test)]

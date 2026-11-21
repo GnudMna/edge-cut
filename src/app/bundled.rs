@@ -1,7 +1,7 @@
 //! 配布物に同梱した文書 (利用者向けドキュメント・ライセンス) の探索と起動
 //!
-//! 同梱先は OS ごとの配布レイアウトに従い、実行ファイルの位置から求める。
-//! 起動は OS の既定のアプリに任せ、依存クレートは追加しない。
+//! 同梱先は MSI の配布レイアウトに従い、実行ファイルの位置から求める。
+//! 起動は Windows の既定のアプリに任せ、依存クレートは追加しない。
 
 use std::env;
 use std::io;
@@ -120,35 +120,20 @@ impl Bundled {
 // ======================================================================
 /// 実行ファイルのあるディレクトリから、文書の同梱先ディレクトリを求める
 ///
-/// Windows は `<インストール先>\bin\EdgeCut.exe` に対する `<インストール先>`、
-/// macOS は `Contents/MacOS` に対する `Contents/Resources`、Linux は実行ファイルと同じ場所
+/// `<インストール先>\bin\EdgeCut.exe` に対する `<インストール先>` を返す
 ///
 /// # Arguments
 /// * `exe_dir` - 実行ファイルのあるディレクトリ
 ///
 /// # Returns
 /// * `Option<PathBuf>` - 同梱先ディレクトリ。親ディレクトリを辿れない場合は `None`
-#[cfg(windows)]
 fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
     exe_dir.parent().map(Path::to_path_buf)
 }
 
-/// 同梱先ディレクトリを求める (macOS)
-#[cfg(target_os = "macos")]
-fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
-    exe_dir.parent().map(|contents| contents.join("Resources"))
-}
-
-/// 同梱先ディレクトリを求める (Linux など)
-#[cfg(not(any(windows, target_os = "macos")))]
-#[allow(clippy::unnecessary_wraps)]
-fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
-    Some(exe_dir.to_path_buf())
-}
-
 /// 文書を開くコマンドを組み立てる
 ///
-/// 拡張子のないテキストは関連付けが無いため、Windows ではメモ帳、macOS では `open -t` で開く
+/// 拡張子のないテキストは関連付けが無いため、メモ帳で開く
 ///
 /// # Arguments
 /// * `path` - 開く文書のパス
@@ -156,32 +141,12 @@ fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
 ///
 /// # Returns
 /// * `Command` - 未起動のコマンド
-#[cfg(windows)]
 fn open_command(path: &Path, is_html: bool) -> Command {
     let mut command = Command::new(if is_html {
         "explorer.exe"
     } else {
         "notepad.exe"
     });
-    command.arg(path);
-    command
-}
-
-/// 文書を開くコマンドを組み立てる (macOS)
-#[cfg(target_os = "macos")]
-fn open_command(path: &Path, is_html: bool) -> Command {
-    let mut command = Command::new("open");
-    if !is_html {
-        command.arg("-t");
-    }
-    command.arg(path);
-    command
-}
-
-/// 文書を開くコマンドを組み立てる (Linux など)
-#[cfg(not(any(windows, target_os = "macos")))]
-fn open_command(path: &Path, _is_html: bool) -> Command {
-    let mut command = Command::new("xdg-open");
     command.arg(path);
     command
 }
@@ -224,25 +189,12 @@ mod tests {
         }
     }
 
-    /// 実行ファイルの位置から、OS の配布レイアウトに沿った同梱先を求めること
+    /// 実行ファイルの位置から、配布レイアウトに沿った同梱先を求めること
     #[test]
     fn resource_dir_follows_distribution_layout() {
-        #[cfg(windows)]
         assert_eq!(
             resource_dir(Path::new(r"C:\app\edge-cut\bin")),
             Some(PathBuf::from(r"C:\app\edge-cut"))
-        );
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            resource_dir(Path::new("/Applications/EdgeCut.app/Contents/MacOS")),
-            Some(PathBuf::from(
-                "/Applications/EdgeCut.app/Contents/Resources"
-            ))
-        );
-        #[cfg(not(any(windows, target_os = "macos")))]
-        assert_eq!(
-            resource_dir(Path::new("/home/u/.local/share/edge-cut")),
-            Some(PathBuf::from("/home/u/.local/share/edge-cut"))
         );
     }
 

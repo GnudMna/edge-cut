@@ -55,7 +55,7 @@ fn report(info: &PanicHookInfo<'_>) {
 // ======================================================================
 /// ログファイルのパスを返す
 ///
-/// Windows は `%LOCALAPPDATA%\EdgeCut\panic.log`、それ以外は一時ディレクトリ配下
+/// `%LOCALAPPDATA%\EdgeCut\panic.log`。`LOCALAPPDATA` が未設定の場合は一時ディレクトリ配下
 ///
 /// # Returns
 /// * `PathBuf` - ログファイルのパス

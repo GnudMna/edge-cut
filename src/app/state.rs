@@ -304,8 +304,25 @@ pub(super) enum IoMsg {
         /// コピーされていたファイル・フォルダのパス
         paths: Vec<PathBuf>,
     },
+    /// ドロップされたパスの展開・振り分けの完了
+    DropScanned {
+        /// ドロップ要求 ID。後続のドロップで無効化された結果を無視するために使用する
+        request_id: u64,
+        /// 振り分けの結果、または失敗時のステータスメッセージ
+        result: Result<ScannedDrop, String>,
+    },
     /// ファイルダイアログが閉じられた
     DialogClosed(DialogResult),
+}
+
+/// ドロップされたパスを展開して振り分けた結果
+pub(super) struct ScannedDrop {
+    /// 対応画像ファイル (入力順を維持。フォルダは直下を名前順に展開)
+    pub images: Vec<PathBuf>,
+    /// 対応外・読み取り失敗として除外した件数
+    pub skipped: usize,
+    /// フォルダを 1 つ以上含んでいたか
+    pub has_dir: bool,
 }
 
 /// 手動保存の対象。ダイアログを開いた時点の内容を保持する
@@ -362,6 +379,8 @@ pub(super) struct IoState {
     pub load_request_id: u64,
     /// 実行中の保存スレッド
     pub save_handles: Vec<JoinHandle<()>>,
+    /// ドロップ要求 ID。新しいドロップのたびに更新し、古い展開結果を無視する
+    pub drop_request_id: u64,
     /// 読み込み完了時のステータスに追記する補足 (ドロップ時の除外件数など)
     pub load_note: Option<String>,
     /// 直近に自動保存を開始した内容。同じ結果を連番ファイルとして重複保存しないために使う
@@ -396,6 +415,7 @@ impl Default for IoState {
             tx,
             rx,
             load_request_id: 0,
+            drop_request_id: 0,
             save_handles: Vec::new(),
             load_note: None,
             last_auto_save: None,
@@ -469,10 +489,9 @@ impl Drop for BatchState {
 }
 
 // ======================================================================
-// 更新確認 (Windows)
+// 更新確認
 // ======================================================================
 /// 更新 UI の状態
-#[cfg(windows)]
 #[derive(Debug, Clone, Default)]
 pub(super) enum UpdateUiPhase {
     /// 未確認
@@ -502,7 +521,6 @@ pub(super) enum UpdateUiPhase {
 }
 
 /// バックグラウンド更新処理の結果
-#[cfg(windows)]
 pub(super) enum UpdateWorkerMsg {
     /// 更新確認の結果
     Check(crate::update::UpdateCheckOutcome),
@@ -511,7 +529,6 @@ pub(super) enum UpdateWorkerMsg {
 }
 
 /// アプリ更新の UI / ワーカー状態
-#[cfg(windows)]
 #[derive(Default)]
 pub(super) struct UpdateState {
     /// 現在の UI フェーズ
@@ -522,7 +539,6 @@ pub(super) struct UpdateState {
     pub dialog_open: bool,
 }
 
-#[cfg(windows)]
 impl UpdateState {
     /// 確認または適用が進行中か
     pub(super) fn is_busy(&self) -> bool {
@@ -553,8 +569,7 @@ pub struct App {
     pub(super) io: IoState,
     /// キーボードショートカットの判定状態
     pub(super) shortcuts: ShortcutTracker,
-    /// アプリ更新 (Windows のみ)
-    #[cfg(windows)]
+    /// アプリ更新
     pub(super) update: UpdateState,
 }
 
@@ -585,7 +600,6 @@ impl App {
             trim_worker: TrimWorkerState::new(),
             io: IoState::default(),
             shortcuts: ShortcutTracker::default(),
-            #[cfg(windows)]
             update: UpdateState::default(),
         }
     }

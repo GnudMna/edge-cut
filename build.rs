@@ -7,6 +7,9 @@ const LEGAL_COPYRIGHT: &str = "Copyright (c) 2026 Yuto Hirata";
 
 const APP_NAME: &str = "EdgeCut";
 
+/// exe に埋め込むアイコン
+const ICON_PATH: &str = "assets/icons/icon.ico";
+
 /// 更新署名の公開鍵 (minisign 形式 `*.pub`) を置くディレクトリ
 const UPDATE_SIGNING_KEYS_DIR: &str = "keys/update-signing";
 
@@ -20,35 +23,29 @@ fn main() {
 
     embed_update_signing_keys();
 
-    // Windows の場合は exe にリソース情報を埋め込む
-    #[cfg(windows)]
-    {
-        // アイコンパス
-        const ICON_PATH: &str = "assets/icons/icon.ico";
+    // exe にリソース情報を埋め込む
+    // アイコンパスを再実行条件に追加
+    println!("cargo:rerun-if-changed={ICON_PATH}");
 
-        // アイコンパスを再実行条件に追加
-        println!("cargo:rerun-if-changed={ICON_PATH}");
+    // Windows リソースを設定
+    let mut res = winresource::WindowsResource::new();
 
-        // Windows リソースを設定
-        let mut res = winres::WindowsResource::new();
+    // アイコン
+    res.set_icon(ICON_PATH);
 
-        // アイコン
-        res.set_icon(ICON_PATH);
+    // アプリ情報
+    res.set("ProductName", APP_NAME);
+    res.set("FileDescription", APP_NAME);
 
-        // アプリ情報
-        res.set("ProductName", APP_NAME);
-        res.set("FileDescription", APP_NAME);
+    // バージョン情報
+    res.set("FileVersion", env!("CARGO_PKG_VERSION"));
+    res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
 
-        // バージョン情報
-        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
-        res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
+    // 著作権情報
+    res.set("LegalCopyright", LEGAL_COPYRIGHT);
 
-        // 著作権情報
-        res.set("LegalCopyright", LEGAL_COPYRIGHT);
-
-        if let Err(error) = res.compile() {
-            panic!("Windows リソースの埋め込みに失敗: {error}");
-        }
+    if let Err(error) = res.compile() {
+        panic!("Windows リソースの埋め込みに失敗: {error}");
     }
 }
 

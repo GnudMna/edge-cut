@@ -7,7 +7,6 @@ mod input;
 mod preview;
 mod settings;
 mod toolbar;
-#[cfg(windows)]
 mod update_dialog;
 
 use eframe::egui;
@@ -27,13 +26,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        hide_window_on_close(&ctx);
         self.poll_batch_result();
         self.poll_io(&ctx);
         self.poll_trim_work(&ctx);
-        #[cfg(windows)]
         self.poll_update(&ctx);
         apply_theme(&ctx, self.prefs.dark_mode);
-        #[cfg(windows)]
         apply_title_bar_color(&ctx, frame, self.prefs.dark_mode);
         input::handle_file_drop(self, &ctx);
         self.handle_shortcuts(&ctx);
@@ -44,7 +42,6 @@ impl eframe::App for App {
         self.render_settings_panel(ui, &ctx);
         self.render_central_panel(ui);
         self.render_batch_error_window(&ctx);
-        #[cfg(windows)]
         self.render_update_dialog(&ctx);
     }
 }
@@ -109,6 +106,19 @@ impl App {
 // ======================================================================
 // UI ヘルパー
 // ======================================================================
+/// ウィンドウを閉じる要求があったフレームで、ウィンドウを非表示にする
+///
+/// 終了時は `IoState` / `BatchState` の drop が実行中の保存の完了を待つ
+/// その間イベントループが止まりウィンドウが応答なしに見えるため、待つ前に画面から消す
+///
+/// # Arguments
+/// * `ctx` - egui のコンテキスト
+fn hide_window_on_close(ctx: &egui::Context) {
+    if ctx.input(|i| i.viewport().close_requested()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+}
+
 /// アプリのテーマを egui とネイティブウィンドウ (タイトルバー) へ反映する
 ///
 /// `set_theme` は egui の配色に加え、`ViewportCommand::SetTheme` でタイトルバーの色も切り替える
@@ -130,11 +140,48 @@ fn apply_theme(ctx: &egui::Context, dark_mode: bool) {
 /// * `ctx` - egui のコンテキスト (適用済みのテーマの記録に使う)
 /// * `frame` - タイトルバーを持つウィンドウ
 /// * `dark_mode` - ダークテーマか
-#[cfg(windows)]
 fn apply_title_bar_color(ctx: &egui::Context, frame: &eframe::Frame, dark_mode: bool) {
-    let id = egui::Id::new("title_bar_dark_mode");
+    let id = egui::Id::unique("title_bar_dark_mode");
     if ctx.data(|d| d.get_temp::<bool>(id)) != Some(dark_mode) {
         super::title_bar::apply(frame, dark_mode);
         ctx.data_mut(|d| d.insert_temp(id, dark_mode));
+    }
+}
+
+// ======================================================================
+// テスト
+// ======================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 1 フレーム実行し、ウィンドウを非表示にするコマンドが送られたかを返す
+    fn hidden_after_frame(close_requested: bool) -> bool {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        if close_requested {
+            let mut info = egui::ViewportInfo::default();
+            info.events.push(egui::ViewportEvent::Close);
+            input.viewports.insert(egui::ViewportId::ROOT, info);
+        }
+        let mut output = ctx.run_ui(input, |ui| hide_window_on_close(ui.ctx()));
+        // 描画しないため、未適用のテクスチャ差分は破棄する
+        output.textures_delta.clear();
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::ViewportCommand::Visible(false)))
+    }
+
+    /// 閉じる要求があったフレームでウィンドウを非表示にすること
+    #[test]
+    fn hide_window_on_close_hides_when_close_requested() {
+        assert!(hidden_after_frame(true));
+    }
+
+    /// 閉じる要求がないフレームではウィンドウを非表示にしないこと
+    #[test]
+    fn hide_window_on_close_does_nothing_without_request() {
+        assert!(!hidden_after_frame(false));
     }
 }

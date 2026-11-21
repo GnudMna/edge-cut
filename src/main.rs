@@ -1,10 +1,7 @@
 //! アプリケーションのエントリポイント
 
-// リリースビルド時にコンソールウィンドウを表示しない (Windows)
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+// リリースビルド時にコンソールウィンドウを表示しない
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 /// アプリケーションを起動する
 ///

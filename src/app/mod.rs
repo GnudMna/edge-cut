@@ -9,7 +9,6 @@ mod load_worker;
 mod save_dir;
 mod shortcuts;
 mod state;
-#[cfg(windows)]
 mod title_bar;
 mod trim_worker;
 mod view;
@@ -33,7 +32,6 @@ pub fn run() -> eframe::Result {
     panic_hook::install();
 
     // 過去の更新で残った MSI は、起動を遅らせないようバックグラウンドで削除する
-    #[cfg(windows)]
     std::thread::spawn(crate::update::cleanup_stale_update_dirs);
 
     let options = eframe::NativeOptions {

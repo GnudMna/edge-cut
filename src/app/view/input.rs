@@ -16,11 +16,7 @@ impl App {
     /// テキスト入力中・更新ダイアログ表示中は受け付けない
     /// ラベルの文字列を選択中の Ctrl+C は文字列のコピーを優先する
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        #[cfg(windows)]
-        let dialog_open = self.update.dialog_open;
-        #[cfg(not(windows))]
-        let dialog_open = false;
-        let enabled = !dialog_open && !ctx.text_edit_focused();
+        let enabled = !self.update.dialog_open && !ctx.text_edit_focused();
         let Some(shortcut) = ctx.input_mut(|i| self.shortcuts.detect(i, enabled)) else {
             return;
         };

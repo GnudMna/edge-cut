@@ -1,6 +1,6 @@
 # EdgeCut
 
-画像の背景余白を自動検出・トリミングする Rust 製デスクトップ GUI ツール。eframe / egui ベースで Windows / Linux / macOS に対応する。開発者向けドキュメントは [docs/dev/](docs/dev/) (環境構築・テスト・アーキテクチャ・リリース・開発規約)、利用者向けは [docs/user/](docs/user/) にある。どの文書に何を書くかは [docs/dev/contributing.md のドキュメントの配置](docs/dev/contributing.md#ドキュメントの配置) に従う。
+画像の背景余白を自動検出・トリミングする Rust 製デスクトップ GUI ツール。eframe / egui ベース。対応 OS は Windows のみ (Linux / macOS は非対応)。開発者向けドキュメントは [docs/dev/](docs/dev/) (環境構築・テスト・アーキテクチャ・リリース・開発規約)、利用者向けは [docs/user/](docs/user/) にある。どの文書に何を書くかは [docs/dev/contributing.md のドキュメントの配置](docs/dev/contributing.md#ドキュメントの配置) に従う。
 
 ## 構成
 
@@ -8,15 +8,15 @@ lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/
 
 - `src/trim.rs` / `image_load.rs` / `image_output.rs` / `batch_trim.rs` — コアロジック (背景色検出・読み込み・保存・一括処理)。egui に依存させない
 - `src/app/` — egui GUI (`state` / `view/` / `actions/` / 各ワーカースレッド)。egui 依存はここに閉じ込める
-- `src/update/` — 更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定
+- `src/update/` — 更新確認・minisign 署名検証・MSI 適用
 - `tests/` — 公開 API の統合テスト。画像生成ヘルパーは `tests/common/` に置き、`src/test_helpers.rs` が `include!` してユニットテストと共有する
-- `scripts/windows/` / `scripts/linux/` / `scripts/macos/` — OS ごとのエントリポイント。共通処理は `scripts/common/` に置く
+- `scripts/windows/` — エントリポイント (PowerShell 7)。共通処理は `scripts/common/` に置く
 
 ## コマンド
 
 ```bash
 cargo run                                 # デバッグ実行
-cargo build --release                     # リリースビルド (target/release/EdgeCut)
+cargo build --release                     # リリースビルド (target/release/EdgeCut.exe)
 cargo fmt --all                           # 整形
 cargo clippy --all-targets -- -D warnings # 静的解析 (警告はエラー扱い)
 cargo test --all-targets                  # ユニット・統合テスト
@@ -25,7 +25,7 @@ cargo test <テスト名>                      # 単一テスト
 cargo deny check                          # 依存の脆弱性・ライセンス監査
 
 # 完了前の品質チェック一式 (fmt / clippy / deny / test / doctest)
-./scripts/windows/check.ps1               # Linux / macOS は scripts/{linux,macos}/check.sh
+./scripts/windows/check.ps1
 ```
 
 - ツールチェーンは `rust-toolchain.toml` で 1.96 固定、edition 2024
@@ -36,7 +36,7 @@ cargo deny check                          # 依存の脆弱性・ライセンス
 
 - 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す。ワーカーの panic は `catch_panic` で捕捉して失敗として通知する
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する
-- Windows 専用依存 (`ureq`, `sha2` など) は `cfg(windows)` の中でのみ使う
+- 対応 OS は Windows のみ。`cfg(windows)` などの OS 分岐は置かない
 - 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える
 - `build.rs` は Windows のアイコン・バージョン情報、ビルド時環境変数 `EDGE_CUT_KEY` (更新ダウンロードキー)、`keys/update-signing/*.pub` (minisign 公開鍵) を埋め込む
 - `src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える

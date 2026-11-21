@@ -1,7 +1,7 @@
 # EdgeCut 依存関係のサプライチェーン監査 (cargo-deny)
 #
 # 実行: cargo deny check
-# 品質チェック: scripts/*/check.* からも呼び出す
+# 品質チェック: scripts/windows/check.ps1 からも呼び出す
 #
 # ライセンス方針: 独自製品への組み込みが可能なパーミッシブライセンスのみ許可する
 # (コピーレフト GPL / LGPL / MPL 等は deny 対象。許可リストに含めない)
@@ -13,11 +13,9 @@
 
 [graph]
 all-features = true
-# 配布対象 OS の依存グラフを検査
+# 配布対象 (Windows のみ) の依存グラフを検査
 targets = [
     { triple = "x86_64-pc-windows-msvc" },
-    { triple = "x86_64-unknown-linux-gnu" },
-    { triple = "aarch64-apple-darwin" },
 ]
 
 [advisories]

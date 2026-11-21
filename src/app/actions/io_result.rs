@@ -124,6 +124,16 @@ impl App {
                     // ドロップと同じく、1 件ならプレビュー、複数またはフォルダなら一括トリミング
                     self.handle_dropped_paths(ctx, paths);
                 }
+                IoMsg::DropScanned { request_id, result } => {
+                    // 後続のドロップで無効化された結果は捨てる
+                    if request_id != self.io.drop_request_id {
+                        continue;
+                    }
+                    match result {
+                        Ok(scanned) => self.apply_scanned_drop(ctx, scanned),
+                        Err(msg) => self.status = msg,
+                    }
+                }
                 IoMsg::DialogClosed(result) => self.handle_dialog_result(ctx, result),
             }
         }
@@ -215,14 +225,11 @@ mod tests {
                 paths: vec!["note.txt".into()],
             })
             .unwrap();
-        app.poll_io(&ctx);
 
+        // フォルダの展開はワーカースレッドで行うため、結果が届くまで待つ
+        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("対応していない"));
+        assert!(done, "status = {}", app.status);
         assert!(app.image.original.is_none());
-        assert!(
-            app.status.contains("対応していない"),
-            "status = {}",
-            app.status
-        );
     }
 
     /// 貼り付け後に `clear_image()` した場合、遅れて届いたファイルの貼り付け結果を無視すること

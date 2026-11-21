@@ -226,10 +226,10 @@ impl App {
                 self.pick_auto_save_dir(ctx);
             }
         });
-        // 長いパスはパネル幅に合わせて省略し、全体はホバーで表示する
-        let full_path = self.prefs.auto_save_dir.to_string_lossy().into_owned();
-        ui.add(egui::Label::new(egui::RichText::new(&full_path).weak().monospace()).truncate())
-            .on_hover_text(&full_path);
+        // 長いパスはパネル幅に合わせて省略する。省略時の全体表示は Label 標準のツールチップに任せる
+        // (on_hover_text を重ねるとツールチップが2個出る)
+        let full_path = self.prefs.auto_save_dir.to_string_lossy();
+        ui.add(egui::Label::new(egui::RichText::new(full_path).weak().monospace()).truncate());
     }
 }
 
@@ -246,7 +246,7 @@ const PANEL_OPEN_ID: &str = "settings_panel_open";
 /// # Returns
 /// * `bool` - 開いている場合は `true`
 pub(super) fn is_panel_open(ctx: &egui::Context) -> bool {
-    ctx.data_mut(|d| *d.get_persisted_mut_or(egui::Id::new(PANEL_OPEN_ID), true))
+    ctx.data_mut(|d| *d.get_persisted_mut_or(egui::Id::unique(PANEL_OPEN_ID), true))
 }
 
 /// 設定パネルの開閉状態を保存する
@@ -255,7 +255,7 @@ pub(super) fn is_panel_open(ctx: &egui::Context) -> bool {
 /// * `ctx` - 開閉状態を保持する egui コンテキスト
 /// * `open` - 開いている場合は `true`
 pub(super) fn set_panel_open(ctx: &egui::Context, open: bool) {
-    ctx.data_mut(|d| d.insert_persisted(egui::Id::new(PANEL_OPEN_ID), open));
+    ctx.data_mut(|d| d.insert_persisted(egui::Id::unique(PANEL_OPEN_ID), open));
 }
 
 /// セクションの見出し

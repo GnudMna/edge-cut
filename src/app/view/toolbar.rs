@@ -154,7 +154,6 @@ impl App {
     ///
     /// 右から左へ並ぶレイアウトの `ui` に右端から順に配置する
     fn render_view_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        #[cfg(windows)]
         let mut check_update = false;
         let mut open_bundled = None;
         ui.menu_button("☰", |ui| {
@@ -191,7 +190,6 @@ impl App {
             }
             ui.separator();
             ui.label(egui::RichText::new(format!("EdgeCut v{}", env!("CARGO_PKG_VERSION"))).weak());
-            #[cfg(windows)]
             if ui.button("更新を確認…").clicked() {
                 check_update = true;
                 ui.close();
@@ -216,7 +214,6 @@ impl App {
             settings::set_panel_open(ctx, !panel_open);
         }
 
-        #[cfg(windows)]
         if check_update {
             self.open_update_dialog(ctx);
         }

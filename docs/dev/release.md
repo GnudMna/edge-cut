@@ -21,11 +21,9 @@ git checkout -b release/v0.3.0
 
 **手動で残る作業:** `release/v{version}` を push し、Gitea 上で `v{version}` タグを付与する。GitHub Release へ MSI と署名ファイル (`*.msi.minisig`) をアップロードしたあと、gh-release-bridge の version API が MSI の `digest` を返し、署名ファイルも同じ URL 形式 (`/{owner}/{repo}/{tag}/{asset}.minisig`) で取得できることを確認する。
 
-Linux / macOS の配布物は、それぞれの OS で `build-package.sh` / `build-dmg.sh` を実行して作る ([配布パッケージ](setup.md#配布パッケージ))。
-
 ## 更新署名鍵
 
-アプリ更新 (Windows) は、version API の digest (SHA-256) に加えて MSI の minisign (Ed25519) 署名を検証してから `msiexec` を起動する。署名の信頼コメント (`edge-cut-update version={version} file={アセット名}`) も照合するため、配信経路や digest を差し替えられても、正規の秘密鍵で署名されていない MSI や別バージョン向けの署名済み MSI は適用しない。
+アプリ更新は、version API の digest (SHA-256) に加えて MSI の minisign (Ed25519) 署名を検証してから `msiexec` を起動する。署名の信頼コメント (`edge-cut-update version={version} file={アセット名}`) も照合するため、配信経路や digest を差し替えられても、正規の秘密鍵で署名されていない MSI や別バージョン向けの署名済み MSI は適用しない。
 
 公開鍵は `keys/update-signing/*.pub` に置き、`build.rs` がビルド時にすべて埋め込む。秘密鍵はリポジトリに置かない。`src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える。
 

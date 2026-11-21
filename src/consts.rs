@@ -63,10 +63,25 @@ pub const TRIM_DEBOUNCE_MS: u64 = 150;
 /// このピクセル数未満の画像ではトリミング走査を逐次実行する (rayon オーバーヘッド回避)
 pub const TRIM_PARALLEL_MIN_PIXELS: u64 = 512 * 512;
 
+/// 並列走査で 1 タスクが担当する行ブロックのおおよそのピクセル数
+///
+/// 行ごとにタスクを分けると rayon のオーバーヘッドが積み上がるため、複数行をまとめる
+pub const TRIM_ROW_BLOCK_PIXELS: u64 = 64 * 1024;
+
 /// 一括トリミングで同時に処理するファイル数の上限
 ///
-/// 1 枚あたりの読み込み上限 (`MAX_IMAGE_PIXELS`) と掛け合わせたピークメモリを抑えるため小さく保つ
+/// 大きな画像が重なった場合は `BATCH_MEMORY_BUDGET_BYTES` によりさらに絞る
 pub const BATCH_MAX_CONCURRENCY: usize = 4;
+
+/// 一括トリミングで同時に処理するファイルの見積もりメモリの合計上限 (バイト)
+///
+/// 1 枚の見積もりがこれを超える場合は、そのファイルを単独で処理する
+pub const BATCH_MEMORY_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// 一括トリミングで 1 ファイルのピークメモリをデコード先バッファの何倍と見積もるか
+///
+/// 切り出し後の画像・エンコード向けの色変換・エンコード結果を同時に保持する分を含める
+pub const BATCH_PEAK_MEMORY_FACTOR: u64 = 3;
 
 // ======================================================================
 // プレビュー表示
@@ -201,6 +216,13 @@ mod tests {
         assert!(MAX_IMAGE_WIDTH > 0);
         assert!(MAX_IMAGE_HEIGHT > 0);
         assert!(MAX_IMAGE_PIXELS > 0);
+    }
+
+    /// 一括トリミングのメモリ予算で最大寸法の RGBA8 画像を 1 枚は処理できること
+    #[test]
+    fn batch_memory_budget_fits_max_rgba8_image() {
+        let peak = MAX_IMAGE_PIXELS * 4 * BATCH_PEAK_MEMORY_FACTOR;
+        assert!(peak <= BATCH_MEMORY_BUDGET_BYTES);
     }
 
     /// 最大ピクセル数が幅・高さの積上限内に収まること

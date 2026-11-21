@@ -4,18 +4,16 @@
   <h1>✂️ EdgeCut</h1>
   <p><b>画像の背景余白を自動検出・トリミングするデスクトップ GUI ツール</b></p>
   <p>
-    <sub>Rust 製 &nbsp;·&nbsp; egui によるリアルタイムプレビュー &nbsp;·&nbsp; Windows / Linux / macOS</sub>
+    <sub>Rust 製 &nbsp;·&nbsp; egui によるリアルタイムプレビュー &nbsp;·&nbsp; Windows 専用</sub>
   </p>
   <br>
   <a href="https://www.rust-lang.org/">
     <img src="https://img.shields.io/badge/Rust-2024_edition-CE422B?logo=rust&logoColor=white&style=for-the-badge" alt="Rust">
   </a>
   <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-4A90D9?style=for-the-badge" alt="MIT License">
+    <img src="https://img.shields.io/badge/License-All%20Rights%20Reserved-F59E0B?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiIHJvbGU9ImltZyI%2BPHRpdGxlPkNvcHlyaWdodDwvdGl0bGU%2BPHBhdGggZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwem0wIDJhOCA4IDAgMSAxIDAgMTYgOCA4IDAgMCAxIDAtMTZ6bS0xIDQuNWMtMi4yIDAtMy41IDEuNi0zLjUgMy41czEuMyAzLjUgMy41IDMuNWMxLjEgMCAyLS41IDIuNi0xLjJsLTEuMi0xLjJjLS40LjUtMSAuOC0xLjYuOC0xLjIgMC0yLS45LTItMnMuOC0yIDItMmMuNiAwIDEuMS4yIDEuNS42bDEuMi0xLjJjLS43LS43LTEuNy0xLjEtMi45LTEuMXoiLz48L3N2Zz4%3D&logoColor=white" alt="All Rights Reserved">
   </a>
   <img src="https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white&style=for-the-badge" alt="Windows">
-  <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black&style=for-the-badge" alt="Linux">
-  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white&style=for-the-badge" alt="macOS">
   <a href="https://github.com/emilk/egui">
     <img src="https://img.shields.io/badge/GUI-egui%20%2F%20eframe-7C3AED?style=for-the-badge" alt="egui">
   </a>
@@ -44,9 +42,9 @@
       <sub>複数ファイルをバックグラウンドで<br>まとめてトリミング。<br>UI をブロックしない</sub>
     </td>
     <td align="center" width="210">
-      <h3>🌍</h3>
-      <b>クロスプラットフォーム</b><br><br>
-      <sub>Windows / Linux / macOS。<br>設定は次回起動時に<br>自動復元</sub>
+      <h3>💾</h3>
+      <b>設定の保持</b><br><br>
+      <sub>終了時の設定を<br>次回起動時に<br>自動復元</sub>
     </td>
   </tr>
 </table>
@@ -65,7 +63,7 @@
 | **入出力** | ファイル・ドラッグ & ドロップ・クリップボードから読み込み、保存・コピー。PNG / JPEG / WebP / BMP / TIFF / GIF に対応 |
 | **自動保存** | 画像を開いた直後に指定フォルダへ保存 |
 | **色と向きの保持** | ICC プロファイルを引き継ぎ、EXIF の回転情報を反映 |
-| **アプリ更新 (Windows)** | 最新版を確認し、署名とハッシュを検証してから適用 |
+| **アプリ更新** | 最新版を確認し、署名とハッシュを検証してから適用 |
 
 操作の詳細は [使い方](docs/user/usage.md) を参照。
 
@@ -73,14 +71,10 @@
 
 ## 動作要件とインストール
 
-- **対応 OS:** Windows 10 以降 / Linux (X11 または Wayland) / macOS
-- **Linux の日本語表示:** 日本語フォントが必要 ([トラブルシューティング](docs/user/troubleshooting.md#日本語が表示されない-linux))
-
-| 形態 | 入手・配置 |
-| :--- | :--- |
-| **Windows MSI** | ユーザー単位で `%LOCALAPPDATA%\edge-cut` へインストール。管理者権限は不要。スタートメニューに **EdgeCut** と **EdgeCut ドキュメント** が追加される。インストーラーではユーザー `PATH` への追加も選択できる |
-| **Linux tar.gz** | 展開して `./install.sh` を実行すると `~/.local` にインストールされ、アプリケーション一覧と `edge-cut` コマンドから起動できる。ドキュメントは `~/.local/share/edge-cut/docs/index.html` |
-| **macOS DMG** | `EdgeCut.app` をアプリケーションフォルダへコピーする。ドキュメントは DMG 直下の `docs/index.html` |
+- **対応 OS:** Windows 10 以降のみ。Linux / macOS は非対応
+- **インストール:** MSI インストーラーで、ユーザー単位で `%LOCALAPPDATA%\edge-cut` へインストールする。管理者権限は不要
+  - スタートメニューに **EdgeCut** と **EdgeCut ドキュメント** が追加される
+  - インストーラーではユーザー `PATH` への追加も選択できる
 
 ソースからビルドする場合は [開発環境とビルド](docs/dev/setup.md) を参照。
 
@@ -109,7 +103,7 @@
 | [トラブルシューティング](docs/user/troubleshooting.md) | 症状別の確認事項 |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 
-利用者向けドキュメントは、配布物 (MSI / tar.gz / .app・DMG) に HTML で同梱している。
+利用者向けドキュメントは、MSI に HTML で同梱している。
 
 ### 開発者向け
 
@@ -125,4 +119,4 @@
 
 ## ライセンス
 
-[MIT](LICENSE)
+[All Rights Reserved](LICENSE)

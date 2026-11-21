@@ -2,25 +2,27 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 
 use eframe::egui;
 
 use super::batch::skipped_note;
-use crate::app::state::App;
+use crate::app::state::{App, IoMsg, ScannedDrop};
 use crate::consts::is_supported_image_extension;
+use crate::panic_message::catch_panic;
 
 // ======================================================================
 // ドラッグ & ドロップ
 // ======================================================================
 impl App {
-    /// ドロップされたファイル・フォルダを件数に応じて処理する
+    /// ドロップされたファイル・フォルダの展開をワーカースレッドで開始する
     ///
-    /// フォルダは直下のファイルに展開する (サブフォルダは走査しない)。対応外の拡張子は除外する。
-    /// ファイルのみで対象が 1 件ならプレビューで開き、2 件以上またはフォルダを含む場合は
-    /// 保存先フォルダを選択させて一括トリミングする。
+    /// `read_dir` や `is_dir` はネットワークドライブや大量のファイルで長く待つ場合があるため、
+    /// UI スレッドでは行わない。結果は `IoMsg::DropScanned` で通知され、
+    /// `poll_io` から `apply_scanned_drop` で処理する。新しいドロップが始まると古い結果は無視する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト
+    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     /// * `paths` - ドロップされたパス
     pub(in crate::app) fn handle_dropped_paths(
         &mut self,
@@ -30,18 +32,43 @@ impl App {
         if paths.is_empty() {
             return;
         }
-        let expanded = expand_dropped_dirs(paths);
-        let (images, skipped) = partition_supported_images(expanded.paths);
-        let skipped = skipped + expanded.unreadable_dirs;
+        self.io.drop_request_id = self.io.drop_request_id.wrapping_add(1);
+        let request_id = self.io.drop_request_id;
+        self.status = "ドロップされたファイルを確認中...".into();
+
+        let tx = self.io.tx.clone();
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = catch_panic(|| scan_dropped_paths(paths))
+                .map_err(|msg| format!("ドロップの処理中にエラーが発生しました: {msg}"));
+            let _ = tx.send(IoMsg::DropScanned { request_id, result });
+            ctx.request_repaint();
+        });
+    }
+
+    /// 展開済みのドロップ対象を件数に応じて処理する
+    ///
+    /// ファイルのみで対象が 1 件ならプレビューで開き、2 件以上またはフォルダを含む場合は
+    /// 保存先フォルダを選択させて一括トリミングする。
+    ///
+    /// # Arguments
+    /// * `ctx` - egui のコンテキスト
+    /// * `scanned` - 展開・振り分け済みのドロップ対象
+    pub(in crate::app) fn apply_scanned_drop(&mut self, ctx: &egui::Context, scanned: ScannedDrop) {
+        let ScannedDrop {
+            images,
+            skipped,
+            has_dir,
+        } = scanned;
         match images.as_slice() {
-            [] if expanded.has_dir => {
+            [] if has_dir => {
                 let note = skipped_note(skipped);
                 self.status = format!("フォルダに対応画像がありません{note}");
             }
             [] => {
                 self.status = format!("対応していないファイルです ({skipped} 件)");
             }
-            [path] if !expanded.has_dir => {
+            [path] if !has_dir => {
                 self.load_image_from_path(ctx, path);
                 if skipped > 0 {
                     let note = skipped_note(skipped);
@@ -64,6 +91,28 @@ impl App {
             }
             _ => self.start_batch_trim(ctx, images, skipped),
         }
+    }
+}
+
+// ======================================================================
+// 展開・振り分け (ワーカースレッド)
+// ======================================================================
+/// ドロップされたパスを展開し、対応画像とそれ以外に振り分ける
+///
+/// ファイルシステムへ問い合わせるため、UI スレッドから呼ばない
+///
+/// # Arguments
+/// * `paths` - ドロップされたパス
+///
+/// # Returns
+/// * `ScannedDrop` - 対応画像、除外件数 (読み取りに失敗したフォルダを含む)、フォルダの有無
+fn scan_dropped_paths(paths: Vec<PathBuf>) -> ScannedDrop {
+    let expanded = expand_dropped_dirs(paths);
+    let (images, skipped) = partition_supported_images(expanded.paths);
+    ScannedDrop {
+        images,
+        skipped: skipped + expanded.unreadable_dirs,
+        has_dir: expanded.has_dir,
     }
 }
 
@@ -146,7 +195,7 @@ mod tests {
 
     use super::{expand_dropped_dirs, partition_supported_images};
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until};
-    use crate::app::state::App;
+    use crate::app::state::{App, IoMsg, ScannedDrop};
 
     // ======================================================================
     // handle_dropped_paths() / partition_supported_images()
@@ -185,12 +234,11 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = App::default();
         app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.txt"), PathBuf::from("b.pdf")]);
+        // 展開はワーカースレッドで行うため、結果が届くまで待つ
+        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("対応していない"));
 
-        assert!(
-            app.status.contains("対応していない") && app.status.contains("2 件"),
-            "status = {}",
-            app.status
-        );
+        assert!(done, "status = {}", app.status);
+        assert!(app.status.contains("2 件"), "status = {}", app.status);
         assert!(app.image.original.is_none());
     }
 
@@ -202,6 +250,8 @@ mod tests {
         let status_before = app.status.clone();
         app.handle_dropped_paths(&ctx, Vec::new());
         assert_eq!(app.status, status_before);
+        // ワーカーを起動しないこと
+        assert!(app.io.rx.try_recv().is_err());
     }
 
     /// 対応画像が 1 件ならプレビューで開き、完了後のステータスにも除外件数を残すこと
@@ -214,8 +264,9 @@ mod tests {
 
         let mut app = App::default();
         app.handle_dropped_paths(&ctx, vec![tmp.path().join("readme.txt"), path]);
-        // 読み込み中の時点で除外件数を表示する
-        assert!(app.status.contains("読み込み中"), "status = {}", app.status);
+        // 展開が終わり、読み込みを始めた時点で除外件数を表示する
+        let loading = poll_io_until(&mut app, &ctx, |a| a.status.contains("読み込み中"));
+        assert!(loading, "status = {}", app.status);
         assert!(app.status.contains("除外"), "status = {}", app.status);
 
         let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
@@ -236,11 +287,8 @@ mod tests {
         let mut app = App::default();
         app.batch.running = true;
         app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
-        assert!(
-            app.status.contains("受け付けません"),
-            "status = {}",
-            app.status
-        );
+        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("受け付けません"));
+        assert!(done, "status = {}", app.status);
     }
 
     /// ダイアログ表示中の複数ファイルのドロップは、処理されなかったことをステータスに示すこと
@@ -250,14 +298,13 @@ mod tests {
         let mut app = App::default();
         app.io.dialog_open = true;
         app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
+        let done = poll_io_until(&mut app, &ctx, |a| {
+            a.status.contains("処理できませんでした")
+        });
 
-        assert!(
-            app.status.contains("2 件") && app.status.contains("処理できませんでした"),
-            "status = {}",
-            app.status
-        );
-        // 追加のダイアログスレッドを起動せず、表示中のままであること
-        assert!(app.io.rx.try_recv().is_err());
+        assert!(done, "status = {}", app.status);
+        assert!(app.status.contains("2 件"), "status = {}", app.status);
+        // 表示中のままであること
         assert!(app.io.dialog_open);
     }
 
@@ -311,13 +358,13 @@ mod tests {
 
         let mut app = App::default();
         app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
+        let done = poll_io_until(&mut app, &ctx, |a| {
+            a.status.contains("フォルダに対応画像がありません")
+        });
 
         // サブフォルダとテキストファイルの 2 件を除外として数える
-        assert!(
-            app.status.contains("フォルダに対応画像がありません") && app.status.contains("2 件"),
-            "status = {}",
-            app.status
-        );
+        assert!(done, "status = {}", app.status);
+        assert!(app.status.contains("2 件"), "status = {}", app.status);
         assert!(app.image.original.is_none());
     }
 
@@ -334,12 +381,60 @@ mod tests {
         let mut app = App::default();
         app.batch.running = true;
         app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
+        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("受け付けません"));
 
-        assert!(
-            app.status.contains("受け付けません"),
-            "status = {}",
-            app.status
-        );
+        assert!(done, "status = {}", app.status);
         assert!(app.io.load_note.is_none());
+    }
+
+    /// 展開中は UI スレッドを待たせず、確認中であることをステータスに示すこと
+    #[test]
+    fn handle_dropped_paths_shows_scanning_status_immediately() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.txt")]);
+
+        assert!(app.status.contains("確認中"), "status = {}", app.status);
+    }
+
+    /// 後続のドロップで無効化された展開結果を無視すること
+    #[test]
+    fn poll_io_discards_stale_drop_scan() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let stale_id = app.io.drop_request_id;
+        app.io.drop_request_id += 1;
+        app.status = "確認中".into();
+        app.io
+            .tx
+            .send(IoMsg::DropScanned {
+                request_id: stale_id,
+                result: Ok(ScannedDrop {
+                    images: Vec::new(),
+                    skipped: 3,
+                    has_dir: false,
+                }),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert_eq!(app.status, "確認中");
+    }
+
+    /// 展開の失敗をステータスに表示すること
+    #[test]
+    fn poll_io_reports_drop_scan_failure() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.io
+            .tx
+            .send(IoMsg::DropScanned {
+                request_id: app.io.drop_request_id,
+                result: Err("失敗".into()),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert_eq!(app.status, "失敗");
     }
 }

@@ -215,6 +215,31 @@ pub fn open_image_with_icc(path: &Path) -> Result<LoadedImage, LoadError> {
     Ok(LoadedImage { image, icc_profile })
 }
 
+/// 画像をデコードせずに、デコード先バッファのバイト数を求める
+///
+/// ファイルサイズと寸法は `open_image_with_icc` と同じ上限で検証する
+/// 並列処理の前にメモリ使用量を見積もるために使う
+///
+/// # Arguments
+/// * `path` - 調べる画像ファイルのパス
+///
+/// # Returns
+/// * `Result<u64, LoadError>` - デコード先バッファのバイト数 (`ImageDecoder::total_bytes`)
+///
+/// # Errors
+/// ファイルサイズ・寸法が上限を超える、またはヘッダの読み込みに失敗した場合
+pub(crate) fn probe_decoded_bytes(path: &Path) -> Result<u64, LoadError> {
+    let file = fs::File::open(path)?;
+    check_file_size(file.metadata()?.len())?;
+
+    let mut reader = ImageReader::new(BufReader::new(file));
+    reader.limits(decode_limits());
+    let decoder = reader.with_guessed_format()?.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    check_dimensions(width, height)?;
+    Ok(decoder.total_bytes())
+}
+
 /// クリップボード由来の RGBA 画像寸法を検証する
 ///
 /// # Arguments
@@ -575,6 +600,39 @@ mod tests {
 
         assert_eq!(img.color(), image::ColorType::Rgba16);
         assert_eq!((img.width(), img.height()), (8, 8));
+    }
+
+    // ======================================================================
+    // probe_decoded_bytes
+    // ======================================================================
+    /// デコード先バッファのバイト数を色の型に応じて返すこと
+    #[test]
+    fn probe_decoded_bytes_reflects_color_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgba8 = dir.path().join("rgba8.png");
+        write_test_png(&rgba8, 10, 6);
+        let rgba16 = dir.path().join("rgba16.png");
+        DynamicImage::new_rgba16(10, 6)
+            .save(&rgba16)
+            .expect("test png write");
+
+        // RGBA8 は 1 ピクセル 4 バイト、RGBA16 は 8 バイト
+        assert_eq!(
+            probe_decoded_bytes(&rgba8).expect("probe rgba8"),
+            10 * 6 * 4
+        );
+        assert_eq!(
+            probe_decoded_bytes(&rgba16).expect("probe rgba16"),
+            10 * 6 * 8
+        );
+    }
+
+    /// 存在しないファイルは I/O エラーになること
+    #[test]
+    fn probe_decoded_bytes_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = probe_decoded_bytes(&dir.path().join("missing.png")).unwrap_err();
+        assert!(matches!(err, LoadError::Io(_)));
     }
 
     /// アニメーション GIF は先頭フレームだけが読み込まれること

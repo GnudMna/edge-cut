@@ -3,8 +3,7 @@
 # 生成: scripts/common/generate-third-party-notices.*
 # deny.toml の許可ライセンス・ターゲットに合わせる
 #
-# 配布スクリプトは --target でプラットフォーム別に生成する。
-# 手動生成時は下記 targets (全配布ターゲット) を使用する。
+# 対象は Windows (x86_64-pc-windows-msvc) のみ。
 
 accepted = [
     "MIT",
@@ -29,9 +28,11 @@ accepted = [
 
 targets = [
     "x86_64-pc-windows-msvc",
-    "x86_64-unknown-linux-gnu",
-    "aarch64-apple-darwin",
 ]
+
+# 本体 (publish = false) は独自ライセンスで SPDX 式を持たず、LICENSE が MPL-2.0 と誤判定されるため対象外にする
+# 本体の利用条件は LICENSE を参照する旨をテンプレートに記載している
+private = { ignore = true }
 
 ignore-build-dependencies = true
 ignore-dev-dependencies = true

@@ -56,7 +56,7 @@ pub(super) enum Shortcut {
 pub(super) struct ShortcutTracker {
     /// 前フレーム終了時点で V の押下が egui に記録されていたか
     v_down: bool,
-    /// 直近の V を離すまでの間に Ctrl (macOS は Cmd) が押されていたか
+    /// 直近の V を離すまでの間に Ctrl が押されていたか
     command_seen: bool,
 }
 

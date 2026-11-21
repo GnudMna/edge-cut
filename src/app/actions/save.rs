@@ -8,6 +8,7 @@ use std::thread;
 use eframe::egui;
 
 use crate::app::state::{App, AutoSaveKey, DialogResult, IoMsg, SaveKind, SaveRequest};
+use crate::consts::is_supported_image_extension;
 use crate::image_output::{self, OutputFormat, SaveOptions};
 use crate::panic_message::catch_panic;
 use crate::trim::apply_trim;
@@ -59,12 +60,9 @@ impl App {
         &mut self,
         ctx: &egui::Context,
         request: SaveRequest,
-        mut path: PathBuf,
+        path: PathBuf,
     ) {
-        // 拡張子なしで入力された場合は形式を判定できないため設定の形式とする
-        if path.extension().is_none() {
-            path.set_extension(&request.ext);
-        }
+        let path = with_default_extension(path, &request.ext);
         let options = self.save_options();
         self.spawn_save(ctx, SaveKind::Manual, move || {
             let img = apply_trim(&request.original, &request.info);
@@ -184,6 +182,31 @@ impl App {
     }
 }
 
+/// 保存先に対応画像の拡張子がなければ既定の拡張子を末尾に補う
+///
+/// 拡張子なしや `image v1.2` のように対応外の拡張子で終わる名前は形式を判定できないため、
+/// 入力された名前を保ったまま `.{ext}` を付け足す
+///
+/// # Arguments
+/// * `path` - ダイアログで入力された保存先
+/// * `ext` - 補う拡張子 (ドットなし)
+///
+/// # Returns
+/// * `PathBuf` - 対応画像の拡張子を持つ保存先
+fn with_default_extension(path: PathBuf, ext: &str) -> PathBuf {
+    let supported = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| is_supported_image_extension(&e.to_ascii_lowercase()));
+    if supported {
+        return path;
+    }
+    let mut name = path.into_os_string();
+    name.push(".");
+    name.push(ext);
+    PathBuf::from(name)
+}
+
 /// 保存ダイアログのファイル種類フィルタに並べる形式を返す
 ///
 /// 既定で選択される先頭のフィルタを `first` とし、残りは `OutputFormat::ALL` の順に並べる
@@ -208,10 +231,11 @@ fn save_dialog_formats(first: Option<OutputFormat>) -> Vec<OutputFormat> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use eframe::egui;
 
-    use super::save_dialog_formats;
+    use super::{save_dialog_formats, with_default_extension};
     use crate::app::actions::test_helpers::{
         poll_io_until, poll_trim_until_idle, trimmed_image_state,
     };
@@ -497,6 +521,23 @@ mod tests {
             app.status
                 .starts_with("クリップボードへコピーしました  (自動保存: ")
         );
+    }
+
+    /// 保存先に対応画像の拡張子がない場合だけ既定の拡張子を末尾に補うこと
+    ///
+    /// `image v1.2` のように対応外の拡張子で終わる名前は置き換えず付け足す
+    #[test]
+    fn with_default_extension_appends_only_when_unsupported() {
+        let append = |name: &str| with_default_extension(PathBuf::from(name), "png");
+
+        // 拡張子なしと対応外の拡張子は末尾に補う
+        assert_eq!(append("out"), PathBuf::from("out.png"));
+        assert_eq!(append("image v1.2"), PathBuf::from("image v1.2.png"));
+        assert_eq!(append("report.pdf"), PathBuf::from("report.pdf.png"));
+
+        // 対応画像の拡張子は大文字小文字を問わずそのまま使う
+        assert_eq!(append("out.jpg"), PathBuf::from("out.jpg"));
+        assert_eq!(append("out.WEBP"), PathBuf::from("out.WEBP"));
     }
 
     /// 保存ダイアログのフィルタが指定形式を先頭に、`Original` を除く全形式を並べること

@@ -14,8 +14,6 @@
       "Bash(pwsh ./scripts/windows/clippy.ps1:*)",
       "Bash(pwsh ./scripts/windows/format.ps1:*)",
       "Bash(pwsh ./scripts/windows/test.ps1:*)",
-      "Bash(./scripts/linux/check.sh:*)",
-      "Bash(./scripts/macos/check.sh:*)",
       "PowerShell(cargo build:*)",
       "PowerShell(cargo check:*)",
       "PowerShell(cargo clippy:*)",

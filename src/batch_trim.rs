@@ -5,11 +5,11 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 use std::thread;
 
-use crate::consts::BATCH_MAX_CONCURRENCY;
-use crate::image_load::{LoadError, open_image_with_icc};
+use crate::consts::{BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK_MEMORY_FACTOR};
+use crate::image_load::{LoadError, LoadedImage, open_image_with_icc, probe_decoded_bytes};
 use crate::image_output::{OutputFormat, SaveOptions, save_trimmed_output_with};
 use crate::panic_message::catch_panic;
 use crate::trim::trim;
@@ -199,6 +199,7 @@ impl BatchTrimResult {
 /// 複数画像をトリミングして `out_dir` へ保存する
 ///
 /// ファイル単位で最大 `BATCH_MAX_CONCURRENCY` 枚を並列に処理する
+/// 同時に処理するファイルの見積もりメモリの合計は `BATCH_MEMORY_BUDGET_BYTES` までに抑える
 /// 各ファイルの処理開始前にキャンセルフラグを確認し、処理中のファイルは完了まで続ける
 /// 出力パスが既存ファイルと衝突する場合は連番サフィックスで回避する
 /// 1 ファイルの処理が panic した場合はそのファイルを `BatchFileError::Panic` として集計し、残りを続ける
@@ -231,6 +232,7 @@ pub fn run_batch_trim(
 /// ワーカーは共有インデックスから次のファイルを取り出して処理し、結果をチャネルで返す
 /// 集計と `on_progress` の呼び出しは呼び出し元スレッドで行う
 /// 並列数が 1 のときはスレッドを起こさず呼び出し元スレッドで逐次処理する
+/// 各ファイルはデコード前に見積もったメモリを `MemoryBudget` から確保してから処理する
 ///
 /// # Arguments
 /// * `workers` - 同時に処理するファイル数の上限 (0 は 1 として扱う)
@@ -242,8 +244,9 @@ fn run_batch_trim_with_workers(
     on_progress: impl FnMut(usize, usize),
     workers: usize,
 ) -> BatchTrimResult {
+    let budget = MemoryBudget::new(BATCH_MEMORY_BUDGET_BYTES);
     run_batch_with(paths, out_dir, cancel, on_progress, workers, |path| {
-        process_one(path, out_dir, params)
+        process_one(path, out_dir, params, &budget)
     })
 }
 
@@ -403,27 +406,104 @@ fn process_guarded(
 }
 
 /// 1 ファイル分の読み込み・トリム・保存
+///
+/// ヘッダから見積もったピークメモリを `budget` から確保し、保存し終えるまで保持する
 fn process_one(
     path: &Path,
     out_dir: &Path,
     params: BatchTrimParams,
+    budget: &MemoryBudget,
 ) -> Result<bool, BatchFileError> {
-    let loaded = open_image_with_icc(path)?;
-    let trimmed = trim(
-        &loaded.image,
-        params.tolerance,
-        params.padding,
-        params.bg_override,
-    );
+    let decoded_bytes = probe_decoded_bytes(path)?;
+    let _permit = budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR));
+
+    let LoadedImage { image, icc_profile } = open_image_with_icc(path)?;
+    let trimmed = trim(&image, params.tolerance, params.padding, params.bg_override);
+    // エンコード中のピークを見積もり内に収めるため、元画像は切り出し後すぐに解放する
+    drop(image);
     let (_, file_renamed) = save_trimmed_output_with(
         &trimmed.image,
-        loaded.icc_profile.as_deref(),
+        icc_profile.as_deref(),
         path,
         out_dir,
         params.format,
         params.save_options,
     )?;
     Ok(file_renamed)
+}
+
+// ======================================================================
+// メモリ予算
+// ======================================================================
+/// 並列処理するファイル間で共有するメモリ予算
+///
+/// 確保できるまで待つ計数セマフォとして働く。各ワーカーが保持する許可は高々 1 つのため、
+/// 1 件の要求を予算全体に切り詰めておけばデッドロックしない
+struct MemoryBudget {
+    /// 予算全体のバイト数
+    capacity: u64,
+    /// 未確保のバイト数
+    available: Mutex<u64>,
+    /// 許可の返却を待つワーカーへの通知
+    released: Condvar,
+}
+
+impl MemoryBudget {
+    /// 予算全体が未確保の状態で生成する
+    fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            available: Mutex::new(capacity),
+            released: Condvar::new(),
+        }
+    }
+
+    /// `bytes` を確保できるまで待ち、確保した許可を返す
+    ///
+    /// 予算全体を超える要求は予算全体に切り詰め、他の許可がすべて返却された時点で確保する
+    ///
+    /// # Arguments
+    /// * `bytes` - 確保するバイト数
+    ///
+    /// # Returns
+    /// * `MemoryPermit` - 破棄時 (panic による巻き戻しを含む) に確保分を返却する許可
+    fn acquire(&self, bytes: u64) -> MemoryPermit<'_> {
+        let bytes = bytes.min(self.capacity);
+        // 保護対象は数値 1 つで、panic 後も不整合にならない
+        let mut available = self
+            .released
+            .wait_while(
+                self.available
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+                |available| *available < bytes,
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+        *available -= bytes;
+        MemoryPermit {
+            budget: self,
+            bytes,
+        }
+    }
+}
+
+/// `MemoryBudget` から確保したメモリの許可
+struct MemoryPermit<'a> {
+    /// 返却先の予算
+    budget: &'a MemoryBudget,
+    /// 確保したバイト数
+    bytes: u64,
+}
+
+impl Drop for MemoryPermit<'_> {
+    fn drop(&mut self) {
+        *self
+            .budget
+            .available
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += self.bytes;
+        self.budget.released.notify_all();
+    }
 }
 
 // ======================================================================
@@ -823,6 +903,62 @@ mod tests {
         assert_eq!(result.saved, 0);
         assert_eq!(result.total, 0);
         assert!(!result.cancelled);
+    }
+
+    // ======================================================================
+    // MemoryBudget
+    // ======================================================================
+    /// 同時に保持される許可の合計が予算を超えないこと
+    #[test]
+    fn memory_budget_limits_concurrent_permits() {
+        let budget = MemoryBudget::new(100);
+        let active = AtomicUsize::new(0);
+        let max_active = AtomicUsize::new(0);
+
+        thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..5 {
+                        let _permit = budget.acquire(60);
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_active.fetch_max(now, Ordering::SeqCst);
+                        // 他スレッドと重なる機会を作る
+                        thread::sleep(std::time::Duration::from_millis(1));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+
+        // 60 バイトの許可は 100 バイトの予算に 1 つしか入らない
+        assert_eq!(max_active.into_inner(), 1);
+        assert_eq!(*budget.available.lock().unwrap(), 100);
+    }
+
+    /// 予算全体を超える要求も予算全体に切り詰めて確保できること
+    #[test]
+    fn memory_budget_clamps_oversized_request() {
+        let budget = MemoryBudget::new(100);
+        let permit = budget.acquire(u64::MAX);
+
+        assert_eq!(permit.bytes, 100);
+        assert_eq!(*budget.available.lock().unwrap(), 0);
+        // 破棄すると全額が返却される
+        drop(permit);
+        assert_eq!(*budget.available.lock().unwrap(), 100);
+    }
+
+    /// 許可を保持したまま panic しても確保分が返却されること
+    #[test]
+    fn memory_budget_releases_permit_on_panic() {
+        let budget = MemoryBudget::new(100);
+        let result = catch_panic(|| {
+            let _permit = budget.acquire(80);
+            panic!("テスト用の panic");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(*budget.available.lock().unwrap(), 100);
     }
 
     /// `BatchFileError` が内包する読み込みエラーを `source()` で返すこと

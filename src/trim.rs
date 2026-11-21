@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::consts::{
     ALPHA_TRANSPARENT_THRESHOLD, BG_DETECT_QUANT_SHIFT, MAX_RGB_SQ_DIST, TOL_MAX, TOL_SCALE_DENOM,
-    TRIM_PARALLEL_MIN_PIXELS,
+    TRIM_PARALLEL_MIN_PIXELS, TRIM_ROW_BLOCK_PIXELS,
 };
 
 // ======================================================================
@@ -497,27 +497,29 @@ fn find_content_bounds(
     parallel: bool,
     is_bg: impl Fn(u32, u32) -> bool + Sync,
 ) -> Option<ContentBounds> {
-    let row_has_content = |y: u32| -> bool {
-        if parallel {
-            (0..w).into_par_iter().any(|x| !is_bg(x, y))
-        } else {
-            (0..w).any(|x| !is_bg(x, y))
-        }
-    };
+    // 行内は逐次に走査し、並列化は複数行をまとめたブロック単位で行う
+    let row_has_content = |y: u32| (0..w).any(|x| !is_bg(x, y));
+    let block_rows = usize::try_from(TRIM_ROW_BLOCK_PIXELS / u64::from(w))
+        .unwrap_or(usize::MAX)
+        .max(1);
 
-    let (top_opt, bottom_opt) = if parallel {
-        rayon::join(
-            || (0..h).find(|&y| row_has_content(y)),
-            || (0..h).rev().find(|&y| row_has_content(y)),
-        )
+    // 上端を先に求め、下端は上端以降だけを探す (全面背景の画像は上端の走査 1 回で終わる)
+    // 上端行は内容を持つため、下端探索は必ず見つかる
+    let (top, bottom) = if parallel {
+        let top = (0..h)
+            .into_par_iter()
+            .with_min_len(block_rows)
+            .find_first(|&y| row_has_content(y))?;
+        let bottom = (top..h)
+            .into_par_iter()
+            .with_min_len(block_rows)
+            .find_last(|&y| row_has_content(y))?;
+        (top, bottom)
     } else {
-        (
-            (0..h).find(|&y| row_has_content(y)),
-            (0..h).rev().find(|&y| row_has_content(y)),
-        )
+        let top = (0..h).find(|&y| row_has_content(y))?;
+        let bottom = (top..h).rev().find(|&y| row_has_content(y))?;
+        (top, bottom)
     };
-
-    let (top, bottom) = (top_opt?, bottom_opt?);
 
     // 左右端は行ごとに両端から走査して最小・最大の x を集める (列方向の走査はキャッシュに不利)
     let row_extent = |y: u32| -> Option<(u32, u32)> {
@@ -709,6 +711,28 @@ mod tests {
         assert_eq!(trimmed.info.trim_h, 8);
         assert_eq!(trimmed.image.width(), 8);
         assert_eq!(trimmed.image.height(), 8);
+    }
+
+    /// 並列走査の対象サイズでも全面背景の画像が元のサイズのままであること
+    #[test]
+    fn trim_parallel_solid_background_returns_original_size() {
+        let img = solid_rgba(1024, 768, [255, 255, 255, 255]);
+        let info = detect_trim(&img, 0, 0, None).info;
+        assert_eq!((info.trim_w, info.trim_h), (1024, 768));
+        assert_eq!((info.offset_x, info.offset_y), (0, 0));
+    }
+
+    /// 並列走査でも離れた 2 点の内容から上下左右の端を正しく求めること
+    #[test]
+    fn trim_parallel_finds_bounds_of_sparse_content() {
+        let mut buf = RgbaImage::from_pixel(1024, 768, Rgba([255, 255, 255, 255]));
+        buf.put_pixel(900, 100, Rgba([255, 0, 0, 255]));
+        buf.put_pixel(30, 700, Rgba([255, 0, 0, 255]));
+        let img = DynamicImage::ImageRgba8(buf);
+        let info = detect_trim(&img, 0, 0, None).info;
+        // x: 30..=900 / y: 100..=700
+        assert_eq!((info.offset_x, info.offset_y), (30, 100));
+        assert_eq!((info.trim_w, info.trim_h), (871, 601));
     }
 
     /// 1x1 の画像でもパニックしないこと

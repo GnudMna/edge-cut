@@ -10,7 +10,6 @@ description: 品質チェック一式 (scripts/windows/check.ps1) を実行し�
 ## 実行
 
 - PowerShell ツール (PowerShell 7) で、リポジトリのルートから実行する。数分かかるため `timeout` は 600000 にする
-- Linux / macOS では Bash ツールで `./scripts/linux/check.sh` / `./scripts/macos/check.sh` を実行する
 
 ```powershell
 ./scripts/windows/check.ps1
