@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fs;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
@@ -9,13 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
-use super::state::{App, IoMsg, SaveKind};
+use super::state::{App, AutoSaveKey, IoMsg, SaveKind};
 use super::trim_worker::TrimJob;
 use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
 use crate::consts::{SUPPORTED_IMAGE_EXTENSIONS, TRIM_DEBOUNCE_MS, is_supported_image_extension};
 use crate::image_load::open_image_with_icc;
 use crate::image_output::{self, OutputFormat};
-use crate::trim::apply_trim;
+use crate::trim::{TrimInfo, apply_trim};
 
 use eframe::egui;
 use image::DynamicImage;
@@ -142,10 +143,20 @@ impl App {
                         self.status = format!("保存完了: {}", path.display());
                     }
                     (SaveKind::Auto, Ok(path)) => {
-                        // 既存メッセージを上書きせず末尾に追記する
-                        self.status = format!("{}  (自動保存: {})", self.status, path.display());
+                        // 既存メッセージを上書きせず末尾に追記する。前回の追記が残っていれば置き換える
+                        let base = match self.io.auto_save_status.take() {
+                            Some((base, shown)) if shown == self.status => base,
+                            _ => mem::take(&mut self.status),
+                        };
+                        self.status = format!("{base}  (自動保存: {})", path.display());
+                        self.io.auto_save_status = Some((base, self.status.clone()));
                     }
-                    (_, Err(msg)) => self.status = msg,
+                    (SaveKind::Auto, Err(msg)) => {
+                        // 失敗した内容は再度の有効化で保存し直せるようにする
+                        self.io.last_auto_save = None;
+                        self.status = msg;
+                    }
+                    (SaveKind::Manual, Err(msg)) => self.status = msg,
                 },
                 IoMsg::Copied { result } => match result {
                     Ok(()) => self.status = "クリップボードへコピーしました".into(),
@@ -201,7 +212,13 @@ impl App {
             self.prefs.padding,
             self.prefs.bg_override,
         );
-        if self.image.info.is_some() && self.image.cache_key == Some(key) && !refresh_orig_tex {
+        // 処理中のジョブは別の値で動いている可能性があるため、完了済みの結果と一致し、
+        // かつ処理中・デバウンス待ちのジョブがない場合のみスキップする
+        if self.image.info.is_some()
+            && self.image.cache_key == Some(key)
+            && !self.trim_worker.is_busy()
+            && !refresh_orig_tex
+        {
             if auto_save_after {
                 self.auto_save_if_enabled(ctx);
             }
@@ -245,14 +262,11 @@ impl App {
             if let Some(orig) = result.orig_color {
                 self.image.orig_tex =
                     Some(ctx.load_texture("orig", orig, egui::TextureOptions::LINEAR));
+                self.trim_worker.refresh_orig_tex = false;
             }
             self.image.info = Some(result.info);
             self.background.bg_color = Some(result.background);
-            self.image.cache_key = Some((
-                self.prefs.tolerance,
-                self.prefs.padding,
-                self.prefs.bg_override,
-            ));
+            self.image.cache_key = Some(result.params);
             self.trim_worker.in_flight = false;
 
             if self.trim_worker.auto_save_after {
@@ -260,6 +274,25 @@ impl App {
                 self.auto_save_if_enabled(ctx);
             }
         }
+    }
+
+    /// 保存・コピー対象の元画像とトリミング矩形を返す
+    ///
+    /// 再計算のデバウンス待ち・処理中は `image.info` に前回の結果が残っているため対象にしない
+    ///
+    /// # Returns
+    /// * `Option<(Arc<DynamicImage>, TrimInfo)>` - 現在の設定でトリミング済みなら元画像と矩形、
+    ///   画像未読み込み・トリミング未完了・再計算中なら `None`
+    pub(super) fn current_trim_target(&self) -> Option<(Arc<DynamicImage>, TrimInfo)> {
+        if self.trim_worker.is_busy() {
+            return None;
+        }
+        self.image.trim_target()
+    }
+
+    /// 現在の設定でのトリミング結果があり、保存・コピーできるかどうか
+    pub(super) fn has_current_trim(&self) -> bool {
+        self.image.info.is_some() && !self.trim_worker.is_busy()
     }
 
     fn start_trim_worker(&mut self, ctx: &egui::Context) {
@@ -271,8 +304,9 @@ impl App {
         let tolerance = self.prefs.tolerance;
         let padding = self.prefs.padding;
         let bg_override = self.prefs.bg_override;
+        // 結果が後続の要求で破棄されてもテクスチャを作り直せるよう、
+        // フラグは送信時ではなくテクスチャを反映した時点で下ろす
         let refresh_orig_tex = self.trim_worker.refresh_orig_tex;
-        self.trim_worker.refresh_orig_tex = false;
         self.trim_worker.in_flight = true;
 
         self.trim_worker.handle.submit(TrimJob {
@@ -345,7 +379,7 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(super) fn save_image(&mut self, ctx: &egui::Context) {
-        let Some((original, info)) = self.image.trim_target() else {
+        let Some((original, info)) = self.current_trim_target() else {
             return;
         };
         let icc_profile = self.image.icc_profile.clone();
@@ -375,6 +409,7 @@ impl App {
     /// 自動保存が有効な場合にトリミング後の画像を保存先フォルダへバックグラウンドで保存する
     ///
     /// ファイル名は `{元画像名}_trimmed.{出力形式の拡張子}` とし、既存ファイルは上書きせず連番で回避する
+    /// 直前の自動保存と同じ画像・矩形・形式・保存先なら保存しない
     /// 成功時は既存のステータスメッセージに追記し、エラー時のみ上書きする
     ///
     /// # Arguments
@@ -383,13 +418,24 @@ impl App {
         if !self.prefs.auto_save {
             return;
         }
-        let Some((original, info)) = self.image.trim_target() else {
+        let Some((original, info)) = self.current_trim_target() else {
             return;
         };
-        let icc_profile = self.image.icc_profile.clone();
         let dir = self.prefs.auto_save_dir.clone();
-        let source = self.image.source_name.clone().unwrap_or_default();
         let format = self.prefs.output_format;
+        let key = AutoSaveKey {
+            load_request_id: self.io.load_request_id,
+            info,
+            format,
+            dir: dir.clone(),
+        };
+        // 自動保存の OFF→ON などで同じ結果を連番ファイルとして増やさない
+        if self.io.last_auto_save.as_ref() == Some(&key) {
+            return;
+        }
+        self.io.last_auto_save = Some(key);
+        let icc_profile = self.image.icc_profile.clone();
+        let source = self.image.source_name.clone().unwrap_or_default();
         self.spawn_save(ctx, SaveKind::Auto, move || {
             fs::create_dir_all(&dir).map_err(|e| format!("自動保存フォルダの作成に失敗: {e}"))?;
             let img = apply_trim(&original, &info);
@@ -408,6 +454,18 @@ impl App {
             })?;
             Ok(path)
         });
+    }
+
+    /// 自動保存を要求する。再計算の待ち中・処理中なら完了後に保存する
+    ///
+    /// # Arguments
+    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
+    pub(super) fn request_auto_save(&mut self, ctx: &egui::Context) {
+        if self.trim_worker.is_busy() {
+            self.trim_worker.auto_save_after = true;
+        } else {
+            self.auto_save_if_enabled(ctx);
+        }
     }
 
     /// 保存処理をワーカースレッドで実行し、完了を `IoMsg::Saved` で通知する
@@ -465,7 +523,7 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(super) fn copy_trimmed_to_clipboard(&mut self, ctx: &egui::Context) {
-        let Some((image, info)) = self.image.trim_target() else {
+        let Some((image, info)) = self.current_trim_target() else {
             return;
         };
         self.status = "クリップボードへコピー中…".into();
@@ -584,7 +642,7 @@ impl App {
 
     /// 実行中の一括トリミングをキャンセルする
     ///
-    /// フラグをセットするのみ。進行中の 1 ファイルが完了したあと、次のファイル処理前に停止する
+    /// フラグをセットするのみ。処理中のファイル (最大 `BATCH_MAX_CONCURRENCY` 枚) は完了まで続け、未着手のファイルは処理しない
     pub(super) fn cancel_batch(&self) {
         self.batch.cancel.store(true, Ordering::Relaxed);
     }
@@ -940,6 +998,18 @@ mod tests {
         false
     }
 
+    /// プレビュートリミングが完了するまで `poll_trim_work()` を繰り返す。タイムアウト時は `false` を返す
+    fn poll_trim_until_idle(app: &mut App, ctx: &egui::Context) -> bool {
+        for _ in 0..500 {
+            app.poll_trim_work(ctx);
+            if !app.trim_worker.is_busy() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
     // ======================================================================
     // clear_image()
     // ======================================================================
@@ -1110,7 +1180,8 @@ mod tests {
         let first = tmp.path().join("photo_trimmed.png");
         assert!(poll_io_until(&mut app, &ctx, |_| first.is_file()));
 
-        // 2 回目は既存ファイルを残したまま連番で保存する
+        // 別の画像を同名で読み込んだ場合は既存ファイルを残したまま連番で保存する
+        app.io.abort_load();
         app.auto_save_if_enabled(&ctx);
         let second = tmp.path().join("photo_trimmed_2.png");
         assert!(poll_io_until(&mut app, &ctx, |_| second.is_file()));
@@ -1350,6 +1421,218 @@ mod tests {
         );
         assert!(app.image.orig_tex.is_some());
         assert!(!app.trim_worker.in_flight);
+    }
+
+    /// 読み込み直後のトリミング中にパラメータを変えても元画像テクスチャが失われないことを確認する
+    #[test]
+    fn schedule_trim_keeps_orig_tex_refresh_when_superseded() {
+        use std::thread;
+        use std::time::Duration;
+
+        let ctx = eframe::egui::Context::default();
+        let mut app = App {
+            image: ImageState {
+                original: Some(Arc::new(make_test_image())),
+                ..ImageState::default()
+            },
+            ..App::default()
+        };
+        // 読み込み時のテクスチャ再生成付き要求を、結果の受信前に別の要求で置き換える
+        app.schedule_trim(&ctx, false, true, false);
+        app.prefs.tolerance = 10;
+        app.schedule_trim(&ctx, false, false, false);
+
+        for _ in 0..50 {
+            app.poll_trim_work(&ctx);
+            if app.image.info.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // 最新の要求の結果でテクスチャが反映され、再生成要求は解除される
+        assert!(app.image.info.is_some());
+        assert!(app.image.orig_tex.is_some(), "元画像テクスチャが失われた");
+        assert!(!app.trim_worker.refresh_orig_tex);
+    }
+
+    /// 処理中のジョブと異なる値へ戻した場合、完了済みの結果と一致してもスキップせず再計算することを確認する
+    #[test]
+    fn schedule_trim_reruns_when_reverted_during_in_flight_job() {
+        let ctx = egui::Context::default();
+        let mut app = App {
+            image: ImageState {
+                original: Some(Arc::new(make_test_image())),
+                ..ImageState::default()
+            },
+            ..App::default()
+        };
+        app.schedule_trim(&ctx, false, true, false);
+        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert_eq!(app.image.cache_key, Some((0, 0, None)));
+
+        // tol=1 のジョブの結果が届く前に tol=0 へ戻す
+        app.prefs.tolerance = 1;
+        app.schedule_trim(&ctx, false, false, false);
+        let in_flight_id = app.trim_worker.request_id;
+        app.prefs.tolerance = 0;
+        app.schedule_trim(&ctx, false, false, false);
+
+        // tol=1 の結果を無効化する新しい要求が出ていること
+        assert_ne!(app.trim_worker.request_id, in_flight_id);
+        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert_eq!(app.image.cache_key, Some((0, 0, None)));
+    }
+
+    /// `cache_key` に受信時点の UI の値ではなく、ジョブで使った値を記録することを確認する
+    #[test]
+    fn poll_trim_work_records_job_params_as_cache_key() {
+        let ctx = egui::Context::default();
+        let mut app = App {
+            image: ImageState {
+                original: Some(Arc::new(make_test_image())),
+                ..ImageState::default()
+            },
+            ..App::default()
+        };
+        app.prefs.tolerance = 1;
+        app.schedule_trim(&ctx, false, true, false);
+        // 再スケジュールせずに UI の値だけ変える
+        app.prefs.tolerance = 0;
+
+        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert_eq!(app.image.cache_key, Some((1, 0, None)));
+    }
+
+    /// 再計算のデバウンス待ち中は前回の矩形でコピーしないことを確認する
+    #[test]
+    fn copy_is_ignored_while_trim_is_pending() {
+        let ctx = egui::Context::default();
+        let mut app = App {
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.image.cache_key = Some((0, 0, None));
+        app.status = "初期".into();
+
+        // スライダー操作直後 (デバウンス待ち) の状態にする
+        app.prefs.tolerance = 1;
+        app.schedule_trim(&ctx, true, false, false);
+        assert!(!app.has_current_trim());
+        assert!(app.current_trim_target().is_none());
+
+        // コピーは開始されずステータスも変わらない
+        app.copy_trimmed_to_clipboard(&ctx);
+        assert_eq!(app.status, "初期");
+        assert!(app.clipboard.is_none());
+    }
+
+    /// 再計算の待ち中に自動保存を有効にした場合、完了後の結果で保存することを確認する
+    #[test]
+    fn request_auto_save_waits_for_pending_trim() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.image.cache_key = Some((0, 0, None));
+        app.prefs.tolerance = 1;
+        app.schedule_trim(&ctx, true, false, false);
+
+        // 待ち中は保存せず、完了後の保存として予約する
+        app.request_auto_save(&ctx);
+        assert!(!app.io.is_saving());
+        assert!(app.trim_worker.auto_save_after);
+
+        // 完了後に新しい設定の結果で保存される
+        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert_eq!(app.image.cache_key, Some((1, 0, None)));
+        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("自動保存"));
+        assert!(done, "status = {}", app.status);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    /// 同じ結果で自動保存を繰り返し要求しても、連番ファイルを増やさないことを確認する
+    #[test]
+    fn auto_save_skips_same_result() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.status = "読み込み完了: a.png".into();
+
+        app.request_auto_save(&ctx);
+        assert!(poll_io_until(&mut app, &ctx, |a| a
+            .status
+            .contains("自動保存")));
+        let status_after_first = app.status.clone();
+
+        // 2 回目は保存を開始せず、ステータスも変えない
+        app.request_auto_save(&ctx);
+        assert!(!app.io.is_saving());
+        assert_eq!(app.status, status_after_first);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    /// 自動保存を繰り返しても、ステータスへの追記が重ならないことを確認する
+    #[test]
+    fn auto_save_status_does_not_accumulate() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.status = "読み込み完了: a.png".into();
+
+        app.auto_save_if_enabled(&ctx);
+        assert!(poll_io_until(&mut app, &ctx, |a| a
+            .status
+            .contains("自動保存")));
+
+        // 形式を変えて再保存すると、前回の追記を置き換える
+        app.prefs.output_format = OutputFormat::Webp;
+        app.auto_save_if_enabled(&ctx);
+        assert!(poll_io_until(&mut app, &ctx, |a| a
+            .status
+            .contains(".webp")));
+        assert!(app.status.starts_with("読み込み完了: a.png  (自動保存: "));
+        assert_eq!(
+            app.status.matches("自動保存").count(),
+            1,
+            "status = {}",
+            app.status
+        );
+
+        // 別のメッセージが表示された後は、そのメッセージに追記する
+        app.status = "クリップボードへコピーしました".into();
+        app.prefs.output_format = OutputFormat::Png;
+        app.auto_save_if_enabled(&ctx);
+        assert!(poll_io_until(&mut app, &ctx, |a| a
+            .status
+            .contains("自動保存")));
+        assert!(
+            app.status
+                .starts_with("クリップボードへコピーしました  (自動保存: ")
+        );
     }
 
     // ======================================================================

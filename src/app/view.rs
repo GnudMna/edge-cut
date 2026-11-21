@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use super::shortcuts::{self, Shortcut};
 use super::state::App;
 use crate::consts::{PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN};
 #[cfg(windows)]
@@ -24,6 +25,12 @@ const TRIM_SHADE_COLOR: egui::Color32 = egui::Color32::from_black_alpha(140);
 
 /// 元画像プレビューに重ねるトリミング矩形の枠線の太さ
 const TRIM_FRAME_WIDTH: f32 = 1.5;
+
+/// 背景色スウォッチに敷く市松模様の 1 マスの大きさ
+const SWATCH_CHECKER_CELL: f32 = 5.0;
+
+/// 画像プレビューに敷く市松模様の 1 マスの大きさ
+const PREVIEW_CHECKER_CELL: f32 = 8.0;
 
 /// プレビューでのトリミング矩形の見せ方
 #[derive(Clone, Copy)]
@@ -71,6 +78,7 @@ impl eframe::App for App {
         self.poll_update(&ctx);
         apply_theme(&ctx, self.prefs.dark_mode);
         handle_file_drop(self, &ctx);
+        self.handle_shortcuts(&ctx);
 
         let sp = if self.prefs.compact_mode { 1.0 } else { 3.0 };
         self.render_bottom_panel(ui, sp);
@@ -175,7 +183,11 @@ impl App {
     fn render_image_buttons(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if ui
             .button(egui::RichText::new("📂 開く").strong())
-            .on_hover_text("画像ファイルを開く")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "画像ファイルを開く",
+                shortcuts::OPEN,
+            ))
             .clicked()
         {
             self.open_image(ctx);
@@ -183,7 +195,11 @@ impl App {
 
         if ui
             .button("📂 一括トリミング")
-            .on_hover_text("複数の画像をまとめてトリミングして保存 (出力形式の設定に従う)")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "複数の画像をまとめてトリミングして保存 (出力形式の設定に従う)",
+                shortcuts::BATCH_TRIM,
+            ))
             .clicked()
             && !self.batch.running
         {
@@ -195,7 +211,11 @@ impl App {
                 .button(
                     egui::RichText::new("⏹ キャンセル").color(egui::Color32::from_rgb(200, 80, 80)),
                 )
-                .on_hover_text("一括トリミングを中止")
+                .on_hover_text(shortcuts::with_shortcut(
+                    ctx,
+                    "一括トリミングを中止",
+                    shortcuts::CANCEL,
+                ))
                 .clicked()
         {
             self.cancel_batch();
@@ -203,17 +223,26 @@ impl App {
 
         if ui
             .button("📋 貼り付け")
-            .on_hover_text("クリップボードの画像を使用")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "クリップボードの画像を使用",
+                shortcuts::PASTE,
+            ))
             .clicked()
         {
             self.paste_from_clipboard(ctx);
         }
 
         // 子 UI で囲むと折り返しが効かないため、`add_enabled` で直接配置する
-        let has_trimmed = self.image.info.is_some();
+        // 再計算の待ち中・処理中は前回の矩形が残っているため無効にする
+        let has_trimmed = self.has_current_trim();
         if ui
             .add_enabled(has_trimmed, egui::Button::new("💾 保存"))
-            .on_hover_text("トリミング後の画像を保存")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "トリミング後の画像を保存",
+                shortcuts::SAVE,
+            ))
             .clicked()
         {
             self.save_image(ctx);
@@ -221,7 +250,11 @@ impl App {
 
         if ui
             .add_enabled(has_trimmed, egui::Button::new("📋 コピー"))
-            .on_hover_text("トリミング後の画像をクリップボードへコピー")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "トリミング後の画像をクリップボードへコピー",
+                shortcuts::COPY,
+            ))
             .clicked()
         {
             self.copy_trimmed_to_clipboard(ctx);
@@ -238,7 +271,11 @@ impl App {
                 has_original,
                 egui::Button::new(egui::RichText::new("🗑 クリア").color(clear_color)),
             )
-            .on_hover_text("画像をクリア")
+            .on_hover_text(shortcuts::with_shortcut(
+                ctx,
+                "画像をクリア",
+                shortcuts::CLEAR,
+            ))
             .clicked()
         {
             self.clear_image();
@@ -272,6 +309,10 @@ impl App {
             .clicked()
         {
             self.prefs.compact_mode = !self.prefs.compact_mode;
+            // コンパクトモードでは元画像を表示しないため、スポイトの対象がなくなる
+            if self.prefs.compact_mode {
+                self.background.pick_mode = false;
+            }
         }
         #[cfg(windows)]
         self.render_help_menu(ui, ctx);
@@ -410,7 +451,7 @@ impl App {
         let prev_auto_save = self.prefs.auto_save;
         ui.checkbox(&mut self.prefs.auto_save, "自動保存");
         if self.prefs.auto_save && !prev_auto_save {
-            self.auto_save_if_enabled(ctx);
+            self.request_auto_save(ctx);
         }
 
         ui.add_space(4.0);
@@ -481,9 +522,14 @@ impl App {
         } else {
             "スポイト"
         };
+        // コンパクトモードでは元画像のペインがなくクリック先がないため無効化する
         if ui
-            .selectable_label(self.background.pick_mode, pick_label)
-            .on_hover_text("元画像をクリックして背景色を取得する")
+            .add_enabled(
+                !self.prefs.compact_mode,
+                egui::Button::selectable(self.background.pick_mode, pick_label),
+            )
+            .on_hover_text("元画像をクリックして背景色を取得する (Esc で解除)")
+            .on_disabled_hover_text("コンパクトモードでは元画像を表示しないため使用できない")
             .clicked()
         {
             self.background.pick_mode = !self.background.pick_mode;
@@ -698,6 +744,59 @@ fn update_dialog_body(
 }
 
 // ======================================================================
+// キーボードショートカット
+// ======================================================================
+impl App {
+    /// キーボードショートカットを判定して対応する操作を実行する
+    ///
+    /// テキスト入力中・更新ダイアログ表示中は受け付けない
+    /// ラベルの文字列を選択中の Ctrl+C は文字列のコピーを優先する
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        let dialog_open = self.update.dialog_open;
+        #[cfg(not(windows))]
+        let dialog_open = false;
+        let enabled = !dialog_open && !ctx.text_edit_focused();
+        let Some(shortcut) = ctx.input_mut(|i| self.shortcuts.detect(i, enabled)) else {
+            return;
+        };
+
+        match shortcut {
+            Shortcut::Open => self.open_image(ctx),
+            Shortcut::BatchTrim => self.batch_trim(ctx),
+            Shortcut::Paste => self.paste_from_clipboard(ctx),
+            Shortcut::Save => self.save_image(ctx),
+            Shortcut::Copy => {
+                let label_selected = ctx
+                    .with_plugin(|s: &mut egui::text_selection::LabelSelectionState| {
+                        s.has_selection()
+                    })
+                    .unwrap_or(false);
+                if !label_selected {
+                    self.copy_trimmed_to_clipboard(ctx);
+                }
+            }
+            Shortcut::Clear => {
+                if self.image.original.is_some() {
+                    self.clear_image();
+                }
+            }
+            Shortcut::Cancel => {
+                // 開いているメニュー・ポップアップを閉じる操作を優先する
+                if egui::Popup::is_any_open(ctx) {
+                    return;
+                }
+                if self.background.pick_mode {
+                    self.background.pick_mode = false;
+                } else if self.batch.running {
+                    self.cancel_batch();
+                }
+            }
+        }
+    }
+}
+
+// ======================================================================
 // UI ヘルパー
 // ======================================================================
 fn apply_theme(ctx: &egui::Context, dark_mode: bool) {
@@ -750,35 +849,55 @@ fn slider_needs_trim(
     false
 }
 
+/// 透明部分を見分けるための市松模様を `rect` に描く
+///
+/// マス目は `rect` の左上を基準に並べ、描画先のクリップ領域と重なるマスだけを描く
+///
+/// # Arguments
+/// * `painter` - 描画先
+/// * `rect` - 市松模様を敷く領域
+/// * `cell` - 1 マスの一辺の長さ
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
+    let visible = rect.intersect(painter.clip_rect());
+    if !visible.is_positive() {
+        return;
+    }
+    // 大きなプレビューでも見えている範囲のマスだけを描くよう、開始位置をマス目に揃える
+    let first_col = ((visible.min.x - rect.min.x) / cell).floor() as usize;
+    let first_row = ((visible.min.y - rect.min.y) / cell).floor() as usize;
+    let light = egui::Color32::from_gray(210);
+    let dark = egui::Color32::from_gray(170);
+    let mut row = first_row;
+    #[allow(clippy::cast_precision_loss)]
+    let mut y = rect.min.y + row as f32 * cell;
+    while y < visible.max.y {
+        let mut col = first_col;
+        #[allow(clippy::cast_precision_loss)]
+        let mut x = rect.min.x + col as f32 * cell;
+        while x < visible.max.x {
+            let tile = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell, cell));
+            let color = if (row + col).is_multiple_of(2) {
+                light
+            } else {
+                dark
+            };
+            painter.rect_filled(tile.intersect(rect), 0.0, color);
+            x += cell;
+            col += 1;
+        }
+        y += cell;
+        row += 1;
+    }
+}
+
 /// 背景色スウォッチを描画する (半透明のときは市松模様を敷く)
 fn show_bg_swatch(ui: &mut egui::Ui, rgba: [u8; 4]) {
     let size = egui::vec2(22.0, 22.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     if rgba[3] < 255 {
-        let cell = 5.0;
-        let light = egui::Color32::from_gray(210);
-        let dark = egui::Color32::from_gray(170);
-        let mut y = rect.min.y;
-        let mut row = 0;
-        while y < rect.max.y {
-            let mut x = rect.min.x;
-            let mut col = 0;
-            while x < rect.max.x {
-                let w = (x + cell).min(rect.max.x) - x;
-                let h = (y + cell).min(rect.max.y) - y;
-                let color = if (row + col) % 2 == 0 { light } else { dark };
-                painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)),
-                    0.0,
-                    color,
-                );
-                x += cell;
-                col += 1;
-            }
-            y += cell;
-            row += 1;
-        }
+        paint_checkerboard(painter, rect, SWATCH_CHECKER_CELL);
     }
     painter.rect_filled(
         rect,
@@ -897,6 +1016,8 @@ fn show_panel(
                     egui::Sense::hover()
                 };
                 let (rect, response) = ui.allocate_exact_size(disp, sense);
+                // 透明部分がパネルの背景に溶けないよう、画像の下に市松模様を敷く
+                paint_checkerboard(ui.painter(), rect, PREVIEW_CHECKER_CELL);
                 // 範囲外の余白を塗ってから、元画像と重なる部分だけをテクスチャから描く
                 if let Some(fill) = fill.filter(|_| !FULL_UV.contains_rect(uv)) {
                     ui.painter().rect_filled(rect, 0.0, fill);

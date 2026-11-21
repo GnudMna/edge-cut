@@ -8,7 +8,7 @@
 //! プレビューは元画像テクスチャへ矩形を重ねる・UV で切り出すことで表示する
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
 use super::image_convert::to_preview_color_image;
@@ -40,10 +40,8 @@ impl TrimWorkerHandle {
     pub(super) fn spawn(result_tx: Sender<TrimWorkerResult>) -> Self {
         let (job_tx, job_rx) = mpsc::channel::<TrimJob>();
         let thread = thread::spawn(move || {
-            while let Ok(mut job) = job_rx.recv() {
-                while let Ok(newer) = job_rx.try_recv() {
-                    job = newer;
-                }
+            while let Ok(job) = job_rx.recv() {
+                let job = take_latest(job, &job_rx);
 
                 let orig_color = if job.refresh_orig_tex {
                     Some(to_preview_color_image(job.original.as_ref()))
@@ -58,6 +56,7 @@ impl TrimWorkerHandle {
                 );
                 let _ = result_tx.send(TrimWorkerResult {
                     request_id: job.request_id,
+                    params: (job.tolerance, job.padding, job.bg_override),
                     info: bounds.info,
                     orig_color,
                     background: bounds.background,
@@ -75,6 +74,25 @@ impl TrimWorkerHandle {
     pub(super) fn submit(&self, job: TrimJob) {
         let _ = self.job_tx.send(job);
     }
+}
+
+/// キューに溜まったジョブを破棄し、最新のジョブだけを返す
+///
+/// 破棄したジョブが元画像テクスチャの再生成を要求していた場合は最新のジョブへ引き継ぐ
+/// (引き継がないと読み込み直後のテクスチャ生成が失われ、プレビューが空のままになる)
+///
+/// # Arguments
+/// * `job` - 受信済みのジョブ
+/// * `job_rx` - 未処理ジョブの受信チャネル
+///
+/// # Returns
+/// * `TrimJob` - 最新のジョブ
+fn take_latest(mut job: TrimJob, job_rx: &Receiver<TrimJob>) -> TrimJob {
+    while let Ok(mut newer) = job_rx.try_recv() {
+        newer.refresh_orig_tex |= job.refresh_orig_tex;
+        job = newer;
+    }
+    job
 }
 
 #[cfg(test)]
@@ -130,5 +148,35 @@ mod tests {
                 "coalescing 後に古い request_id が返るべきではない"
             );
         }
+    }
+
+    /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれることを確認する
+    #[test]
+    fn take_latest_carries_over_refresh_orig_tex() {
+        let ctx = egui::Context::default();
+        let original = solid_image();
+        let job = |request_id, refresh_orig_tex| TrimJob {
+            request_id,
+            original: Arc::clone(&original),
+            tolerance: 0,
+            padding: 0,
+            bg_override: None,
+            refresh_orig_tex,
+            ctx: ctx.clone(),
+        };
+
+        // 先頭の再生成要求が、後続 2 件を経ても最新のジョブに残る
+        let (tx, rx) = mpsc::channel();
+        tx.send(job(2, false)).unwrap();
+        tx.send(job(3, false)).unwrap();
+        let latest = take_latest(job(1, true), &rx);
+        assert_eq!(latest.request_id, 3);
+        assert!(latest.refresh_orig_tex);
+
+        // どのジョブも要求していなければ再生成しない
+        tx.send(job(5, false)).unwrap();
+        let latest = take_latest(job(4, false), &rx);
+        assert_eq!(latest.request_id, 5);
+        assert!(!latest.refresh_orig_tex);
     }
 }

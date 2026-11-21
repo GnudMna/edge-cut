@@ -32,8 +32,9 @@ lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/
 | `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルを再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
 | `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
-| `src/app/` | egui GUI。`state` (状態)、`view` (描画・更新ダイアログ)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
+| `src/app/` | egui GUI。`state` (状態)、`view` (描画・更新ダイアログ)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`shortcuts` (キーボードショートカットの判定)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
 | `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定 |
+| `src/test_helpers.rs` | `#[cfg(test)]` 限定。`tests/common/images.rs` を `include!` してユニットテストと画像生成ヘルパーを共有 |
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
 
 - コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める

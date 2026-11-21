@@ -113,10 +113,17 @@ pub struct TrimBounds {
 #[must_use]
 pub fn detect_background_rgba(rgba: &RgbaImage) -> [u8; 4] {
     let (w, h) = rgba.dimensions();
+    detect_background_with(w, h, |x, y| rgba.get_pixel(x, y).0)
+}
+
+/// 画素読み出し関数を使って四辺の最頻色を背景色として検出する
+///
+/// 判定規則は [`detect_background_rgba`] と同じ。色形式ごとのバッファを
+/// RGBA8 へ一括変換せずに検出するために使う
+fn detect_background_with(w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> [u8; 4] {
     if w == 0 || h == 0 {
         return [255, 255, 255, 255];
     }
-    let pixel = |x: u32, y: u32| -> [u8; 4] { rgba.get_pixel(x, y).0 };
     let mut freq: HashMap<[u8; 4], u32> = HashMap::new();
     // 上辺・下辺
     for x in 0..w {
@@ -278,13 +285,48 @@ pub fn detect_trim(
         };
     }
 
+    // 画像全体を RGBA8 へ変換すると大きな画像で操作ごとに巨大な確保が走るため、
+    // 8bit 形式は生バッファから直接、それ以外は画素単位で RGBA8 へ変換して判定する
     match img {
-        DynamicImage::ImageRgba8(rgba) => detect_trim_rgba(rgba, tol, padding, bg_override),
-        other => {
-            let rgba = other.to_rgba8();
-            detect_trim_rgba(&rgba, tol, padding, bg_override)
+        DynamicImage::ImageRgba8(buf) => {
+            let raw = buf.as_raw();
+            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+                raw_pixel::<4>(raw, w, x, y)
+            })
         }
+        DynamicImage::ImageRgb8(buf) => {
+            let raw = buf.as_raw();
+            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+                let [red, green, blue] = raw_pixel::<3>(raw, w, x, y);
+                [red, green, blue, u8::MAX]
+            })
+        }
+        DynamicImage::ImageLuma8(buf) => {
+            let raw = buf.as_raw();
+            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+                let [v] = raw_pixel::<1>(raw, w, x, y);
+                [v, v, v, u8::MAX]
+            })
+        }
+        DynamicImage::ImageLumaA8(buf) => {
+            let raw = buf.as_raw();
+            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+                let [v, a] = raw_pixel::<2>(raw, w, x, y);
+                [v, v, v, a]
+            })
+        }
+        other => detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+            other.get_pixel(x, y).0
+        }),
     }
+}
+
+/// 8bit 形式の生バッファから `N` チャネルの画素を読み出す
+fn raw_pixel<const N: usize>(raw: &[u8], w: u32, x: u32, y: u32) -> [u8; N] {
+    let start = (y as usize * w as usize + x as usize) * N;
+    let mut pixel = [0; N];
+    pixel.copy_from_slice(&raw[start..start + N]);
+    pixel
 }
 
 /// トリミング情報に従って画像を切り出す
@@ -442,35 +484,47 @@ fn find_content_bounds(
     })
 }
 
-/// `RgbaImage` バッファ上で余白トリミング境界を求める
-fn detect_trim_rgba(
-    rgba: &RgbaImage,
+/// 画素読み出し関数を使って余白トリミング境界を求める
+///
+/// # Arguments
+/// * `w`, `h`      - 画像の幅と高さ (px)。いずれも 1 以上
+/// * `tol`         - 余白検出の許容度 (0–100)
+/// * `padding`     - トリミング後に残す余白ピクセル数
+/// * `bg_override` - 手動指定の背景色。`None` のとき四辺から自動検出する
+/// * `pixel`       - 座標 `(x, y)` の RGBA8 値を返す関数
+///
+/// # Returns
+/// * `TrimBounds` - トリミング情報と使用した背景色
+fn detect_trim_with(
+    w: u32,
+    h: u32,
     tol: u32,
     padding: u32,
     bg_override: Option<[u8; 4]>,
+    pixel: impl Fn(u32, u32) -> [u8; 4] + Sync,
 ) -> TrimBounds {
-    let (w, h) = rgba.dimensions();
-    let bg = bg_override.unwrap_or_else(|| detect_background_rgba(rgba));
+    let bg = bg_override.unwrap_or_else(|| detect_background_with(w, h, &pixel));
 
     // RGBA 各チャネルの差の二乗和がこの値以下なら背景とみなす
     // 尺度は RGB の最大二乗距離基準のままとし、不透明画像の結果を従来と揃える
     let sq_thresh =
         u32::try_from(u64::from(tol) * u64::from(tol) * MAX_RGB_SQ_DIST / TOL_SCALE_DENOM)
             .unwrap_or(u32::MAX);
-    let raw = rgba.as_raw();
-    let stride = (w * 4) as usize;
+    // 透明な背景ではアルファ差がこの値以下なら背景とみなす
+    // RGB の距離と同じく許容度に比例させ、許容度最大で全アルファ (0–255) を覆う
+    let alpha_thresh = u64::from(tol) * u64::from(u8::MAX) / u64::from(TOL_MAX);
     let parallel = u64::from(w) * u64::from(h) >= TRIM_PARALLEL_MIN_PIXELS;
 
     let is_bg = |x: u32, y: u32| -> bool {
-        let i = y as usize * stride + x as usize * 4;
-        let p = [raw[i], raw[i + 1], raw[i + 2], raw[i + 3]];
+        let p = pixel(x, y);
         // ほぼ完全に透明なピクセル → 背景とみなす
         if p[3] < ALPHA_TRANSPARENT_THRESHOLD {
             return true;
         }
-        // ほぼ完全に透明なキャンバス → 透明でないピクセルはすべて内容
+        // ほぼ完全に透明なキャンバス → 透明な画素の RGB は見えないためアルファ差だけで判定する
+        // 半透明の影やアンチエイリアスのにじみを許容度で削れるようにする
         if bg[3] < ALPHA_TRANSPARENT_THRESHOLD {
-            return false;
+            return u64::from(p[3].abs_diff(bg[3])) <= alpha_thresh;
         }
         // 不透明な背景上の半透明ピクセルを背景と誤判定しないようアルファ差も加える
         let sq_dist: u32 = p
@@ -811,6 +865,42 @@ mod tests {
         assert_eq!(result.info.trim_h, 4);
     }
 
+    /// 透明な背景上の半透明な影が許容度に応じて背景とみなされることを確認する
+    #[test]
+    fn trim_transparent_canvas_tolerance_removes_semi_transparent_shadow() {
+        // 10x10 / 縁 1px 透明 / その内側 1px に半透明の影 (alpha=40) / 中央 6x6 不透明赤
+        let mut buf = RgbaImage::new(10, 10);
+        for y in 0..10u32 {
+            for x in 0..10u32 {
+                let px = if !(1..9).contains(&x) || !(1..9).contains(&y) {
+                    image::Rgba([0u8, 0, 0, 0])
+                } else if !(2..8).contains(&x) || !(2..8).contains(&y) {
+                    image::Rgba([0u8, 0, 0, 40])
+                } else {
+                    image::Rgba([255u8, 0, 0, 255])
+                };
+                buf.put_pixel(x, y, px);
+            }
+        }
+        let img = DynamicImage::ImageRgba8(buf);
+
+        // tol=0 では影も内容として残る
+        let result = trim(&img, 0, 0, None);
+        assert_eq!((result.info.offset_x, result.info.trim_w), (1, 8));
+
+        // tol=15 (アルファ差 38 まで) では影 (アルファ差 40) はまだ残る
+        let result = trim(&img, 15, 0, None);
+        assert_eq!((result.info.offset_x, result.info.trim_w), (1, 8));
+
+        // tol=16 (アルファ差 40 まで) で影が背景とみなされ、不透明な内容だけが残る
+        let result = trim(&img, 16, 0, None);
+        assert_eq!((result.info.offset_x, result.info.trim_w), (2, 6));
+
+        // tol=99 (アルファ差 252 まで) でも不透明な内容 (アルファ差 255) は残る
+        let result = trim(&img, 99, 0, None);
+        assert_eq!((result.info.offset_x, result.info.trim_w), (2, 6));
+    }
+
     // ======================================================================
     // detect_bg (private 関数の間接テスト)
     // ======================================================================
@@ -1007,6 +1097,45 @@ mod tests {
             ),
             (4, 3, 1, 1)
         );
+    }
+
+    /// 各色形式で RGBA8 へ一括変換した画像と同じ矩形・背景色を返すことを確認する
+    #[test]
+    fn detect_trim_matches_rgba8_conversion_for_all_color_types() {
+        // 半透明の縁と、背景と僅かに異なる色の内容を持つ画像を各色形式へ変換する
+        let mut base = RgbaImage::from_pixel(24, 18, Rgba([250, 248, 246, 255]));
+        for y in 5..12 {
+            for x in 6..17 {
+                base.put_pixel(x, y, Rgba([40, 120, 200, 180]));
+            }
+        }
+        base.put_pixel(0, 0, Rgba([0, 0, 0, 0]));
+        let base = DynamicImage::ImageRgba8(base);
+        let variants = [
+            base.clone(),
+            DynamicImage::ImageRgb8(base.to_rgb8()),
+            DynamicImage::ImageLuma8(base.to_luma8()),
+            DynamicImage::ImageLumaA8(base.to_luma_alpha8()),
+            DynamicImage::ImageRgb16(base.to_rgb16()),
+            DynamicImage::ImageRgba16(base.to_rgba16()),
+            DynamicImage::ImageLuma16(base.to_luma16()),
+            DynamicImage::ImageLumaA16(base.to_luma_alpha16()),
+            DynamicImage::ImageRgb32F(base.to_rgb32f()),
+            DynamicImage::ImageRgba32F(base.to_rgba32f()),
+        ];
+        for img in &variants {
+            let expected_src = DynamicImage::ImageRgba8(img.to_rgba8());
+            for (tol, padding, bg_override) in [
+                (0, 0, None),
+                (5, 3, None),
+                (30, 30, None),
+                (10, 2, Some([250, 248, 246, 255])),
+            ] {
+                let actual = detect_trim(img, tol, padding, bg_override);
+                let expected = detect_trim(&expected_src, tol, padding, bg_override);
+                assert_eq!(actual, expected, "{:?} tol={tol}", img.color());
+            }
+        }
     }
 
     /// `apply_trim` が矩形どおりの位置・サイズで切り出すことを確認する

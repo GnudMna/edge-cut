@@ -23,7 +23,10 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::tiff::TiffEncoder;
 use image::codecs::webp::WebPEncoder;
-use image::{ColorType, DynamicImage, ImageEncoder, ImageError, ImageFormat, Rgb, RgbImage};
+use image::{
+    ColorType, DynamicImage, GrayImage, ImageEncoder, ImageError, ImageFormat, Luma, Pixel, Rgb,
+    RgbImage,
+};
 use serde::{Deserialize, Serialize};
 
 /// 上書き保存用の一時ファイル名が衝突した場合に試す回数
@@ -385,11 +388,24 @@ fn to_encoder_compatible(img: &DynamicImage, format: ImageFormat) -> Cow<'_, Dyn
 
 /// JPEG エンコーダが受け付ける 8bit RGB / グレースケールへ変換する
 ///
+/// グレースケール画像は GRAY の ICC プロファイルを引き継げるよう 8bit グレースケールのまま保つ
 /// 透過ピクセルは `JPEG_FLATTEN_BACKGROUND` に合成する
 /// (アルファを捨てるだけでは透明部分の RGB 値 (多くは黒) が露出するため)
 fn to_jpeg_compatible(img: &DynamicImage) -> Cow<'_, DynamicImage> {
     match img {
         DynamicImage::ImageRgb8(_) | DynamicImage::ImageLuma8(_) => Cow::Borrowed(img),
+        _ if !img.color().has_color() && !img.color().has_alpha() => {
+            Cow::Owned(DynamicImage::ImageLuma8(img.to_luma8()))
+        }
+        _ if !img.color().has_color() => {
+            let luma_alpha = img.to_luma_alpha8();
+            let [bg] = Rgb(JPEG_FLATTEN_BACKGROUND).to_luma().0;
+            let luma = GrayImage::from_fn(luma_alpha.width(), luma_alpha.height(), |x, y| {
+                let [l, a] = luma_alpha.get_pixel(x, y).0;
+                Luma([blend_over(l, bg, a)])
+            });
+            Cow::Owned(DynamicImage::ImageLuma8(luma))
+        }
         _ if !img.color().has_alpha() => Cow::Owned(DynamicImage::ImageRgb8(img.to_rgb8())),
         _ => {
             let rgba = img.to_rgba8();
@@ -900,25 +916,61 @@ mod tests {
     fn save_image_skips_gray_icc_after_rgb_conversion() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        let icc = fake_icc(*b"GRAY");
-        let img =
-            DynamicImage::ImageLumaA8(image::ImageBuffer::from_pixel(4, 4, LumaA([128, 255])));
-
-        // PNG はグレースケールのまま保存されるため埋め込む
-        let png = dir.join("out.png");
-        save_image(&img, Some(&icc), &png).expect("PNG 保存");
-        let loaded = open_image_with_icc(&png).expect("PNG 再読み込み");
-        assert_eq!(loaded.icc_profile.as_deref(), Some(icc.as_slice()));
-
-        // JPEG は透過合成で RGB になるため埋め込まない
-        let jpg = dir.join("out.jpg");
-        save_image(&img, Some(&icc), &jpg).expect("JPEG 保存");
+        let path = dir.join("out.jpg");
+        save_image(&half_transparent_image(), Some(&fake_icc(*b"GRAY")), &path).expect("保存");
         assert!(
-            open_image_with_icc(&jpg)
-                .expect("JPEG 再読み込み")
+            open_image_with_icc(&path)
+                .expect("再読み込み")
                 .icc_profile
                 .is_none()
         );
+    }
+
+    /// グレースケール画像は JPEG でもグレースケールのまま保存し、GRAY プロファイルを引き継ぐことを確認する
+    #[test]
+    fn save_image_keeps_gray_icc_for_grayscale_jpeg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let icc = fake_icc(*b"GRAY");
+        let images = [
+            DynamicImage::ImageLuma8(image::ImageBuffer::from_pixel(4, 4, Luma([128]))),
+            DynamicImage::ImageLumaA8(image::ImageBuffer::from_pixel(4, 4, LumaA([128, 255]))),
+            DynamicImage::ImageLuma16(image::ImageBuffer::from_pixel(4, 4, Luma([32896]))),
+            DynamicImage::ImageLumaA16(image::ImageBuffer::from_pixel(4, 4, LumaA([32896, 65535]))),
+        ];
+        for img in &images {
+            let path = dir.join(format!("{:?}.jpg", img.color()));
+            save_image(img, Some(&icc), &path).expect("JPEG 保存");
+
+            // 8bit グレースケールとして保存され、プロファイルも埋め込まれる
+            let loaded = open_image_with_icc(&path).expect("再読み込み");
+            assert_eq!(loaded.image.color(), ColorType::L8, "{:?}", img.color());
+            assert_eq!(
+                loaded.icc_profile.as_deref(),
+                Some(icc.as_slice()),
+                "{:?}",
+                img.color()
+            );
+        }
+    }
+
+    /// グレースケールの透過画像を JPEG で保存すると、透明部分が背景色に合成されることを確認する
+    #[test]
+    fn save_image_flattens_gray_alpha_for_jpeg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let path = dir.join("out.jpg");
+        // 左半分は透明な黒、右半分は不透明な黒
+        let img = DynamicImage::ImageLumaA8(image::ImageBuffer::from_fn(8, 8, |x, _| {
+            LumaA([0, if x < 4 { 0 } else { 255 }])
+        }));
+        save_image(&img, None, &path).expect("JPEG 保存");
+
+        let reloaded = image::open(&path).expect("再読み込み").to_luma8();
+        let left = reloaded.get_pixel(1, 4).0[0];
+        let right = reloaded.get_pixel(6, 4).0[0];
+        assert!(left > 240, "left = {left}");
+        assert!(right < 15, "right = {right}");
     }
 
     /// ICC 非対応形式ではプロファイルを破棄して保存に成功することを確認する

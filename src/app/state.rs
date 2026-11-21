@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use super::clipboard_worker::ClipboardWorkerHandle;
+use super::shortcuts::ShortcutTracker;
 use super::trim_worker::TrimWorkerHandle;
 use crate::consts::{PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN};
 use crate::image_load::LoadedImage;
@@ -17,9 +18,14 @@ use crate::trim::TrimInfo;
 use eframe::egui;
 use image::DynamicImage;
 
+/// トリミング結果を決めるパラメータ `(tolerance, padding, bg_override)`
+pub(super) type TrimParams = (u32, u32, Option<[u8; 4]>);
+
 /// バックグラウンドのプレビュートリミング結果
 pub(super) struct TrimWorkerResult {
     pub request_id: u64,
+    /// このジョブで使ったパラメータ。受信時点の UI の値とは異なりうる
+    pub params: TrimParams,
     pub info: TrimInfo,
     pub orig_color: Option<egui::ColorImage>,
     pub background: [u8; 4],
@@ -118,7 +124,7 @@ pub(super) struct ImageState {
     /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
     pub info: Option<TrimInfo>,
     /// 直近のトリミング実行時の `(tolerance, padding, bg_override)`。同じ値なら再実行をスキップする
-    pub cache_key: Option<(u32, u32, Option<[u8; 4]>)>,
+    pub cache_key: Option<TrimParams>,
 }
 
 impl ImageState {
@@ -191,7 +197,7 @@ pub(super) struct TrimWorkerState {
     pub in_flight: bool,
     /// デバウンス後にトリミングを開始する時刻
     pub debounce_until: Option<Instant>,
-    /// 次回完了後に元画像テクスチャも再生成するか
+    /// 元画像テクスチャも再生成するか。再生成したテクスチャを反映するまで `true` のまま
     pub refresh_orig_tex: bool,
     /// 次回完了後に自動保存するか
     pub auto_save_after: bool,
@@ -282,6 +288,25 @@ pub(super) struct IoState {
     pub save_handles: Vec<JoinHandle<()>>,
     /// 読み込み完了時のステータスに追記する補足 (ドロップ時の除外件数など)
     pub load_note: Option<String>,
+    /// 直近に自動保存を開始した内容。同じ結果を連番ファイルとして重複保存しないために使う
+    pub last_auto_save: Option<AutoSaveKey>,
+    /// 自動保存の追記前のステータスと追記後のステータス
+    ///
+    /// 表示中のステータスが追記後のままなら追記前に戻してから追記し、追記が重ならないようにする
+    pub auto_save_status: Option<(String, String)>,
+}
+
+/// 自動保存の内容を識別するキー
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AutoSaveKey {
+    /// 保存元画像の読み込み要求 ID
+    pub load_request_id: u64,
+    /// 保存したトリミング矩形
+    pub info: TrimInfo,
+    /// 出力形式
+    pub format: OutputFormat,
+    /// 保存先ディレクトリ
+    pub dir: PathBuf,
 }
 
 impl Default for IoState {
@@ -293,6 +318,8 @@ impl Default for IoState {
             load_request_id: 0,
             save_handles: Vec::new(),
             load_note: None,
+            last_auto_save: None,
+            auto_save_status: None,
         }
     }
 }
@@ -425,6 +452,8 @@ pub struct App {
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
     pub(super) io: IoState,
+    /// キーボードショートカットの判定状態
+    pub(super) shortcuts: ShortcutTracker,
     /// アプリ更新 (Windows のみ)
     #[cfg(windows)]
     pub(super) update: UpdateState,
@@ -452,6 +481,7 @@ impl App {
             batch: BatchState::default(),
             trim_worker: TrimWorkerState::new(),
             io: IoState::default(),
+            shortcuts: ShortcutTracker::default(),
             #[cfg(windows)]
             update: UpdateState::default(),
         }
