@@ -84,8 +84,14 @@ pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
 /// 拡張子が未対応・欠落時の出力フォールバック
 pub const DEFAULT_IMAGE_EXTENSION: &str = "png";
 
-/// JPEG 保存時のエンコード品質 (1–100)
-pub const JPEG_QUALITY: u8 = 95;
+/// JPEG 保存時のエンコード品質の既定値
+pub const JPEG_QUALITY_DEFAULT: u8 = 95;
+
+/// JPEG 保存時のエンコード品質の最小値
+pub const JPEG_QUALITY_MIN: u8 = 1;
+
+/// JPEG 保存時のエンコード品質の最大値
+pub const JPEG_QUALITY_MAX: u8 = 100;
 
 /// JPEG 保存時に透過ピクセルを合成する背景色 (RGB)
 pub const JPEG_FLATTEN_BACKGROUND: [u8; 3] = [255, 255, 255];
@@ -174,10 +180,12 @@ mod tests {
         assert_eq!(MAX_RGB_SQ_DIST, 255u64 * 255 * 3);
     }
 
-    /// JPEG 品質が有効範囲内であることを確認する
+    /// JPEG 品質の既定値がエンコーダの有効範囲 (1–100) 内であることを確認する
     #[test]
     fn jpeg_quality_is_in_valid_range() {
-        assert!((1..=100).contains(&JPEG_QUALITY));
+        assert!(JPEG_QUALITY_MIN >= 1);
+        assert!(JPEG_QUALITY_MAX <= 100);
+        assert!((JPEG_QUALITY_MIN..=JPEG_QUALITY_MAX).contains(&JPEG_QUALITY_DEFAULT));
     }
 
     /// 画像読み込み上限が正の値であることを確認する

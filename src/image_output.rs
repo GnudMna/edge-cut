@@ -15,8 +15,8 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::consts::{
-    DEFAULT_IMAGE_EXTENSION, JPEG_FLATTEN_BACKGROUND, JPEG_QUALITY, OUTPUT_SUFFIX_MAX,
-    is_supported_image_extension,
+    DEFAULT_IMAGE_EXTENSION, JPEG_FLATTEN_BACKGROUND, JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX,
+    JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX, is_supported_image_extension,
 };
 
 use image::codecs::jpeg::JpegEncoder;
@@ -29,7 +29,7 @@ use image::{
 };
 use serde::{Deserialize, Serialize};
 
-/// 上書き保存用の一時ファイル名が衝突した場合に試す回数
+/// 保存用の一時ファイル名が衝突した場合に試す回数
 const TEMP_FILE_ATTEMPTS: u32 = 100;
 
 // ======================================================================
@@ -175,16 +175,38 @@ impl OutputFormat {
 }
 
 // ======================================================================
+// 保存オプション
+// ======================================================================
+/// 保存時のエンコード設定
+///
+/// `Default` は既定値 (JPEG 品質 `JPEG_QUALITY_DEFAULT`) を表す
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveOptions {
+    /// JPEG のエンコード品質。`JPEG_QUALITY_MIN` 〜 `JPEG_QUALITY_MAX` に丸めて使う
+    pub jpeg_quality: u8,
+}
+
+impl Default for SaveOptions {
+    fn default() -> Self {
+        Self {
+            jpeg_quality: JPEG_QUALITY_DEFAULT,
+        }
+    }
+}
+
+impl SaveOptions {
+    /// JPEG 品質を有効範囲に丸めた値
+    fn clamped_jpeg_quality(self) -> u8 {
+        self.jpeg_quality.clamp(JPEG_QUALITY_MIN, JPEG_QUALITY_MAX)
+    }
+}
+
+// ======================================================================
 // 画像保存
 // ======================================================================
 /// 画像をファイルへ保存する (既存ファイルは上書き)
 ///
-/// 形式は拡張子から判定する。JPEG は透過を `JPEG_FLATTEN_BACKGROUND` に合成して
-/// RGB 化し、品質 `JPEG_QUALITY` でエンコードする
-/// ICC プロファイルは PNG / JPEG / TIFF / WebP に埋め込む。BMP / GIF など非対応の形式や、
-/// プロファイルの色空間が出力画像と合わない場合は埋め込まない
-/// エンコードをメモリ上で済ませ、同じディレクトリの一時ファイルへ書き込んでから置き換えるため、
-/// エンコードや書き込みに失敗しても既存ファイルを壊さない
+/// 既定のエンコード設定 (`SaveOptions::default`) で `save_image_with` を呼ぶ
 ///
 /// # Arguments
 /// * `img`         - 保存する画像
@@ -198,19 +220,44 @@ pub fn save_image(
     icc_profile: Option<&[u8]>,
     path: &Path,
 ) -> Result<(), SaveError> {
-    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(path)?)?;
-    replace_file(path, &bytes)?;
+    save_image_with(img, icc_profile, path, SaveOptions::default())
+}
+
+/// 画像をエンコード設定を指定してファイルへ保存する (既存ファイルは上書き)
+///
+/// 形式は拡張子から判定する。JPEG は透過を `JPEG_FLATTEN_BACKGROUND` に合成して
+/// RGB 化し、品質 `options.jpeg_quality` でエンコードする
+/// ICC プロファイルは PNG / JPEG / TIFF / WebP に埋め込む。BMP / GIF など非対応の形式や、
+/// プロファイルの色空間が出力画像と合わない場合は埋め込まない
+/// エンコードをメモリ上で済ませ、同じディレクトリの一時ファイルへ書き込んでから置き換えるため、
+/// エンコードや書き込みに失敗しても既存ファイルを壊さない
+///
+/// # Arguments
+/// * `img`         - 保存する画像
+/// * `icc_profile` - 埋め込む ICC プロファイル (元画像から引き継いだもの)
+/// * `path`        - 保存先パス
+/// * `options`     - エンコード設定
+///
+/// # Errors
+/// 拡張子から形式を判定できない、エンコードまたは書き込みに失敗した場合
+pub fn save_image_with(
+    img: &DynamicImage,
+    icc_profile: Option<&[u8]>,
+    path: &Path,
+    options: SaveOptions,
+) -> Result<(), SaveError> {
+    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(path)?, options)?;
+    TempFile::write(path, &bytes)?.replace(path)?;
     Ok(())
 }
 
 /// 画像を `out_dir` に新規ファイルとして保存する (既存ファイルは上書きしない)
 ///
-/// `{stem}.{ext}` が既に存在する場合は `{stem}_2.{ext}`, `_3`, ... と連番を付ける
-/// 存在確認と作成を `create_new` で同時に行うため、並行する保存とも衝突しない
+/// 既定のエンコード設定 (`SaveOptions::default`) で `save_image_unique_with` を呼ぶ
 ///
 /// # Arguments
 /// * `img`         - 保存する画像
-/// * `icc_profile` - 埋め込む ICC プロファイル (扱いは `save_image` と同じ)
+/// * `icc_profile` - 埋め込む ICC プロファイル (扱いは `save_image_with` と同じ)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `stem`        - 拡張子を除くファイル名
 /// * `ext`         - 拡張子 (ドットなし。形式の判定にも使う)
@@ -227,15 +274,47 @@ pub fn save_image_unique(
     stem: &str,
     ext: &str,
 ) -> Result<(PathBuf, bool), SaveError> {
-    let base = out_dir.join(format!("{stem}.{ext}"));
-    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(&base)?)?;
+    save_image_unique_with(img, icc_profile, out_dir, stem, ext, SaveOptions::default())
+}
 
-    if write_new_file(&base, &bytes)? {
+/// 画像をエンコード設定を指定して `out_dir` に新規ファイルとして保存する (既存ファイルは上書きしない)
+///
+/// `{stem}.{ext}` が既に存在する場合は `{stem}_2.{ext}`, `_3`, ... と連番を付ける
+/// 一時ファイルへ書き込んでから、存在確認と作成を同時に行う方法で公開するため、
+/// 並行する保存とも衝突せず、中断しても書きかけのファイルが保存先に残らない
+///
+/// # Arguments
+/// * `img`         - 保存する画像
+/// * `icc_profile` - 埋め込む ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
+/// * `stem`        - 拡張子を除くファイル名
+/// * `ext`         - 拡張子 (ドットなし。形式の判定にも使う)
+/// * `options`     - エンコード設定
+///
+/// # Returns
+/// * `(PathBuf, bool)` - 保存したパスと、連番サフィックスで回避したかどうか
+///
+/// # Errors
+/// 形式を判定できない、エンコードまたは書き込みに失敗した場合
+pub fn save_image_unique_with(
+    img: &DynamicImage,
+    icc_profile: Option<&[u8]>,
+    out_dir: &Path,
+    stem: &str,
+    ext: &str,
+    options: SaveOptions,
+) -> Result<(PathBuf, bool), SaveError> {
+    let base = out_dir.join(format!("{stem}.{ext}"));
+    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(&base)?, options)?;
+    // 書き込みは 1 回だけ行い、空いている名前が見つかるまで公開を試す
+    let mut temp = TempFile::write(&base, &bytes)?;
+
+    if temp.persist_new(&base)? {
         return Ok((base, false));
     }
     for n in 2..=OUTPUT_SUFFIX_MAX {
         let candidate = out_dir.join(format!("{stem}_{n}.{ext}"));
-        if write_new_file(&candidate, &bytes)? {
+        if temp.persist_new(&candidate)? {
             return Ok((candidate, true));
         }
     }
@@ -244,7 +323,7 @@ pub fn save_image_unique(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
     let fallback = out_dir.join(format!("{stem}_{ts}.{ext}"));
-    if write_new_file(&fallback, &bytes)? {
+    if temp.persist_new(&fallback)? {
         return Ok((fallback, true));
     }
     Err(io::Error::from(io::ErrorKind::AlreadyExists).into())
@@ -252,12 +331,11 @@ pub fn save_image_unique(
 
 /// トリミング結果を `out_dir` に新規ファイルとして保存する
 ///
-/// ファイル名は `trimmed_file_name` と同じ規則で、衝突時は連番サフィックスを付ける
-/// 自動保存と一括トリミングで共通に使う
+/// 既定のエンコード設定 (`SaveOptions::default`) で `save_trimmed_output_with` を呼ぶ
 ///
 /// # Arguments
 /// * `img`         - トリミング後の画像
-/// * `icc_profile` - 元画像の ICC プロファイル (扱いは `save_image` と同じ)
+/// * `icc_profile` - 元画像の ICC プロファイル (扱いは `save_image_with` と同じ)
 /// * `source`      - 元画像ファイルのパス (名前と `Original` 時の形式に使う)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `format`      - 出力形式
@@ -274,13 +352,50 @@ pub fn save_trimmed_output(
     out_dir: &Path,
     format: OutputFormat,
 ) -> Result<(PathBuf, bool), SaveError> {
+    save_trimmed_output_with(
+        img,
+        icc_profile,
+        source,
+        out_dir,
+        format,
+        SaveOptions::default(),
+    )
+}
+
+/// トリミング結果をエンコード設定を指定して `out_dir` に新規ファイルとして保存する
+///
+/// ファイル名は `trimmed_file_name` と同じ規則で、衝突時は連番サフィックスを付ける
+/// 自動保存と一括トリミングで共通に使う
+///
+/// # Arguments
+/// * `img`         - トリミング後の画像
+/// * `icc_profile` - 元画像の ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `source`      - 元画像ファイルのパス (名前と `Original` 時の形式に使う)
+/// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
+/// * `format`      - 出力形式
+/// * `options`     - エンコード設定
+///
+/// # Returns
+/// * `(PathBuf, bool)` - 保存したパスと、連番サフィックスで回避したかどうか
+///
+/// # Errors
+/// エンコードまたは書き込みに失敗した場合
+pub fn save_trimmed_output_with(
+    img: &DynamicImage,
+    icc_profile: Option<&[u8]>,
+    source: &Path,
+    out_dir: &Path,
+    format: OutputFormat,
+    options: SaveOptions,
+) -> Result<(PathBuf, bool), SaveError> {
     let stem = trimmed_file_stem(source);
-    save_image_unique(
+    save_image_unique_with(
         img,
         icc_profile,
         out_dir,
         &stem,
         &format.output_extension(source),
+        options,
     )
 }
 
@@ -292,6 +407,7 @@ fn encode_image(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
     format: ImageFormat,
+    options: SaveOptions,
 ) -> Result<Vec<u8>, ImageError> {
     let mut buf = Vec::new();
     let mut cursor = Cursor::new(&mut buf);
@@ -302,7 +418,8 @@ fn encode_image(
     };
     match format {
         ImageFormat::Jpeg => {
-            let encoder = JpegEncoder::new_with_quality(&mut cursor, JPEG_QUALITY);
+            let encoder =
+                JpegEncoder::new_with_quality(&mut cursor, options.clamped_jpeg_quality());
             write_with_icc(&img, icc_profile, encoder)?;
         }
         ImageFormat::Png => write_with_icc(&img, icc_profile, PngEncoder::new(&mut cursor))?,
@@ -431,58 +548,116 @@ fn blend_over(fg: u8, bg: u8, alpha: u8) -> u8 {
     u8::try_from(v).unwrap_or(u8::MAX)
 }
 
-/// `path` が存在しない場合のみ作成して書き込む
+// ======================================================================
+// 一時ファイル
+// ======================================================================
+/// 保存先と同じディレクトリに作り、書き込みとディスクへの同期を終えた一時ファイル
 ///
-/// 既に存在する場合は何もせず `Ok(false)` を返す
-/// 書き込み途中で失敗した場合は作成したファイルを削除する
-fn write_new_file(path: &Path, bytes: &[u8]) -> io::Result<bool> {
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-        Err(e) => return Err(e),
-    };
-    if let Err(e) = file.write_all(bytes) {
-        drop(file);
-        let _ = fs::remove_file(path);
-        return Err(e);
-    }
-    Ok(true)
+/// 書き込みを終えてから保存先の名前で公開するため、中断しても書きかけのファイルが保存先に残らない
+/// 保存先へ移す前に破棄された場合は削除する
+struct TempFile {
+    /// 一時ファイルのパス
+    path: PathBuf,
+    /// rename で保存先へ移し済み (削除すべきファイルがない)
+    persisted: bool,
 }
 
-/// `bytes` を一時ファイルへ書き込んでから `path` へ置き換える
-///
-/// 一時ファイルは rename が同一ボリューム内で完結するよう `path` と同じディレクトリに作る
-/// 書き込み・同期・置き換えのいずれかに失敗した場合は一時ファイルを削除し、`path` は元のまま残す
-fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = match path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-
-    for n in 0..TEMP_FILE_ATTEMPTS {
-        let mut temp_name = OsString::from(".");
-        temp_name.push(name);
-        temp_name.push(format!(".{}.{n}.tmp", process::id()));
-        let temp = dir.join(temp_name);
-
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
+impl TempFile {
+    /// `target` と同じディレクトリに一時ファイルを作り、`bytes` を書き込んでディスクへ同期する
+    ///
+    /// rename が同一ボリューム内で完結するよう `target` と同じディレクトリに作る
+    /// 書き込みや同期に失敗した場合は一時ファイルを削除する
+    ///
+    /// # Arguments
+    /// * `target` - 最終的な保存先パス (一時ファイル名の生成に使う)
+    /// * `bytes`  - 書き込む内容
+    fn write(target: &Path, bytes: &[u8]) -> io::Result<Self> {
+        let dir = match target.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
         };
-        // rename 後に中身が欠けないよう、置き換え前にディスクへ反映させる
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
-        drop(file);
-        let result = written.and_then(|()| fs::rename(&temp, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
+        let name = target
+            .file_name()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+
+        for n in 0..TEMP_FILE_ATTEMPTS {
+            let mut temp_name = OsString::from(".");
+            temp_name.push(name);
+            temp_name.push(format!(".{}.{n}.tmp", process::id()));
+            let path = dir.join(temp_name);
+
+            let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            // 保存先へ移した後に中身が欠けないよう、移す前にディスクへ反映させる
+            let written = file.write_all(bytes).and_then(|()| file.sync_all());
+            // Windows では開いたままのファイルを削除できないため、ガードを作る前に閉じる
+            drop(file);
+            let temp = Self {
+                path,
+                persisted: false,
+            };
+            return written.map(|()| temp);
         }
-        return result;
+        Err(io::Error::from(io::ErrorKind::AlreadyExists))
     }
-    Err(io::Error::from(io::ErrorKind::AlreadyExists))
+
+    /// 一時ファイルを `target` へ rename して置き換える (既存ファイルは上書き)
+    ///
+    /// 失敗した場合は一時ファイルを削除し、`target` は元のまま残す
+    fn replace(mut self, target: &Path) -> io::Result<()> {
+        fs::rename(&self.path, target)?;
+        self.persisted = true;
+        Ok(())
+    }
+
+    /// `target` が存在しない場合のみ、一時ファイルの内容を `target` として公開する
+    ///
+    /// ハードリンクは既存ファイルを上書きせず存在確認と作成を同時に行うため、並行する保存とも衝突しない
+    /// ハードリンクに対応しないファイルシステム (FAT 系など) では `reserve_and_replace` で代替する
+    ///
+    /// # Returns
+    /// * `bool` - 公開した場合は `true`。`target` が既に存在する場合は `false` を返し、
+    ///   別の名前で再試行できるよう一時ファイルを残す
+    fn persist_new(&mut self, target: &Path) -> io::Result<bool> {
+        match fs::hard_link(&self.path, target) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(_) => self.reserve_and_replace(target),
+        }
+    }
+
+    /// 空ファイルで `target` の名前を確保してから、一時ファイルで置き換える
+    ///
+    /// rename までに中断すると空ファイルが残りうるが、書きかけの画像は残らない
+    /// rename に失敗した場合は確保した空ファイルを削除する
+    ///
+    /// # Returns
+    /// * `bool` - 置き換えた場合は `true`、`target` が既に存在する場合は `false`
+    fn reserve_and_replace(&mut self, target: &Path) -> io::Result<bool> {
+        match OpenOptions::new().write(true).create_new(true).open(target) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        if let Err(e) = fs::rename(&self.path, target) {
+            let _ = fs::remove_file(target);
+            return Err(e);
+        }
+        self.persisted = true;
+        Ok(true)
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        // rename 後の名前は別の保存が一時ファイルとして再利用しうるため消さない
+        if !self.persisted {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 // ======================================================================
@@ -765,6 +940,56 @@ mod tests {
         );
     }
 
+    /// JPEG 品質が出力サイズに反映され、範囲外の値は丸められることを確認する
+    #[test]
+    fn save_image_with_applies_jpeg_quality() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // ノイズを含む画像で品質差をファイルサイズに出す
+        let noisy = RgbaImage::from_fn(64, 64, |x, y| {
+            Rgba([
+                u8::try_from((x * 37 + y * 11) % 256).unwrap(),
+                u8::try_from((x * 5 + y * 53) % 256).unwrap(),
+                u8::try_from((x * y) % 256).unwrap(),
+                255,
+            ])
+        });
+        let img = DynamicImage::ImageRgba8(noisy);
+        let size_at = |quality: u8| {
+            let path = dir.join(format!("q{quality}.jpg"));
+            save_image_with(
+                &img,
+                None,
+                &path,
+                SaveOptions {
+                    jpeg_quality: quality,
+                },
+            )
+            .expect("JPEG 保存");
+            fs::metadata(&path).expect("metadata").len()
+        };
+
+        // 品質が高いほどサイズが大きい
+        assert!(size_at(20) < size_at(95));
+        // 範囲外の値は有効範囲の端と同じ結果になる
+        assert_eq!(size_at(0), size_at(JPEG_QUALITY_MIN));
+        assert_eq!(size_at(200), size_at(JPEG_QUALITY_MAX));
+    }
+
+    /// 既定のオプションが `JPEG_QUALITY_DEFAULT` で、`save_image` と同じ出力になることを確認する
+    #[test]
+    fn save_options_default_matches_save_image() {
+        assert_eq!(SaveOptions::default().jpeg_quality, JPEG_QUALITY_DEFAULT);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let (a, b) = (dir.join("a.jpg"), dir.join("b.jpg"));
+        save_image(&half_transparent_image(), None, &a).expect("save_image");
+        save_image_with(&half_transparent_image(), None, &b, SaveOptions::default())
+            .expect("save_image_with");
+        assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap());
+    }
+
     /// 16bit 画像も JPEG で保存できることを確認する
     #[test]
     fn save_image_converts_16bit_for_jpeg() {
@@ -1012,6 +1237,55 @@ mod tests {
         assert!(renamed);
         // 既存ファイルの内容は変わらない
         assert_eq!(fs::read(&existing).expect("read"), b"x");
+    }
+
+    /// 連番で回避した場合も一時ファイルを残さないことを確認する
+    #[test]
+    fn save_unique_leaves_no_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let img = half_transparent_image();
+        save_image_unique(&img, None, dir, "photo", "png").expect("1 回目");
+        save_image_unique(&img, None, dir, "photo", "png").expect("2 回目");
+
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["photo.png", "photo_2.png"]);
+    }
+
+    /// ハードリンク非対応時の代替経路で、既存ファイルを上書きせずに新規作成できることを確認する
+    #[test]
+    fn temp_file_reserve_and_replace_creates_new_file_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let existing = dir.join("existing.png");
+        fs::write(&existing, b"keep").expect("placeholder");
+        let target = dir.join("new.png");
+
+        let mut staged = TempFile::write(&target, b"data").expect("一時ファイル");
+        // 既存ファイルは上書きせず、一時ファイルは再試行用に残す
+        assert!(!staged.reserve_and_replace(&existing).expect("既存"));
+        assert_eq!(fs::read(&existing).expect("read"), b"keep");
+        assert!(staged.path.is_file());
+
+        // 空いている名前には一時ファイルの内容で作成する
+        assert!(staged.reserve_and_replace(&target).expect("新規"));
+        assert_eq!(fs::read(&target).expect("read"), b"data");
+        drop(staged);
+        assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 2);
+    }
+
+    /// 公開せずに破棄した一時ファイルは削除されることを確認する
+    #[test]
+    fn temp_file_removed_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = TempFile::write(&tmp.path().join("out.png"), b"data").expect("一時ファイル");
+        assert!(staged.path.is_file());
+        drop(staged);
+        assert_eq!(fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
     }
 
     /// トリミング結果が `{名前}_trimmed.{拡張子}` で保存され、2 回目は連番になることを確認する

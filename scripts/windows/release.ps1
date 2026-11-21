@@ -10,6 +10,7 @@
 #   - 環境変数 EDGE_CUT_KEY を設定すること (gh-release-bridge ダウンロードキー。ビルド時埋め込み)
 #   - 環境変数 EDGE_CUT_SIGNING_KEY に更新署名用 minisign 秘密鍵のパスを設定すること
 #     (keys/update-signing/*.pub に対応する公開鍵があり、minisign コマンドが使えること)
+#   - mdBook (MSI に同梱する利用者向けドキュメントの生成。版は scripts/common/build-user-docs.ps1 に固定)
 #   - release/v{version} ブランチ上で実行すること (ブランチ名と更新バージョンが一致必須)
 #   - Git タグは Gitea 上で付与する (本スクリプトでは作成しない)
 #
@@ -73,6 +74,10 @@ Invoke-ScriptMain {
 
         # 署名なしのアセットはアプリが適用しないため、ビルド前に署名の準備を確認する
         $signingSecretKey = Assert-UpdateSigningReady -ProjectRoot $ProjectRoot
+
+        # MSI に同梱する利用者向けドキュメントの生成に必要。コミット後に失敗しないよう先に確認する
+        . (Join-Path $PSScriptRoot '..\common\build-user-docs.ps1')
+        Assert-MdBookInstalled
     }
 
     $currentVersion = Get-PackageVersion -ProjectRoot $ProjectRoot
@@ -166,7 +171,7 @@ Invoke-ScriptMain {
     Write-Host 'リリース手順が完了しました'
     Write-Host ''
     Write-Host '次の作業 (手動):'
-    Write-Host '  - README.md にユーザー向けの大きな変更があれば更新'
+    Write-Host '  - 操作・表示の変更が docs/user/ と README.md に反映されているか確認'
     Write-Host "  - リモートへ push: git push -u origin $releaseBranch"
     Write-Host "  - Gitea 上で v$newVersion タグを付与する"
     Write-Host '  - GitHub Release へ MSI と署名ファイル (.minisig) をアップロードする'

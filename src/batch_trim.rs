@@ -10,7 +10,8 @@ use std::thread;
 
 use crate::consts::BATCH_MAX_CONCURRENCY;
 use crate::image_load::{LoadError, open_image_with_icc};
-use crate::image_output::{OutputFormat, save_trimmed_output};
+use crate::image_output::{OutputFormat, SaveOptions, save_trimmed_output_with};
+use crate::panic_message::catch_panic;
 use crate::trim::trim;
 
 // ======================================================================
@@ -23,6 +24,8 @@ pub enum BatchFileError {
     Load(LoadError),
     /// 出力画像の保存エラー
     Save(crate::image_output::SaveError),
+    /// 処理中に panic した (メッセージは panic の内容)
+    Panic(String),
 }
 
 impl From<LoadError> for BatchFileError {
@@ -42,6 +45,7 @@ impl fmt::Display for BatchFileError {
         match self {
             Self::Load(e) => e.fmt(f),
             Self::Save(e) => e.fmt(f),
+            Self::Panic(msg) => write!(f, "処理中に内部エラーが発生: {msg}"),
         }
     }
 }
@@ -51,6 +55,7 @@ impl Error for BatchFileError {
         match self {
             Self::Load(e) => Some(e),
             Self::Save(e) => Some(e),
+            Self::Panic(_) => None,
         }
     }
 }
@@ -69,6 +74,8 @@ pub struct BatchTrimParams {
     pub bg_override: Option<[u8; 4]>,
     /// 出力形式
     pub format: OutputFormat,
+    /// 保存時のエンコード設定
+    pub save_options: SaveOptions,
 }
 
 /// バックグラウンド一括処理の進捗通知
@@ -181,6 +188,7 @@ impl BatchTrimResult {
 /// ファイル単位で最大 `BATCH_MAX_CONCURRENCY` 枚を並列に処理する
 /// 各ファイルの処理開始前にキャンセルフラグを確認し、処理中のファイルは完了まで続ける
 /// 出力パスが既存ファイルと衝突する場合は連番サフィックスで回避する
+/// 1 ファイルの処理が panic した場合はそのファイルを `BatchFileError::Panic` として集計し、残りを続ける
 ///
 /// # Arguments
 /// * `paths`        - 入力ファイルパス列
@@ -215,8 +223,28 @@ fn run_batch_trim_with_workers(
     out_dir: &Path,
     params: BatchTrimParams,
     cancel: &AtomicBool,
+    on_progress: impl FnMut(usize, usize),
+    workers: usize,
+) -> BatchTrimResult {
+    run_batch_with(paths, out_dir, cancel, on_progress, workers, |path| {
+        process_one(path, out_dir, params)
+    })
+}
+
+/// 1 ファイル分の処理を差し替えて一括処理する
+///
+/// `process` の panic は `catch_unwind` で捕捉し、そのファイルのエラーとして集計する
+/// (捕捉しないと `thread::scope` が panic を呼び出し元へ伝え、完了を通知できなくなる)
+///
+/// # Arguments
+/// * `process` - 1 ファイル分の処理。保存時に連番で衝突回避したら `Ok(true)` を返す
+fn run_batch_with(
+    paths: &[PathBuf],
+    out_dir: &Path,
+    cancel: &AtomicBool,
     mut on_progress: impl FnMut(usize, usize),
     workers: usize,
+    process: impl Fn(&Path) -> Result<bool, BatchFileError> + Sync,
 ) -> BatchTrimResult {
     let total = paths.len();
     let workers = workers.clamp(1, total.max(1));
@@ -230,7 +258,7 @@ fn run_batch_trim_with_workers(
 
     if workers == 1 {
         while let Some((index, path)) = queue.claim() {
-            tally.record(index, process_one(path, out_dir, params));
+            tally.record(index, process_guarded(&process, path));
             on_progress(tally.processed(), total);
         }
     } else {
@@ -239,12 +267,10 @@ fn run_batch_trim_with_workers(
             for _ in 0..workers {
                 let tx = tx.clone();
                 let queue = &queue;
+                let process = &process;
                 s.spawn(move || {
                     while let Some((index, path)) = queue.claim() {
-                        if tx
-                            .send((index, process_one(path, out_dir, params)))
-                            .is_err()
-                        {
+                        if tx.send((index, process_guarded(process, path))).is_err() {
                             break;
                         }
                     }
@@ -344,6 +370,22 @@ impl Tally {
     }
 }
 
+/// 1 ファイル分の処理を実行し、panic をエラーに変換する
+///
+/// # Arguments
+/// * `process` - 1 ファイル分の処理
+/// * `path` - 処理するファイル
+///
+/// # Returns
+/// * `Result<bool, BatchFileError>` - `process` の結果。panic した場合は `BatchFileError::Panic`
+fn process_guarded(
+    process: &impl Fn(&Path) -> Result<bool, BatchFileError>,
+    path: &Path,
+) -> Result<bool, BatchFileError> {
+    // 共有状態は払い出し口のアトミック変数のみで、panic 後も不整合にならない
+    catch_panic(|| process(path)).unwrap_or_else(|msg| Err(BatchFileError::Panic(msg)))
+}
+
 /// 1 ファイル分の読み込み・トリム・保存
 fn process_one(
     path: &Path,
@@ -357,12 +399,13 @@ fn process_one(
         params.padding,
         params.bg_override,
     );
-    let (_, file_renamed) = save_trimmed_output(
+    let (_, file_renamed) = save_trimmed_output_with(
         &trimmed.image,
         loaded.icc_profile.as_deref(),
         path,
         out_dir,
         params.format,
+        params.save_options,
     )?;
     Ok(file_renamed)
 }
@@ -406,6 +449,7 @@ mod tests {
             padding: 0,
             bg_override: None,
             format: OutputFormat::Original,
+            save_options: SaveOptions::default(),
         }
     }
 
@@ -432,6 +476,7 @@ mod tests {
                 padding: 0,
                 bg_override: None,
                 format: OutputFormat::Original,
+                save_options: SaveOptions::default(),
             },
             &cancel,
             |_, _| {},
@@ -465,6 +510,7 @@ mod tests {
                 padding: 0,
                 bg_override: None,
                 format: OutputFormat::Original,
+                save_options: SaveOptions::default(),
             },
             &cancel,
             |_, _| {},
@@ -494,6 +540,7 @@ mod tests {
                 padding: 0,
                 bg_override: None,
                 format: OutputFormat::Jpeg,
+                save_options: SaveOptions::default(),
             },
             &cancel,
             |_, _| {},
@@ -528,6 +575,7 @@ mod tests {
                 padding: 0,
                 bg_override: None,
                 format: OutputFormat::Original,
+                save_options: SaveOptions::default(),
             },
             &cancel,
             |_, _| {},
@@ -593,6 +641,7 @@ mod tests {
                 padding: 0,
                 bg_override: None,
                 format: OutputFormat::Original,
+                save_options: SaveOptions::default(),
             },
             &cancel,
             |_, _| {},
@@ -712,6 +761,41 @@ mod tests {
             .map(|e| e.split(':').next().unwrap_or_default())
             .collect();
         assert_eq!(names, ["missing1.png", "missing2.png", "missing3.png"]);
+    }
+
+    /// 1 ファイルの処理が panic しても、そのファイルをエラーとして数えて残りを続けることを確認する
+    #[test]
+    fn batch_counts_panicked_file_as_error_and_continues() {
+        let inputs: Vec<PathBuf> = ["a.png", "boom.png", "c.png", "d.png"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let process = |path: &Path| {
+            assert!(path != Path::new("boom.png"), "テスト用の panic");
+            Ok(false)
+        };
+
+        // 逐次・並列のどちらでも panic を呼び出し元へ伝えない
+        for workers in [1, 4] {
+            let cancel = AtomicBool::new(false);
+            let mut last_progress = None;
+            let result = run_batch_with(
+                &inputs,
+                Path::new("out"),
+                &cancel,
+                |processed, total| last_progress = Some((processed, total)),
+                workers,
+                process,
+            );
+
+            assert_eq!(result.saved, 3, "workers={workers}");
+            assert_eq!(result.errors.len(), 1, "workers={workers}");
+            assert!(result.errors[0].starts_with("boom.png: "));
+            assert!(result.errors[0].contains("テスト用の panic"));
+            assert!(!result.cancelled);
+            // panic したファイルも処理済みとして進捗に含める
+            assert_eq!(last_progress, Some((4, 4)));
+        }
     }
 
     /// 空の入力では何もせず正常終了することを確認する

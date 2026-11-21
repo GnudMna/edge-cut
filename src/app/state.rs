@@ -2,15 +2,19 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use super::clipboard_worker::ClipboardWorkerHandle;
+use super::load_worker::LoadWorkerHandle;
 use super::shortcuts::ShortcutTracker;
 use super::trim_worker::TrimWorkerHandle;
-use crate::consts::{PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN};
+use crate::consts::{
+    JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN, TOL_MAX,
+    TOL_MIN,
+};
 use crate::image_load::LoadedImage;
 use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
@@ -24,6 +28,12 @@ pub(super) type TrimParams = (u32, u32, Option<[u8; 4]>);
 /// バックグラウンドのプレビュートリミング結果
 pub(super) struct TrimWorkerResult {
     pub request_id: u64,
+    /// 検出結果。処理中に panic した場合は `Err(panic メッセージ)`
+    pub outcome: Result<TrimPreview, String>,
+}
+
+/// プレビュートリミングの検出結果
+pub(super) struct TrimPreview {
     /// このジョブで使ったパラメータ。受信時点の UI の値とは異なりうる
     pub params: TrimParams,
     pub info: TrimInfo,
@@ -60,6 +70,14 @@ pub(super) struct Settings {
     /// 保存・自動保存・一括トリミングの出力形式
     #[serde(default)]
     pub output_format: OutputFormat,
+    /// JPEG 保存時のエンコード品質 (1–100)
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8,
+}
+
+/// 永続化データに `jpeg_quality` がない場合の既定値
+fn default_jpeg_quality() -> u8 {
+    JPEG_QUALITY_DEFAULT
 }
 
 impl Default for Settings {
@@ -73,6 +91,7 @@ impl Default for Settings {
             compact_mode: false,
             bg_override: None,
             output_format: OutputFormat::default(),
+            jpeg_quality: JPEG_QUALITY_DEFAULT,
         }
     }
 }
@@ -85,6 +104,7 @@ impl Settings {
     fn normalize(mut self) -> Self {
         self.tolerance = self.tolerance.clamp(TOL_MIN, TOL_MAX);
         self.padding = self.padding.clamp(PADDING_MIN, PADDING_MAX);
+        self.jpeg_quality = self.jpeg_quality.clamp(JPEG_QUALITY_MIN, JPEG_QUALITY_MAX);
         if self.auto_save_dir.as_os_str().is_empty() {
             self.auto_save_dir = default_auto_save_dir();
         }
@@ -223,6 +243,16 @@ impl TrimWorkerState {
         self.in_flight || self.debounce_until.is_some()
     }
 
+    /// ワーカースレッドを起動し直し、処理中のジョブを打ち切る
+    ///
+    /// ワーカーが終了して結果チャネルが切断された場合に呼ぶ
+    pub(super) fn restart(&mut self) {
+        let (result_tx, result_rx) = mpsc::channel();
+        self.handle = TrimWorkerHandle::spawn(result_tx);
+        self.result_rx = result_rx;
+        self.in_flight = false;
+    }
+
     /// 進行中の処理を打ち切り、古い結果を無視する
     pub(super) fn abort(&mut self) {
         self.request_id = self.request_id.wrapping_add(1);
@@ -272,6 +302,50 @@ pub(super) enum IoMsg {
         /// 取得した画像、または失敗時のステータスメッセージ
         result: Result<DynamicImage, String>,
     },
+    /// ファイルダイアログが閉じられた
+    DialogClosed(DialogResult),
+}
+
+/// 手動保存の対象。ダイアログを開いた時点の内容を保持する
+pub(super) struct SaveRequest {
+    /// 元画像
+    pub original: Arc<DynamicImage>,
+    /// 保存するトリミング矩形
+    pub info: TrimInfo,
+    /// 元画像の ICC プロファイル
+    pub icc_profile: Option<Arc<[u8]>>,
+    /// 拡張子なしで入力された場合に補う拡張子
+    pub ext: String,
+}
+
+/// ファイルダイアログの結果
+///
+/// キャンセルされた場合は `None` を持つ
+pub(super) enum DialogResult {
+    /// 開く画像の選択
+    OpenImage(Option<PathBuf>),
+    /// 手動保存の保存先の選択
+    SaveImage {
+        /// 保存対象
+        request: SaveRequest,
+        /// 選択された保存先
+        path: Option<PathBuf>,
+    },
+    /// 一括トリミングの対象ファイルの選択
+    BatchInputs(Option<Vec<PathBuf>>),
+    /// 一括トリミングの保存先フォルダの選択
+    BatchOutput {
+        /// トリミング対象の画像ファイル
+        paths: Vec<PathBuf>,
+        /// 呼び出し側で対象外として除外した件数
+        skipped: usize,
+        /// 選択された保存先フォルダ
+        dir: Option<PathBuf>,
+    },
+    /// 自動保存先フォルダの選択
+    AutoSaveDir(Option<PathBuf>),
+    /// ダイアログ処理スレッドの panic (ステータスメッセージ)
+    Failed(String),
 }
 
 /// 画像の読み込み・保存のバックグラウンド処理
@@ -294,6 +368,8 @@ pub(super) struct IoState {
     ///
     /// 表示中のステータスが追記後のままなら追記前に戻してから追記し、追記が重ならないようにする
     pub auto_save_status: Option<(String, String)>,
+    /// ファイルダイアログを表示中かどうか。同時に 1 つだけ開く
+    pub dialog_open: bool,
 }
 
 /// 自動保存の内容を識別するキー
@@ -305,6 +381,8 @@ pub(super) struct AutoSaveKey {
     pub info: TrimInfo,
     /// 出力形式
     pub format: OutputFormat,
+    /// JPEG のエンコード品質
+    pub jpeg_quality: u8,
     /// 保存先ディレクトリ
     pub dir: PathBuf,
 }
@@ -320,6 +398,7 @@ impl Default for IoState {
             load_note: None,
             last_auto_save: None,
             auto_save_status: None,
+            dialog_open: false,
         }
     }
 }
@@ -353,6 +432,8 @@ pub(super) struct BatchState {
     pub running: bool,
     /// キャンセルフラグ。`true` にセットすると次のファイル処理前に停止する
     pub cancel: Arc<AtomicBool>,
+    /// 実行中の一括トリミングスレッド。終了時に完了を待つ
+    pub handle: Option<JoinHandle<()>>,
     /// 直近バッチのエラー詳細 (ステータスバーは要約のみ、ホバーで全文表示)
     pub last_error_details: Vec<String>,
     /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
@@ -365,8 +446,19 @@ impl Default for BatchState {
             rx: None,
             running: false,
             cancel: Arc::new(AtomicBool::new(false)),
+            handle: None,
             last_error_details: Vec::new(),
             skipped_inputs: 0,
+        }
+    }
+}
+
+impl Drop for BatchState {
+    /// 未着手のファイルを打ち切り、処理中のファイルの保存完了を待つ
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.cancel.store(true, Ordering::Relaxed);
+            let _ = handle.join();
         }
     }
 }
@@ -449,6 +541,8 @@ pub struct App {
     pub(super) status: String,
     /// クリップボード操作用ワーカー。初回使用時に遅延起動する
     pub(super) clipboard: Option<ClipboardWorkerHandle>,
+    /// 画像読み込み用ワーカー。初回使用時に遅延起動する
+    pub(super) loader: Option<LoadWorkerHandle>,
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
     pub(super) io: IoState,
@@ -478,6 +572,7 @@ impl App {
             prefs: s,
             status: "「画像を開く」で画像を選択してください".into(),
             clipboard: None,
+            loader: None,
             batch: BatchState::default(),
             trim_worker: TrimWorkerState::new(),
             io: IoState::default(),
@@ -590,6 +685,19 @@ mod tests {
         assert_eq!(s.padding, PADDING_MAX);
     }
 
+    /// 範囲外の JPEG 品質が読み込み時にクランプされることを確認する
+    #[test]
+    fn settings_normalize_clamps_jpeg_quality() {
+        for (input, expected) in [(0, JPEG_QUALITY_MIN), (200, JPEG_QUALITY_MAX), (80, 80)] {
+            let s = Settings {
+                jpeg_quality: input,
+                ..Settings::default()
+            }
+            .normalize();
+            assert_eq!(s.jpeg_quality, expected);
+        }
+    }
+
     /// 空の自動保存先がデフォルトパスへ置き換わることを確認する
     #[test]
     fn settings_normalize_empty_auto_save_dir_uses_default() {
@@ -656,6 +764,28 @@ mod tests {
         let app = App::new(Some(&storage));
         assert_eq!(app.prefs.bg_override, Some(manual));
         assert_eq!(app.background.bg_color, Some(manual));
+    }
+
+    // ======================================================================
+    // 一括トリミング
+    // ======================================================================
+    /// 破棄時にキャンセルフラグを立て、一括トリミングスレッドの終了を待つことを確認する
+    #[test]
+    fn batch_state_drop_cancels_and_joins_thread() {
+        let mut batch = BatchState::default();
+        let cancel = Arc::clone(&batch.cancel);
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_in_thread = Arc::clone(&finished);
+        // キャンセルされるまで処理を続けるスレッドを模す
+        batch.handle = Some(std::thread::spawn(move || {
+            while !cancel.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            finished_in_thread.store(true, Ordering::Relaxed);
+        }));
+
+        drop(batch);
+        assert!(finished.load(Ordering::Relaxed));
     }
 
     // ======================================================================

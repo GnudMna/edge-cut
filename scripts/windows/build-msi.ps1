@@ -2,10 +2,11 @@
 # Script Name : build-msi.ps1
 # Description : Windows 向け MSI インストーラー作成スクリプト (cargo-wix)
 # Usage       : ./build-msi.ps1 [-SkipBuild]
-# Requires    : PowerShell 7.0+, cargo-wix, WiX Toolset v3.14.1+
+# Requires    : PowerShell 7.0+, cargo-wix, WiX Toolset v3.14.1+, mdBook
 #
 # 前提:
 #   - cargo install cargo-wix --locked
+#   - cargo install mdbook --locked --version <scripts/common/build-user-docs.ps1 の固定版>
 #   - winget install WiXToolset.WiXToolset  (WiX v3。コード署名は不要)
 #   - wix/main.wxs, wix/Banner.bmp, wix/Dialog.bmp, wix/Eula.rtf が存在すること
 #     (画像・Eula.rtf は scripts/windows/generate-wix-assets.ps1 で再生成可能)
@@ -110,12 +111,20 @@ gh-release-bridge の Worker Secret EDGE_CUT_KEY と同値を設定してから�
 
     . (Join-Path $PSScriptRoot '..\common\generate-third-party-notices.ps1') -Target 'x86_64-pc-windows-msvc'
 
+    # 利用者向けドキュメントを HTML 化し、MSI へ収録する WiX 断片を生成する
+    . (Join-Path $PSScriptRoot '..\common\build-user-docs.ps1')
+    $userDocsDir = Invoke-UserDocsBuild -ProjectRoot $ProjectRoot
+    $userDocsWxsPath = Join-Path $ProjectRoot 'target\wix\user-docs.wxs'
+    New-UserDocsWixFragment -DocsDir $userDocsDir -OutputPath $userDocsWxsPath
+    Write-Host ''
+
     Write-Host 'MSI インストーラーの作成を開始します...'
     Write-Host ''
 
     # cargo wix: リリースビルド + WiX コンパイル/リンク (MSI 生成)
     # --nocapture: cargo build の rustc エラーを表示する (省略時は exit 101 だけになる)
-    $wixArgs = @('--nocapture')
+    # -I: wix\ 直下 (main.wxs) に加えて、target\wix に生成した断片を収録する
+    $wixArgs = @('-I', $userDocsWxsPath, '--nocapture')
     if ($SkipBuild) {
         $wixArgs += '--no-build'
     }

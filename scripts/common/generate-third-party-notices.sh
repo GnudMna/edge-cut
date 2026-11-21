@@ -1,7 +1,7 @@
 #!/bin/bash
 # ========================================================================
 # Script Name : generate-third-party-notices.sh
-# Description : THIRD_PARTY_NOTICES を cargo-about で生成する
+# Description : THIRD_PARTY_NOTICES を cargo-about で生成し、利用者向けドキュメントの素材表示を追記する
 # Usage       : generate-third-party-notices.sh [TARGET_TRIPLE]
 #               TARGET 未指定時は about.toml の targets を使用
 # ========================================================================
@@ -50,5 +50,8 @@ if [[ -n "$TARGET_TRIPLE" ]]; then
 fi
 
 cargo "${about_args[@]}"
+
+# cargo-about は Rust の依存だけを扱うため、利用者向けドキュメント (mdBook の HTML) に含まれる素材の表示を追記する
+cat "$PROJECT_ROOT/scripts/templates/user-docs-notices.txt" >>"$OUTPUT_FILE"
 
 echo "生成しました: $OUTPUT_FILE"

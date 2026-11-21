@@ -31,11 +31,14 @@ lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/
 | `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation を反映、ICC プロファイルを取得) |
 | `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルを再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
 | `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
+| `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱うため) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
-| `src/app/` | egui GUI。`state` (状態)、`view` (描画・更新ダイアログ)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`shortcuts` (キーボードショートカットの判定)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
+| `src/app/` | egui GUI。`state` (状態)、`view/` (描画。`toolbar` / `settings` / `preview` / `input` / `update_dialog` に分割)、`actions/` (操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`load_worker` (画像読み込み用ワーカースレッド)、`shortcuts` (キーボードショートカットの判定)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
 | `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定 |
 | `src/test_helpers.rs` | `#[cfg(test)]` 限定。`tests/common/images.rs` を `include!` してユニットテストと画像生成ヘルパーを共有 |
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
+| `docs/user/` | 利用者向けドキュメント (mdBook の原稿)。`scripts/common/build-user-docs.{ps1,sh}` が HTML 化して配布物の `docs/` に同梱する |
+| `docs/dev/` | 開発者向けドキュメント (環境構築・テスト・アーキテクチャ・リリース・開発規約) |
 
 - コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
 - 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す
@@ -56,4 +59,5 @@ lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/
 
 - git-flow 形式。`develop` から `feature/*` `fix/*` `docs/*` などを切り、`main` へは `release/vX.Y.Z` 経由でマージする
 - コミットメッセージは `<種別>: <日本語の要約>`。種別は `Feat` / `Update` / `Fix` / `Refactor` / `Perf` / `Test` / `Docs` / `Style` / `Chore` / `Release` / `Add`
-- ユーザー向けの変更は `CHANGELOG.md` の `[Unreleased]` に追記する (Keep a Changelog 形式、日本語)
+- 利用者に影響する変更は `CHANGELOG.md` の `[Unreleased]` に追記する。書き方は `CHANGELOG.md` 冒頭の規約に従う (1 項目 1 文・体言止め・補足は入れ子。利用者に見えない変更は書かない)
+- 操作・表示が変わる変更では `docs/user/` の該当ページも更新する。ドキュメントの置き場所は [docs/dev/contributing.md](docs/dev/contributing.md#ドキュメントの配置) に従い、同じ説明は 1 か所にだけ書く

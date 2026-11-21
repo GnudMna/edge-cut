@@ -339,8 +339,9 @@ fn format_dimensions(width: u32, height: u32) -> String {
 mod tests {
     use super::*;
 
+    use image::codecs::gif::GifEncoder;
     use image::codecs::png::PngEncoder;
-    use image::{DynamicImage, ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
+    use image::{DynamicImage, ExtendedColorType, Frame, ImageEncoder, Rgba, RgbaImage};
 
     const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
 
@@ -541,6 +542,25 @@ mod tests {
 
         assert_eq!(img.color(), image::ColorType::Rgba16);
         assert_eq!((img.width(), img.height()), (8, 8));
+    }
+
+    /// アニメーション GIF は先頭フレームだけが読み込まれることを確認する
+    #[test]
+    fn open_image_reads_only_first_frame_of_animated_gif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anim.gif");
+        let mut encoder = GifEncoder::new(fs::File::create(&path).expect("create gif"));
+        for color in [Rgba([255, 0, 0, 255]), Rgba([0, 0, 255, 255])] {
+            let frame = Frame::new(RgbaImage::from_pixel(4, 3, color));
+            encoder.encode_frame(frame).expect("encode frame");
+        }
+        drop(encoder);
+        let img = open_image(&path).expect("open gif").to_rgba8();
+
+        // 2 枚目の青ではなく、1 枚目の赤が得られる
+        assert_eq!(img.dimensions(), (4, 3));
+        let px = img.get_pixel(0, 0);
+        assert!(px[0] > 200 && px[2] < 50, "{px:?}");
     }
 
     // ======================================================================

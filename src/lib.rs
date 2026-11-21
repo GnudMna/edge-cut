@@ -25,6 +25,7 @@
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
 //! | [`app`] | egui ベースの GUI (`app::run`) |
+//! | `panic_message` | panic の捕捉とメッセージ取り出し (クレート内部用) |
 //! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 (Windows) |
 
 pub mod batch_trim;
@@ -34,6 +35,8 @@ pub mod image_output;
 pub mod trim;
 
 pub mod app;
+
+mod panic_message;
 
 #[cfg(windows)]
 mod update;
@@ -52,7 +55,8 @@ pub use image_load::{
     open_image_with_icc, validate_clipboard_rgba,
 };
 pub use image_output::{
-    OutputFormat, SaveError, save_image, save_image_unique, save_trimmed_output, trimmed_file_name,
+    OutputFormat, SaveError, SaveOptions, save_image, save_image_unique, save_image_unique_with,
+    save_image_with, save_trimmed_output, save_trimmed_output_with, trimmed_file_name,
     trimmed_output_path,
 };
 pub use trim::{

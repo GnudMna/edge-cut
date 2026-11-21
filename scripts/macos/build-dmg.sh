@@ -10,6 +10,7 @@
 #
 # 出力:
 #   target/dist/{パッケージ名}-{バージョン}-{ターゲット}.dmg
+#   (EdgeCut.app・Applications へのリンク・利用者向けドキュメント docs/ を収録)
 # ========================================================================
 
 set -euo pipefail
@@ -75,9 +76,17 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
+if [[ ! -f "$APP_BUNDLE/Contents/Resources/docs/index.html" ]]; then
+    echo "エラー: .app に利用者向けドキュメントがありません: $APP_BUNDLE/Contents/Resources/docs" >&2
+    echo "./build-app.sh で .app を作り直してください。" >&2
+    exit 1
+fi
+
 mkdir -p "$DIST_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_STAGING/"
 ln -s /Applications "$DMG_STAGING/Applications"
+# .app 内の docs/ は Finder から辿りにくいため、DMG の直下にも置く
+cp -R "$APP_BUNDLE/Contents/Resources/docs" "$DMG_STAGING/docs"
 
 rm -f "$DMG_PATH"
 hdiutil create \

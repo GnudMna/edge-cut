@@ -4,6 +4,7 @@ mod clipboard_worker;
 mod fonts;
 mod icon;
 mod image_convert;
+mod load_worker;
 mod shortcuts;
 mod state;
 mod trim_worker;

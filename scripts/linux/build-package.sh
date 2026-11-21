@@ -6,6 +6,7 @@
 #
 # 前提:
 #   - cargo-about (THIRD_PARTY_NOTICES 生成)
+#   - mdBook (利用者向けドキュメント生成。版は scripts/common/build-user-docs.ps1 に固定), perl
 #
 # 出力:
 #   target/dist/{パッケージ名}-{バージョン}-{ターゲット}.tar.gz
@@ -13,6 +14,7 @@
 #     edge-cut/EdgeCut          実行ファイル
 #     edge-cut/LICENSE
 #     edge-cut/THIRD_PARTY_NOTICES
+#     edge-cut/docs/            利用者向けドキュメント (index.html)
 #     edge-cut/edge-cut.desktop
 #     edge-cut/install.sh
 #     edge-cut/icons/edge-cut.png
@@ -25,6 +27,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../common/cd-project-root.sh"
 # shellcheck source=../common/cargo-package-metadata.sh
 source "$SCRIPT_DIR/../common/cargo-package-metadata.sh"
+# shellcheck source=../common/build-user-docs.sh
+source "$SCRIPT_DIR/../common/build-user-docs.sh"
 
 RELEASE=false
 SKIP_BUILD=false
@@ -74,12 +78,16 @@ fi
 "$SCRIPT_DIR/../common/generate-third-party-notices.sh" "$TARGET_TRIPLE"
 echo
 
+build_user_docs
+echo
+
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/icons"
 
 install -m 755 "$BINARY_PATH" "$STAGE_DIR/$CARGO_BIN_NAME"
 install -m 644 "$PROJECT_ROOT/LICENSE" "$STAGE_DIR/LICENSE"
 install -m 644 "$PROJECT_ROOT/THIRD_PARTY_NOTICES" "$STAGE_DIR/THIRD_PARTY_NOTICES"
+cp -R "$USER_DOCS_DIR" "$STAGE_DIR/docs"
 install -m 644 "$PROJECT_ROOT/scripts/templates/edge-cut.desktop" "$STAGE_DIR/edge-cut.desktop"
 install -m 644 "$PROJECT_ROOT/assets/icons/icon.png" "$STAGE_DIR/icons/edge-cut.png"
 
@@ -98,6 +106,8 @@ mkdir -p "$INSTALL_ROOT" "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR"
 install -m 755 "$SCRIPT_DIR/EdgeCut" "$INSTALL_ROOT/EdgeCut"
 install -m 644 "$SCRIPT_DIR/LICENSE" "$INSTALL_ROOT/LICENSE"
 install -m 644 "$SCRIPT_DIR/THIRD_PARTY_NOTICES" "$INSTALL_ROOT/THIRD_PARTY_NOTICES"
+rm -rf "$INSTALL_ROOT/docs"
+cp -R "$SCRIPT_DIR/docs" "$INSTALL_ROOT/docs"
 ln -sf "$INSTALL_ROOT/EdgeCut" "$BIN_DIR/edge-cut"
 install -m 644 "$SCRIPT_DIR/icons/edge-cut.png" "$ICON_DIR/edge-cut.png"
 install -m 644 "$SCRIPT_DIR/edge-cut.desktop" "$DESKTOP_DIR/edge-cut.desktop"
@@ -105,6 +115,7 @@ install -m 644 "$SCRIPT_DIR/edge-cut.desktop" "$DESKTOP_DIR/edge-cut.desktop"
 echo "インストールしました:"
 echo "  実行ファイル: $BIN_DIR/edge-cut"
 echo "  データ:       $INSTALL_ROOT"
+echo "  ドキュメント: $INSTALL_ROOT/docs/index.html"
 EOF
 chmod +x "$STAGE_DIR/install.sh"
 

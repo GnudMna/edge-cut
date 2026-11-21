@@ -504,6 +504,12 @@ fn detect_trim_with(
     pixel: impl Fn(u32, u32) -> [u8; 4] + Sync,
 ) -> TrimBounds {
     let bg = bg_override.unwrap_or_else(|| detect_background_with(w, h, &pixel));
+    // ほぼ透明な背景色は最頻の実際の色 (例: [0,0,0,3]) になりうるため、余白は完全透明で塗る
+    let fill = if bg[3] < ALPHA_TRANSPARENT_THRESHOLD {
+        [bg[0], bg[1], bg[2], 0]
+    } else {
+        bg
+    };
 
     // RGBA 各チャネルの差の二乗和がこの値以下なら背景とみなす
     // 尺度は RGB の最大二乗距離基準のままとし、不透明画像の結果を従来と揃える
@@ -547,7 +553,7 @@ fn detect_trim_with(
     let Some(bounds) = bounds else {
         // 背景しかない → 画像全体を対象とする
         return TrimBounds {
-            info: full_info(w, h, bg),
+            info: full_info(w, h, fill),
             background: bg,
         };
     };
@@ -579,7 +585,7 @@ fn detect_trim_with(
         extend_top,
         extend_right,
         extend_bottom,
-        fill: bg,
+        fill,
     };
     TrimBounds {
         info,
@@ -763,6 +769,18 @@ mod tests {
         let result = trim(&img, 0, 3, None);
         assert_eq!((result.image.width(), result.image.height()), (10, 10));
         assert_eq!(sample_pixel(&result.image, 0, 0).map(|p| p[3]), Some(0));
+        assert_eq!(sample_pixel(&result.image, 3, 3), Some([255, 0, 0, 255]));
+    }
+
+    /// ほぼ透明な背景色が検出されても範囲外の余白は完全透明で塗られることを確認する
+    #[test]
+    fn trim_padding_extension_on_nearly_transparent_background_is_fully_transparent() {
+        let img = bordered_rgba(6, 6, 1, [0, 0, 0, 3], [255, 0, 0, 255]);
+        let result = trim(&img, 0, 3, None);
+        // 背景色は実際の色のまま、塗り色だけアルファを 0 にする
+        assert_eq!(result.background, [0, 0, 0, 3]);
+        assert_eq!(result.info.fill, [0, 0, 0, 0]);
+        assert_eq!(sample_pixel(&result.image, 0, 0), Some([0, 0, 0, 0]));
         assert_eq!(sample_pixel(&result.image, 3, 3), Some([255, 0, 0, 255]));
     }
 

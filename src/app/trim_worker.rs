@@ -6,13 +6,16 @@
 //!
 //! ワーカーはトリミング矩形の検出だけを行い、切り抜き画像やそのテクスチャは作らない。
 //! プレビューは元画像テクスチャへ矩形を重ねる・UV で切り出すことで表示する
+//!
+//! ジョブ内の panic は捕捉して失敗結果として返し、ワーカースレッド自体は動かし続ける
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
 use super::image_convert::to_preview_color_image;
-use super::state::TrimWorkerResult;
+use super::state::{TrimPreview, TrimWorkerResult};
+use crate::panic_message::catch_panic;
 use crate::trim::detect_trim;
 
 use eframe::egui;
@@ -42,25 +45,7 @@ impl TrimWorkerHandle {
         let thread = thread::spawn(move || {
             while let Ok(job) = job_rx.recv() {
                 let job = take_latest(job, &job_rx);
-
-                let orig_color = if job.refresh_orig_tex {
-                    Some(to_preview_color_image(job.original.as_ref()))
-                } else {
-                    None
-                };
-                let bounds = detect_trim(
-                    job.original.as_ref(),
-                    job.tolerance,
-                    job.padding,
-                    job.bg_override,
-                );
-                let _ = result_tx.send(TrimWorkerResult {
-                    request_id: job.request_id,
-                    params: (job.tolerance, job.padding, job.bg_override),
-                    info: bounds.info,
-                    orig_color,
-                    background: bounds.background,
-                });
+                let _ = result_tx.send(run_guarded(&job, run_job));
                 job.ctx.request_repaint();
             }
         });
@@ -73,6 +58,41 @@ impl TrimWorkerHandle {
     /// トリミング要求をワーカーへ送る
     pub(super) fn submit(&self, job: TrimJob) {
         let _ = self.job_tx.send(job);
+    }
+}
+
+/// ジョブを実行し、panic を失敗結果に変換する
+///
+/// # Arguments
+/// * `job` - 実行するジョブ
+/// * `run` - ジョブの処理本体
+///
+/// # Returns
+/// * `TrimWorkerResult` - 処理結果。panic した場合は `outcome` が `Err(panic メッセージ)`
+fn run_guarded(job: &TrimJob, run: impl FnOnce(&TrimJob) -> TrimPreview) -> TrimWorkerResult {
+    // ジョブはワーカー外と可変状態を共有しないため、panic 後も不整合にならない
+    TrimWorkerResult {
+        request_id: job.request_id,
+        outcome: catch_panic(|| run(job)),
+    }
+}
+
+/// トリミング矩形を検出し、要求があれば元画像のプレビュー画像も生成する
+fn run_job(job: &TrimJob) -> TrimPreview {
+    let orig_color = job
+        .refresh_orig_tex
+        .then(|| to_preview_color_image(job.original.as_ref()));
+    let bounds = detect_trim(
+        job.original.as_ref(),
+        job.tolerance,
+        job.padding,
+        job.bg_override,
+    );
+    TrimPreview {
+        params: (job.tolerance, job.padding, job.bg_override),
+        info: bounds.info,
+        orig_color,
+        background: bounds.background,
     }
 }
 
@@ -148,6 +168,30 @@ mod tests {
                 "coalescing 後に古い request_id が返るべきではない"
             );
         }
+    }
+
+    /// ジョブ本体が panic しても、失敗結果として同じ `request_id` で返ることを確認する
+    #[test]
+    fn run_guarded_converts_panic_to_error() {
+        let job = TrimJob {
+            request_id: 7,
+            original: solid_image(),
+            tolerance: 0,
+            padding: 0,
+            bg_override: None,
+            refresh_orig_tex: false,
+            ctx: egui::Context::default(),
+        };
+
+        // panic は Err に変換される
+        let result = run_guarded(&job, |_| panic!("テスト用の panic"));
+        assert_eq!(result.request_id, 7);
+        assert_eq!(result.outcome.err().as_deref(), Some("テスト用の panic"));
+
+        // 正常時は検出結果を返す
+        let result = run_guarded(&job, run_job);
+        assert_eq!(result.request_id, 7);
+        assert!(result.outcome.is_ok());
     }
 
     /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれることを確認する

@@ -6,11 +6,12 @@
 #
 # 前提:
 #   - cargo-about (THIRD_PARTY_NOTICES 生成)
+#   - mdBook (利用者向けドキュメント生成。版は scripts/common/build-user-docs.ps1 に固定), perl
 #   - macOS (sips / iconutil でアイコン生成)
 #
 # 出力:
 #   target/dist/EdgeCut.app
-#   (LICENSE / THIRD_PARTY_NOTICES は Contents/Resources/ に同梱)
+#   (LICENSE / THIRD_PARTY_NOTICES / 利用者向けドキュメント docs/ は Contents/Resources/ に同梱)
 # ========================================================================
 
 set -euo pipefail
@@ -20,6 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../common/cd-project-root.sh"
 # shellcheck source=../common/cargo-package-metadata.sh
 source "$SCRIPT_DIR/../common/cargo-package-metadata.sh"
+# shellcheck source=../common/build-user-docs.sh
+source "$SCRIPT_DIR/../common/build-user-docs.sh"
 
 RELEASE=false
 SKIP_BUILD=false
@@ -75,6 +78,9 @@ fi
 "$SCRIPT_DIR/../common/generate-third-party-notices.sh" "$TARGET_TRIPLE"
 echo
 
+build_user_docs
+echo
+
 MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
 
@@ -84,6 +90,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 755 "$BINARY_PATH" "$MACOS_DIR/$CARGO_BIN_NAME"
 install -m 644 "$PROJECT_ROOT/LICENSE" "$RESOURCES_DIR/LICENSE"
 install -m 644 "$PROJECT_ROOT/THIRD_PARTY_NOTICES" "$RESOURCES_DIR/THIRD_PARTY_NOTICES"
+cp -R "$USER_DOCS_DIR" "$RESOURCES_DIR/docs"
 
 sed \
     -e "s/__VERSION__/${CARGO_PACKAGE_VERSION}/g" \

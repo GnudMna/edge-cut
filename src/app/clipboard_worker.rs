@@ -3,6 +3,8 @@
 //! 切り出し・RGBA 変換・arboard 内部の DIB/PNG 変換・バッファ複製は大きな画像で重いため、
 //! UI スレッドではなく 1 本のワーカースレッドで順に処理する。`arboard::Clipboard` は
 //! ワーカーが所有し続け、Linux でもコピーした内容がアプリ終了まで保持されるようにする
+//!
+//! ジョブ内の panic は捕捉して失敗結果として返し、ワーカースレッド自体は動かし続ける
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
@@ -10,6 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use super::state::IoMsg;
 use crate::image_load::validate_clipboard_rgba;
+use crate::panic_message::catch_panic;
 use crate::trim::{TrimInfo, apply_trim};
 
 use eframe::egui;
@@ -58,20 +61,24 @@ impl ClipboardWorkerHandle {
             while let Ok(job) = job_rx.recv() {
                 match job {
                     ClipboardJob::Copy { image, info, ctx } => {
-                        let trimmed = apply_trim(&image, &info);
-                        let result = get_clipboard(&mut clipboard).and_then(|cb| {
-                            cb.set_image(to_clipboard_data(&trimmed))
-                                .map_err(|e| format!("コピーエラー: {e}"))
+                        let result = run_guarded("コピー", &mut clipboard, |clipboard| {
+                            let trimmed = apply_trim(&image, &info);
+                            get_clipboard(clipboard).and_then(|cb| {
+                                cb.set_image(to_clipboard_data(&trimmed))
+                                    .map_err(|e| format!("コピーエラー: {e}"))
+                            })
                         });
                         let _ = result_tx.send(IoMsg::Copied { result });
                         ctx.request_repaint();
                     }
                     ClipboardJob::Paste { request_id, ctx } => {
-                        let result = get_clipboard(&mut clipboard).and_then(|cb| {
-                            let data = cb
-                                .get_image()
-                                .map_err(|_| "クリップボードに画像がありません".to_string())?;
-                            from_clipboard_data(data)
+                        let result = run_guarded("貼り付け", &mut clipboard, |clipboard| {
+                            get_clipboard(clipboard).and_then(|cb| {
+                                let data = cb
+                                    .get_image()
+                                    .map_err(|_| "クリップボードに画像がありません".to_string())?;
+                                from_clipboard_data(data)
+                            })
                         });
                         let _ = result_tx.send(IoMsg::Pasted { request_id, result });
                         ctx.request_repaint();
@@ -86,9 +93,50 @@ impl ClipboardWorkerHandle {
     }
 
     /// クリップボード操作をワーカーへ送る
-    pub(super) fn submit(&self, job: ClipboardJob) {
-        let _ = self.job_tx.send(job);
+    ///
+    /// # Arguments
+    /// * `job` - ワーカーへ送るクリップボード操作
+    ///
+    /// # Returns
+    /// * `Result<(), ClipboardJob>` - ワーカーが終了していて送れなかった場合は、そのジョブ
+    pub(super) fn submit(&self, job: ClipboardJob) -> Result<(), ClipboardJob> {
+        self.job_tx.send(job).map_err(|e| e.0)
     }
+
+    /// 終了済みのワーカーを模したハンドルを生成する
+    #[cfg(test)]
+    pub(super) fn terminated() -> Self {
+        let (job_tx, job_rx) = mpsc::channel::<ClipboardJob>();
+        drop(job_rx);
+        Self {
+            job_tx,
+            _thread: thread::spawn(|| {}),
+        }
+    }
+}
+
+/// ジョブを実行し、panic を失敗結果に変換する
+///
+/// panic 後のクリップボードは状態を信頼できないため破棄し、次のジョブで作り直す
+///
+/// # Arguments
+/// * `action` - 失敗メッセージに表示する操作名
+/// * `clipboard` - ワーカーが所有するクリップボードアクセス用インスタンス
+/// * `run` - ジョブの処理本体
+///
+/// # Returns
+/// * `Result<T, String>` - `run` の結果。panic した場合は失敗時のステータスメッセージ
+fn run_guarded<T>(
+    action: &str,
+    clipboard: &mut Option<arboard::Clipboard>,
+    run: impl FnOnce(&mut Option<arboard::Clipboard>) -> Result<T, String>,
+) -> Result<T, String> {
+    catch_panic(|| run(&mut *clipboard)).unwrap_or_else(|msg| {
+        *clipboard = None;
+        Err(format!(
+            "クリップボードの{action}中にエラーが発生しました: {msg}"
+        ))
+    })
 }
 
 /// クリップボードアクセス用インスタンスを返す。未初期化ならここで作成する
@@ -152,6 +200,38 @@ mod tests {
     use super::*;
 
     use image::RgbaImage;
+
+    /// ジョブが panic しても失敗結果として返り、クリップボードが破棄されることを確認する
+    #[test]
+    fn run_guarded_converts_panic_to_error() {
+        let mut clipboard = None;
+
+        // panic はメッセージ付きの Err に変換される
+        let result: Result<(), String> =
+            run_guarded("コピー", &mut clipboard, |_| panic!("テスト用の panic"));
+        let msg = result.unwrap_err();
+        assert!(msg.contains("コピー"), "{msg}");
+        assert!(msg.contains("テスト用の panic"), "{msg}");
+        assert!(clipboard.is_none());
+
+        // 正常時は結果をそのまま返す
+        let result = run_guarded("コピー", &mut clipboard, |_| Ok(1));
+        assert_eq!(result, Ok(1));
+    }
+
+    /// 終了済みのワーカーへ送ると、ジョブが返ることを確認する
+    #[test]
+    fn submit_returns_job_when_worker_terminated() {
+        let handle = ClipboardWorkerHandle::terminated();
+        let job = ClipboardJob::Paste {
+            request_id: 9,
+            ctx: egui::Context::default(),
+        };
+        match handle.submit(job) {
+            Err(ClipboardJob::Paste { request_id, .. }) => assert_eq!(request_id, 9),
+            _ => panic!("送れなかったジョブが返るはず"),
+        }
+    }
 
     /// RGBA へ変換したデータを戻すと元の画素と一致することを確認する
     #[test]
