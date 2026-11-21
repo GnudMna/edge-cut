@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -29,6 +29,10 @@ serde   = { version = "1", features = ["derive"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+[lib]
+name = "edge_cut"
+path = "src/lib.rs"
 
 [[bin]]
 name = "EdgeCut"

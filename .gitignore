@@ -27,3 +27,6 @@ wix/*
 !wix/Banner.bmp
 !wix/Dialog.bmp
 !wix/Eula.rtf
+
+# cargo-about 生成物 (MSI 作成時に自動生成)
+THIRD_PARTY_NOTICES

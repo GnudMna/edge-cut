@@ -360,24 +360,45 @@ cargo build --release
 | `test.ps1` | テスト実行 |
 | `clippy.ps1` | Clippy による静的解析 |
 | `format.ps1` | コードフォーマット |
-| `check.ps1` | CI 向け一括チェック (fmt / clippy / test / doc) |
-| `build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可) |
+| `check.ps1` | CI 向け一括チェック (fmt / clippy / deny / test / doc) |
+| `build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可。`THIRD_PARTY_NOTICES` を自動生成して同梱) |
 
-MSI は `target/wix/` に `{パッケージ名}-{バージョン}-{アーキテクチャ}.msi` として出力されます。
+MSI は `target/wix/` に `{パッケージ名}-{バージョン}-{アーキテクチャ}.msi` として出力されます。インストール先は `%LOCALAPPDATA%\edge-cut` (`THIRD_PARTY_NOTICES` を同梱)。
 
 </details>
 
 <details>
-<summary>🐧🍎 &nbsp;<b>Linux / macOS スクリプト一覧</b></summary>
+<summary>🐧 &nbsp;<b>Linux スクリプト一覧</b></summary>
 <br>
 
 | スクリプト | 説明 |
 | ---------- | ---- |
 | `build.sh` | デバッグ / リリースビルド (`--release` / `-r`) |
+| `build-package.sh` | 配布用 tar.gz 作成 (`--skip-build` でビルド省略可。`THIRD_PARTY_NOTICES` を自動生成して同梱) |
 | `test.sh` | テスト実行 |
 | `clippy.sh` | Clippy による静的解析 |
 | `format.sh` | コードフォーマット |
-| `check.sh` | CI 向け一括チェック (fmt / clippy / test / doc) |
+| `check.sh` | CI 向け一括チェック (fmt / clippy / deny / test / doc) |
+
+tar.gz は `target/dist/` に `{パッケージ名}-{バージョン}-{ターゲット}.tar.gz` として出力されます。展開後 `install.sh` で `~/.local` にインストールできます (`LICENSE` / `THIRD_PARTY_NOTICES` / デスクトップエントリを同梱)。
+
+</details>
+
+<details>
+<summary>🍎 &nbsp;<b>macOS スクリプト一覧</b></summary>
+<br>
+
+| スクリプト | 説明 |
+| ---------- | ---- |
+| `build.sh` | デバッグ / リリースビルド (`--release` / `-r`) |
+| `build-app.sh` | `.app` バンドル作成 (`--skip-build` でビルド省略可。`THIRD_PARTY_NOTICES` を `Contents/Resources/` に同梱) |
+| `build-dmg.sh` | DMG 配布イメージ作成 (`--skip-app` で `.app` 生成を省略可) |
+| `test.sh` | テスト実行 |
+| `clippy.sh` | Clippy による静的解析 |
+| `format.sh` | コードフォーマット |
+| `check.sh` | CI 向け一括チェック (fmt / clippy / deny / test / doc) |
+
+`.app` は `target/dist/EdgeCut.app`、DMG は `target/dist/{パッケージ名}-{バージョン}-{ターゲット}.dmg` に出力されます。
 
 </details>
 
@@ -405,8 +426,29 @@ MSI は `target/wix/` に `{パッケージ名}-{バージョン}-{アーキテ�
 ```bash
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
+cargo deny check
 cargo test
 ```
+
+[`deny.toml`](deny.toml) で依存関係の脆弱性・ライセンス・取得元を検証する。Windows / Linux / macOS の 3 ターゲット (`x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`) を対象にする。`cargo-deny` は `cargo install cargo-deny --locked` で導入する。
+
+### 第三者ライセンス表示 (`THIRD_PARTY_NOTICES`)
+
+`LICENSE` は EdgeCut 本体の利用条件を示す。配布バイナリに含まれる OSS 依存の帰属・ライセンス全文は **`THIRD_PARTY_NOTICES`** にまとめる。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 生成ツール | [cargo-about](https://github.com/EmbarkStudios/cargo-about) (`cargo install cargo-about --locked --features cli`) |
+| 設定 | [`about.toml`](about.toml)、テンプレート [`scripts/templates/third-party-notices.hbs`](scripts/templates/third-party-notices.hbs) |
+| 手動生成 | `scripts/common/generate-third-party-notices.ps1` (Windows) / `generate-third-party-notices.sh [TARGET]` (Linux / macOS) |
+| 出力 | リポジトリルートの `THIRD_PARTY_NOTICES` (`.gitignore` 対象。パッケージ作成時に自動生成) |
+| ターゲット | 配布スクリプトが OS 別 triple を指定 (`deny.toml` と同じ 3 ターゲット) |
+
+| プラットフォーム | 同梱先 |
+| :--------------- | :----- |
+| **Windows MSI** | `%LOCALAPPDATA%\edge-cut\THIRD_PARTY_NOTICES` (`build-msi.ps1` が生成後に同梱) |
+| **Linux tar.gz** | 展開先 `edge-cut/THIRD_PARTY_NOTICES` (`build-package.sh` が生成後に同梱。`install.sh` で `~/.local/share/edge-cut/` へコピー) |
+| **macOS .app / DMG** | `EdgeCut.app/Contents/Resources/THIRD_PARTY_NOTICES` (`build-app.sh` / `build-dmg.sh`) |
 
 ---
 

@@ -1,8 +1,9 @@
 //! 大容量画像によるメモリ枯渇を防ぐための安全な画像読み込み
 
+use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
@@ -108,29 +109,49 @@ impl From<io::Error> for LoadError {
     }
 }
 
+impl Error for LoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Decode(e) => Some(e),
+            Self::FileTooLarge { .. }
+            | Self::DimensionsTooLarge { .. }
+            | Self::ClipboardSizeMismatch { .. } => None,
+        }
+    }
+}
+
 // ======================================================================
 // 画像読み込み
 // ======================================================================
 /// ファイルから画像を安全に読み込む
 ///
 /// ファイルサイズ・ヘッダ上の寸法・デコード時の `image::Limits` を順に検証する
+///
+/// # Errors
+/// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
 pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
-    let file_size = fs::metadata(path)?.len();
+    let mut file = fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
     check_file_size(file_size)?;
 
     let limits = decode_limits();
 
-    let mut probe = ImageReader::open(path)?;
+    let mut probe = ImageReader::new(BufReader::new(&file));
     probe.limits(limits.clone());
     let (width, height) = probe.with_guessed_format()?.into_dimensions()?;
     check_dimensions(width, height)?;
 
-    let mut reader = ImageReader::open(path)?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut reader = ImageReader::new(BufReader::new(&file));
     reader.limits(limits);
     Ok(reader.with_guessed_format()?.decode()?)
 }
 
 /// クリップボード由来の RGBA 画像寸法を検証する
+///
+/// # Errors
+/// 寸法が上限を超える、またはバイト列長が RGBA として不正な場合
 pub fn validate_clipboard_rgba(width: u32, height: u32, byte_len: usize) -> Result<(), LoadError> {
     check_dimensions(width, height)?;
     let expected = rgba_buffer_len(width, height)?;
@@ -145,6 +166,9 @@ pub fn validate_clipboard_rgba(width: u32, height: u32, byte_len: usize) -> Resu
 }
 
 /// ファイルサイズが上限内か検証する
+///
+/// # Errors
+/// ファイルサイズが上限を超えている場合
 pub fn check_file_size(size: u64) -> Result<(), LoadError> {
     if size > MAX_IMAGE_FILE_BYTES {
         return Err(LoadError::FileTooLarge {
@@ -156,6 +180,9 @@ pub fn check_file_size(size: u64) -> Result<(), LoadError> {
 }
 
 /// 画像の幅・高さ・ピクセル数が上限内か検証する
+///
+/// # Errors
+/// 幅・高さ・ピクセル数のいずれかが上限を超えている場合
 pub fn check_dimensions(width: u32, height: u32) -> Result<(), LoadError> {
     if width > MAX_IMAGE_WIDTH {
         return Err(LoadError::DimensionsTooLarge {
@@ -385,5 +412,26 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("ファイルサイズ"));
         assert!(msg.contains("上限"));
+    }
+
+    /// `Io` バリアントが元エラーを `source()` で返すことを確認する
+    #[test]
+    fn error_source_returns_io_inner() {
+        let inner = io::Error::new(io::ErrorKind::NotFound, "missing");
+        let err = LoadError::Io(inner);
+        let source = std::error::Error::source(&err).expect("source");
+        assert!(source.to_string().contains("missing"));
+    }
+
+    /// `Decode` バリアントが元エラーを `source()` で返すことを確認する
+    #[test]
+    fn error_source_returns_decode_inner() {
+        use image::error::{ParameterError, ParameterErrorKind};
+
+        let inner = ImageError::Parameter(ParameterError::from_kind(
+            ParameterErrorKind::DimensionMismatch,
+        ));
+        let err = LoadError::Decode(inner);
+        assert!(std::error::Error::source(&err).is_some());
     }
 }

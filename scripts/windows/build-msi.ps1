@@ -9,6 +9,7 @@
 #   - winget install WiXToolset.WiXToolset  (WiX v3。コード署名は不要)
 #   - wix/main.wxs, wix/Banner.bmp, wix/Dialog.bmp, wix/Eula.rtf が存在すること
 #     (画像・Eula.rtf は scripts/windows/generate-wix-assets.ps1 で再生成可能)
+#   - cargo-about (THIRD_PARTY_NOTICES 生成。build 時に自動実行)
 #   - Cargo.toml の culture = "ja-JP" でインストーラー UI を日本語化
 #
 # 出力:
@@ -92,6 +93,8 @@ Invoke-ScriptMain {
     if ($LASTEXITCODE -ne 0) {
         throw "エラー: WiX ブランド画像の生成に失敗しました (終了コード $LASTEXITCODE)"
     }
+
+    . (Join-Path $PSScriptRoot '..\common\generate-third-party-notices.ps1') -Target 'x86_64-pc-windows-msvc'
 
     Write-Host 'MSI インストーラーの作成を開始します...'
     Write-Host ''

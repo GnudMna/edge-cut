@@ -55,6 +55,31 @@ pub const PADDING_MAX: u32 = 100;
 /// スライダー操作時にプレビュートリミングを再実行するまでの待機時間 (ms)
 pub const TRIM_DEBOUNCE_MS: u64 = 150;
 
+/// このピクセル数未満の画像ではトリミング走査を逐次実行する (rayon オーバーヘッド回避)
+pub const TRIM_PARALLEL_MIN_PIXELS: u64 = 512 * 512;
+
+// ======================================================================
+// プレビュー表示
+// ======================================================================
+/// プレビュー用テクスチャの長辺上限 (px)。超える画像は縮小して GPU 転送する
+pub const PREVIEW_MAX_DIMENSION: u32 = 4096;
+
+// ======================================================================
+// 画像フォーマット
+// ======================================================================
+/// 対応する画像ファイル拡張子 (小文字、ドットなし)
+pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
+    &["png", "jpg", "jpeg", "bmp", "gif", "tiff", "tif", "webp"];
+
+/// 拡張子が未対応・欠落時の出力フォールバック
+pub const DEFAULT_IMAGE_EXTENSION: &str = "png";
+
+/// 拡張子文字列が対応形式かどうか (`ext` は小文字想定)
+#[must_use]
+pub fn is_supported_image_extension(ext: &str) -> bool {
+    SUPPORTED_IMAGE_EXTENSIONS.contains(&ext)
+}
+
 // ======================================================================
 // 画像読み込み上限
 // ======================================================================
@@ -144,5 +169,16 @@ mod tests {
     fn max_pixels_fits_within_dimension_box() {
         let box_pixels = u64::from(MAX_IMAGE_WIDTH) * u64::from(MAX_IMAGE_HEIGHT);
         assert!(MAX_IMAGE_PIXELS <= box_pixels);
+    }
+
+    /// 対応拡張子リストが空でなく、代表形式を含むことを確認する
+    #[test]
+    fn supported_image_extensions_include_common_formats() {
+        assert!(!SUPPORTED_IMAGE_EXTENSIONS.is_empty());
+        assert!(is_supported_image_extension("png"));
+        assert!(is_supported_image_extension("jpeg"));
+        assert!(is_supported_image_extension("tiff"));
+        assert!(is_supported_image_extension("tif"));
+        assert!(!is_supported_image_extension("pdf"));
     }
 }

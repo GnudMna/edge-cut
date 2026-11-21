@@ -267,13 +267,14 @@ impl TrimWorkerState {
 
 /// 一括トリミングのバックグラウンド処理
 pub(super) struct BatchState {
-    /// バックグラウンドスレッドからの結果受信チャネル
-    /// `(is_final, message)` — `is_final` が `true` のとき処理完了
-    pub rx: Option<mpsc::Receiver<(bool, String)>>,
+    /// バックグラウンドスレッドからの進捗受信チャネル
+    pub rx: Option<std::sync::mpsc::Receiver<crate::batch_trim::BatchProgress>>,
     /// 処理が実行中かどうか
     pub running: bool,
-    /// キャンセルフラグ。`true` にセットするとスレッドが次のファイル処理前に停止する
+    /// キャンセルフラグ。`true` にセットすると次のファイル処理前に停止する
     pub cancel: Arc<AtomicBool>,
+    /// 直近バッチのエラー詳細 (ステータスバーは要約のみ、ホバーで全文表示)
+    pub last_error_details: Vec<String>,
 }
 
 impl Default for BatchState {
@@ -282,6 +283,7 @@ impl Default for BatchState {
             rx: None,
             running: false,
             cancel: Arc::new(AtomicBool::new(false)),
+            last_error_details: Vec::new(),
         }
     }
 }

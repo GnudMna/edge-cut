@@ -2,21 +2,19 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::state::App;
 use super::trim_worker::TrimJob;
-use crate::consts::TRIM_DEBOUNCE_MS;
+use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
+use crate::consts::{DEFAULT_IMAGE_EXTENSION, SUPPORTED_IMAGE_EXTENSIONS, TRIM_DEBOUNCE_MS};
 use crate::image_load::{open_image, validate_clipboard_rgba};
-use crate::image_output::batch_trim_output_path;
-use crate::trim::trim;
 
 use eframe::egui;
 use image::DynamicImage;
-use rayon::prelude::*;
 
 // ======================================================================
 // 画像読み込み
@@ -28,10 +26,7 @@ impl App {
     /// * `ctx` - egui のコンテキスト (テクスチャ登録に使用)
     pub(super) fn open_image(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "画像",
-                &["png", "jpg", "jpeg", "bmp", "gif", "tiff", "webp"],
-            )
+            .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
             .pick_file()
         else {
             return;
@@ -261,7 +256,7 @@ impl App {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
-        let filename = format!("trimmed_{ts}.png");
+        let filename = format!("trimmed_{ts}.{DEFAULT_IMAGE_EXTENSION}");
         let path = self.prefs.auto_save_dir.join(&filename);
         match img.save(&path) {
             Ok(()) => {
@@ -385,10 +380,7 @@ impl App {
             return;
         }
         let Some(paths) = rfd::FileDialog::new()
-            .add_filter(
-                "画像",
-                &["png", "jpg", "jpeg", "bmp", "gif", "tiff", "webp"],
-            )
+            .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
             .pick_files()
         else {
             return;
@@ -406,97 +398,50 @@ impl App {
         let ctx_clone = ctx.clone();
         let total = paths.len();
 
-        // 新バッチのキャンセルフラグをリセットし共有する
+        self.batch.last_error_details.clear();
         self.batch.cancel.store(false, Ordering::Relaxed);
         let cancel_flag = Arc::clone(&self.batch.cancel);
 
-        let (tx, rx) = mpsc::channel::<(bool, String)>();
+        let (tx, rx) = mpsc::channel::<BatchProgress>();
         self.batch.rx = Some(rx);
         self.batch.running = true;
-        self.status = format!("一括トリミング中... ({total} ファイル)");
+        self.status = format!("一括トリミング中... (0/{total})");
 
         thread::spawn(move || {
             if let Err(e) = fs::create_dir_all(&out_dir) {
-                let _ = tx.send((true, format!("出力フォルダの作成に失敗: {e}")));
+                let result =
+                    BatchTrimResult::fatal(out_dir, format!("出力フォルダの作成に失敗: {e}"));
+                let _ = tx.send(BatchProgress::Finished(result));
                 ctx_clone.request_repaint();
                 return;
             }
 
-            let ok = AtomicUsize::new(0);
-            let processed = AtomicUsize::new(0);
-            let err_msgs = Mutex::new(Vec::new());
+            let result = run_batch_trim(
+                &paths,
+                &out_dir,
+                BatchTrimParams {
+                    tolerance,
+                    padding,
+                    bg_override,
+                },
+                &cancel_flag,
+                |processed, batch_total| {
+                    let _ = tx.send(BatchProgress::Working {
+                        processed,
+                        total: batch_total,
+                    });
+                    ctx_clone.request_repaint();
+                },
+            );
 
-            paths.par_iter().for_each(|path| {
-                if cancel_flag.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-
-                match open_image(path) {
-                    Ok(img) => {
-                        let (trimmed, _, _) = trim(&img, tolerance, padding, bg_override);
-                        let out_path = batch_trim_output_path(path, &out_dir);
-                        match trimmed.save(&out_path) {
-                            Ok(()) => {
-                                ok.fetch_add(1, Ordering::Relaxed);
-                            }
-                            Err(e) => {
-                                err_msgs
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("保存エラー {name}: {e}"));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        err_msgs.lock().unwrap().push(format!("{name}: {e}"));
-                    }
-                }
-
-                let p = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                let _ = tx.send((false, format!("一括トリミング中... ({p}/{total})")));
-                ctx_clone.request_repaint();
-            });
-
-            let ok_count = ok.into_inner();
-
-            // キャンセルされた場合の報告
-            if cancel_flag.load(Ordering::Relaxed) {
-                let _ = tx.send((
-                    true,
-                    format!("一括トリミングをキャンセルしました ({ok_count}/{total} 保存済み)"),
-                ));
-                ctx_clone.request_repaint();
-                return;
-            }
-
-            let errs = err_msgs.into_inner().unwrap();
-            let error_count = errs.len();
-            let msg = if error_count == 0 {
-                format!(
-                    "一括トリミング完了: {ok_count}/{total} ファイルを保存 → {}",
-                    out_dir.display()
-                )
-            } else {
-                format!(
-                    "一括トリミング完了: {ok_count}/{total} 成功、{error_count} 件のエラー → {}\n{}",
-                    out_dir.display(),
-                    errs.join("\n"),
-                )
-            };
-            let _ = tx.send((true, msg));
+            let _ = tx.send(BatchProgress::Finished(result));
             ctx_clone.request_repaint();
         });
     }
 
     /// 実行中の一括トリミングをキャンセルする
     ///
-    /// フラグをセットするのみ。スレッドは次のファイル処理前に停止しチャネルに完了メッセージを送る
+    /// フラグをセットするのみ。進行中の 1 ファイルが完了したあと、次のファイル処理前に停止する
     pub(super) fn cancel_batch(&self) {
         self.batch.cancel.store(true, Ordering::Relaxed);
     }
@@ -504,8 +449,7 @@ impl App {
     /// バックグラウンドの一括トリミング処理が完了していればステータスを更新する
     ///
     /// 毎フレーム呼び出すことで結果をポーリングする
-    /// 進捗メッセージ (`is_final = false`) はステータスに表示し処理を継続する
-    /// 完了メッセージ (`is_final = true`) を受信すると `batch.running` をリセットする
+    /// 進捗はステータスバーに表示し、エラー詳細は `batch.last_error_details` に保持する
     pub(super) fn poll_batch_result(&mut self) {
         if !self.batch.running {
             return;
@@ -514,13 +458,14 @@ impl App {
         loop {
             let msg = self.batch.rx.as_ref().and_then(|rx| rx.try_recv().ok());
             match msg {
-                Some((true, text)) => {
-                    self.status = text;
+                Some(BatchProgress::Finished(result)) => {
+                    self.status = result.summary();
+                    self.batch.last_error_details = result.errors;
                     done = true;
                     break;
                 }
-                Some((false, text)) => {
-                    self.status = text;
+                Some(BatchProgress::Working { processed, total }) => {
+                    self.status = format!("一括トリミング中... ({processed}/{total})");
                 }
                 None => break,
             }

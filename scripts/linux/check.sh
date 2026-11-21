@@ -1,7 +1,7 @@
 #!/bin/bash
 # ========================================================================
 # Script Name : check.sh
-# Description : Linux用の品質チェックスクリプト(fmt / clippy / test)
+# Description : Linux用の品質チェックスクリプト(fmt / clippy / deny / test)
 # Usage       : ./check.sh
 # ========================================================================
 
@@ -28,6 +28,12 @@ echo
 # Clippy を実行
 echo "Clippy を実行中..."
 cargo clippy --all-targets -- -D warnings
+echo
+
+# サプライチェーン監査を実行
+echo "サプライチェーン監査を実行中..."
+# shellcheck source=../common/cargo-deny-check.sh
+source "$SCRIPT_DIR/../common/cargo-deny-check.sh"
 echo
 
 # テストを実行

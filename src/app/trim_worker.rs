@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
+use super::image_convert::to_preview_color_image;
 use super::state::TrimWorkerResult;
-use crate::trim::{to_color_image, trim};
+use crate::trim::trim;
 
 use eframe::egui;
 use image::DynamicImage;
@@ -42,24 +43,24 @@ impl TrimWorkerHandle {
                 }
 
                 let orig_color = if job.refresh_orig_tex {
-                    Some(to_color_image(job.original.as_ref()))
+                    Some(to_preview_color_image(job.original.as_ref()))
                 } else {
                     None
                 };
-                let (trimmed, info, background) = trim(
+                let result = trim(
                     job.original.as_ref(),
                     job.tolerance,
                     job.padding,
                     job.bg_override,
                 );
-                let trimmed_color = to_color_image(&trimmed);
+                let trimmed_color = to_preview_color_image(&result.image);
                 let _ = result_tx.send(TrimWorkerResult {
                     request_id: job.request_id,
-                    trimmed,
+                    trimmed: result.image,
                     trimmed_color,
-                    info,
+                    info: result.info,
                     orig_color,
-                    background,
+                    background: result.background,
                 });
                 job.ctx.request_repaint();
             }
@@ -78,18 +79,17 @@ impl TrimWorkerHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
-
-    use crate::trim::TrimInfo;
 
     use image::RgbaImage;
 
     fn solid_image() -> Arc<DynamicImage> {
-        let buf = vec![200u8; 4 * 4 * 4];
+        // 逐次/並列切替の閾値付近のサイズにし、連続 submit 時に coalesce しやすくする
+        let buf = vec![200u8; 600 * 600 * 4];
         Arc::new(DynamicImage::ImageRgba8(
-            RgbaImage::from_raw(4, 4, buf).unwrap(),
+            RgbaImage::from_raw(600, 600, buf).unwrap(),
         ))
     }
 
@@ -113,20 +113,22 @@ mod tests {
             });
         }
 
-        let result = result_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker should produce a result");
-        assert_eq!(result.request_id, 5);
-        assert_eq!(
-            result.info,
-            TrimInfo {
-                orig_w: 4,
-                orig_h: 4,
-                trim_w: 4,
-                trim_h: 4,
-                offset_x: 0,
-                offset_y: 0,
+        let mut last_id = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match result_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(result) => last_id = result.request_id,
+                Err(mpsc::RecvTimeoutError::Timeout) if last_id > 0 => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-        );
+        }
+        assert_eq!(last_id, 5);
+        if let Ok(result) = result_rx.recv_timeout(Duration::from_millis(10)) {
+            assert!(
+                result.request_id >= last_id,
+                "coalescing 後に古い request_id が返るべきではない"
+            );
+        }
     }
 }

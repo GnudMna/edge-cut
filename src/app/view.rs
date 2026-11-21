@@ -39,7 +39,11 @@ impl App {
                 } else {
                     self.status.clone()
                 };
-                ui.label(egui::RichText::new(status).color(ui.visuals().text_color()));
+                let status_label =
+                    ui.label(egui::RichText::new(status).color(ui.visuals().text_color()));
+                if !self.batch.last_error_details.is_empty() {
+                    status_label.on_hover_text(self.batch.last_error_details.join("\n"));
+                }
                 if let Some(ref info) = self.image.info {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let detail = if self.prefs.compact_mode {
@@ -334,42 +338,43 @@ impl App {
             }
 
             let avail = ui.available_size();
-            let orig_size = self
+            let orig_dims = self
                 .image
-                .orig_tex
+                .original
                 .as_ref()
-                .map(egui::TextureHandle::size_vec2);
-            let trim_size = self
-                .image
-                .trim_tex
-                .as_ref()
-                .map(egui::TextureHandle::size_vec2);
+                .map(|img| [img.width(), img.height()]);
+            let trim_dims = self.image.info.map(|info| [info.trim_w, info.trim_h]);
 
             if self.prefs.compact_mode {
                 let col_w = avail.x - 8.0;
-                let trim_label = trim_size.map_or_else(
+                let trim_label = trim_dims.map_or_else(
                     || "トリミング後".into(),
-                    |s| format!("トリミング後  {}", format_vec2_dims(s)),
+                    |[w, h]| format!("トリミング後  {w}×{h}"),
                 );
-                show_panel(ui, &trim_label, self.image.trim_tex.as_ref(), col_w, false);
+                show_panel(
+                    ui,
+                    &trim_label,
+                    self.image.trim_tex.as_ref(),
+                    col_w,
+                    false,
+                    None,
+                );
             } else {
                 let col_w = (avail.x - 16.0) / 2.0;
                 let ctx = ui.ctx().clone();
                 ui.columns(2, |cols| {
                     let orig_label = if self.background.pick_mode {
-                        orig_size.map_or_else(
+                        orig_dims.map_or_else(
                             || "元画像 (クリックで背景色を選択)".into(),
-                            |s| format!("元画像 (クリックで背景色を選択)  {}", format_vec2_dims(s)),
+                            |[w, h]| format!("元画像 (クリックで背景色を選択)  {w}×{h}"),
                         )
                     } else {
-                        orig_size.map_or_else(
-                            || "元画像".into(),
-                            |s| format!("元画像  {}", format_vec2_dims(s)),
-                        )
+                        orig_dims
+                            .map_or_else(|| "元画像".into(), |[w, h]| format!("元画像  {w}×{h}"))
                     };
-                    let trim_label = trim_size.map_or_else(
+                    let trim_label = trim_dims.map_or_else(
                         || "トリミング後".into(),
-                        |s| format!("トリミング後  {}", format_vec2_dims(s)),
+                        |[w, h]| format!("トリミング後  {w}×{h}"),
                     );
                     if let Some((x, y)) = show_panel(
                         &mut cols[0],
@@ -377,6 +382,7 @@ impl App {
                         self.image.orig_tex.as_ref(),
                         col_w,
                         self.background.pick_mode,
+                        orig_dims,
                     ) {
                         self.pick_bg_from_pixel(&ctx, x, y);
                     }
@@ -386,6 +392,7 @@ impl App {
                         self.image.trim_tex.as_ref(),
                         col_w,
                         false,
+                        None,
                     );
                 });
             }
@@ -415,12 +422,6 @@ fn handle_file_drop(app: &mut App, ctx: &egui::Context) {
     if let Some(path) = dropped.into_iter().next() {
         app.load_image_from_path(ctx, &path);
     }
-}
-
-/// テクスチャサイズを `幅×高さ` 形式の文字列へ変換する
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn format_vec2_dims(size: egui::Vec2) -> String {
-    format!("{}×{}", size.x as u32, size.y as u32)
 }
 
 /// スライダーのレスポンスを受け取り、トリミングを再実行すべきかどうかを返す
@@ -500,6 +501,7 @@ fn show_bg_swatch(ui: &mut egui::Ui, rgba: [u8; 4]) {
 /// タイトルとスクロール可能な画像を 1 ペイン分描画する
 ///
 /// `pick_mode` が `true` のとき画像クリックでピクセル座標を返す
+/// `pick_source_size` は元画像の寸法。プレビュー縮小時もスポイト座標を元解像度へ合わせる
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn show_panel(
     ui: &mut egui::Ui,
@@ -507,6 +509,7 @@ fn show_panel(
     tex: Option<&egui::TextureHandle>,
     max_w: f32,
     pick_mode: bool,
+    pick_source_size: Option<[u32; 2]>,
 ) -> Option<(u32, u32)> {
     ui.strong(title);
     ui.separator();
@@ -540,13 +543,17 @@ fn show_panel(
                         .filter(|_| response.clicked())
                     {
                         let rel = pos - response.rect.min;
-                        let px = ((rel.x / response.rect.width()) * ts.x)
-                            .clamp(0.0, ts.x - 1.0)
-                            .floor() as u32;
-                        let py = ((rel.y / response.rect.height()) * ts.y)
-                            .clamp(0.0, ts.y - 1.0)
-                            .floor() as u32;
-                        picked = Some((px, py));
+                        let [sw, sh] = pick_source_size.unwrap_or([ts.x as u32, ts.y as u32]);
+                        #[allow(clippy::cast_precision_loss)]
+                        {
+                            let px = ((rel.x / response.rect.width()) * sw as f32)
+                                .clamp(0.0, sw.saturating_sub(1) as f32)
+                                .floor() as u32;
+                            let py = ((rel.y / response.rect.height()) * sh as f32)
+                                .clamp(0.0, sh.saturating_sub(1) as f32)
+                                .floor() as u32;
+                            picked = Some((px, py));
+                        }
                     }
                 }
             }

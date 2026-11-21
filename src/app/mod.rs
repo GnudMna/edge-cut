@@ -2,6 +2,7 @@
 mod actions;
 mod fonts;
 mod icon;
+mod image_convert;
 mod state;
 mod trim_worker;
 mod view;
@@ -17,6 +18,9 @@ use eframe::egui;
 ///
 /// # Returns
 /// * `eframe::Result` - ネイティブアプリの実行結果
+///
+/// # Errors
+/// ネイティブウィンドウの初期化またはイベントループの実行に失敗した場合
 pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
