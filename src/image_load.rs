@@ -8,8 +8,24 @@ use std::path::Path;
 
 use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
 
+use image::error::LimitErrorKind;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
+
+/// デコーダ内部の作業領域として、画像バッファとは別に確保を許す量
+const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
+
+// ======================================================================
+// 読み込み結果
+// ======================================================================
+/// 読み込んだ画像と、保存時に引き継ぐメタデータ
+#[derive(Debug, Clone)]
+pub struct LoadedImage {
+    /// EXIF Orientation を適用済みの画像
+    pub image: DynamicImage,
+    /// 埋め込まれていた ICC プロファイル。無い、または取得に失敗した場合は `None`
+    pub icc_profile: Option<Vec<u8>>,
+}
 
 // ======================================================================
 // エラー型
@@ -94,11 +110,17 @@ impl fmt::Display for LoadError {
                 "クリップボード画像のデータサイズが不正です ({width}×{height} に対し {bytes} バイト)",
             ),
             Self::Io(e) => write!(f, "読み込みエラー: {e}"),
-            Self::Decode(ImageError::Limits(_)) => write!(
-                f,
-                "画像が大きすぎるため読み込めません (上限: 幅 {MAX_IMAGE_WIDTH} / 高さ {MAX_IMAGE_HEIGHT} / {limit_mp})",
-                limit_mp = format_megapixels(MAX_IMAGE_PIXELS),
-            ),
+            Self::Decode(ImageError::Limits(e)) => match e.kind() {
+                LimitErrorKind::InsufficientMemory => write!(
+                    f,
+                    "画像のデコードに必要なメモリが上限を超えたため読み込めません",
+                ),
+                _ => write!(
+                    f,
+                    "画像が大きすぎるため読み込めません (上限: 幅 {MAX_IMAGE_WIDTH} / 高さ {MAX_IMAGE_HEIGHT} / {limit_mp})",
+                    limit_mp = format_megapixels(MAX_IMAGE_PIXELS),
+                ),
+            },
             Self::Decode(e) => write!(f, "読み込みエラー: {e}"),
         }
     }
@@ -129,10 +151,22 @@ impl Error for LoadError {
 ///
 /// ファイルサイズ・ヘッダ上の寸法・デコード時の `image::Limits` を順に検証する
 /// EXIF の Orientation があれば回転・反転を適用し、表示上の向きで返す
+/// ICC プロファイルも必要な場合は `open_image_with_icc` を使う
 ///
 /// # Errors
 /// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
 pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
+    open_image_with_icc(path).map(|loaded| loaded.image)
+}
+
+/// ファイルから画像を ICC プロファイルとともに安全に読み込む
+///
+/// 検証と向きの補正は `open_image` と同じ
+/// ICC プロファイルは保存時に再埋め込みし、色の見え方を元画像と揃えるために使う
+///
+/// # Errors
+/// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
+pub fn open_image_with_icc(path: &Path) -> Result<LoadedImage, LoadError> {
     let mut file = fs::File::open(path)?;
     let file_size = file.metadata()?.len();
     check_file_size(file_size)?;
@@ -149,15 +183,24 @@ pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
     reader.limits(limits.clone());
     let mut decoder = reader.with_guessed_format()?.into_decoder()?;
 
-    // `ImageReader::decode()` と同様にデコード先バッファ分を上限から差し引く
-    limits.reserve(decoder.total_bytes())?;
+    // 寸法は検証済みのため、16bit・浮動小数点画像でもデコード先バッファが収まるよう上限を広げる
+    // その上で `ImageReader::decode()` と同様にデコード先バッファ分を上限から差し引く
+    let total_bytes = decoder.total_bytes();
+    limits.max_alloc = Some(decode_alloc_budget(total_bytes));
+    limits.reserve(total_bytes)?;
     decoder.set_limits(limits)?;
 
     // 壊れた EXIF で読み込み自体を失敗させないよう、取得できなければ無変換とする
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    // ICC プロファイルも同様に、壊れていれば埋め込みなしとして扱う
+    let icc_profile = decoder
+        .icc_profile()
+        .ok()
+        .flatten()
+        .filter(|icc| !icc.is_empty());
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
-    Ok(image)
+    Ok(LoadedImage { image, icc_profile })
 }
 
 /// クリップボード由来の RGBA 画像寸法を検証する
@@ -229,15 +272,25 @@ fn decode_limits() -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_WIDTH);
     limits.max_image_height = Some(MAX_IMAGE_HEIGHT);
-    limits.max_alloc = Some(max_decode_alloc_bytes());
+    limits.max_alloc = Some(decode_alloc_budget(0));
     limits
 }
 
-/// 最大ピクセル数の RGBA バッファ 1 枚分 + デコーダ内部用の余裕
-fn max_decode_alloc_bytes() -> u64 {
+/// デコード時に許すメモリ確保量の上限を求める
+///
+/// 最大ピクセル数の RGBA8 バッファ 1 枚分を基準とし、
+/// 16bit・浮動小数点画像などデコード先バッファがそれを超える場合はその大きさに合わせる
+///
+/// # Arguments
+/// * `decode_buffer_bytes` - デコード先バッファのバイト数 (`ImageDecoder::total_bytes`)
+///
+/// # Returns
+/// * `u64` - デコード先バッファとデコーダ内部の作業領域を合わせた上限バイト数
+fn decode_alloc_budget(decode_buffer_bytes: u64) -> u64 {
     MAX_IMAGE_PIXELS
         .saturating_mul(4)
-        .saturating_add(16 * 1024 * 1024)
+        .max(decode_buffer_bytes)
+        .saturating_add(DECODE_ALLOC_MARGIN_BYTES)
 }
 
 /// RGBA 画像 1 枚分のバイト数
@@ -252,8 +305,9 @@ fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, LoadError> {
     })
 }
 
+/// バイト数を `B` / `KB` / `MB` 単位の表示用文字列にする
 #[allow(clippy::cast_precision_loss)]
-fn format_bytes(n: u64) -> String {
+pub(crate) fn format_bytes(n: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * 1024;
     if n >= MIB {
@@ -283,9 +337,6 @@ fn format_dimensions(width: u32, height: u32) -> String {
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use std::env;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::*;
 
     use image::codecs::png::PngEncoder;
@@ -296,14 +347,6 @@ mod tests {
     // ======================================================================
     // ヘルパー関数
     // ======================================================================
-    /// テスト用の一時ファイルパスを生成する
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        env::temp_dir().join(format!("edge_cut_load_{ts}_{name}"))
-    }
-
     /// 指定寸法の空 PNG を一時パスへ書き出す
     fn write_test_png(path: &Path, width: u32, height: u32) {
         let img = DynamicImage::ImageRgba8(RgbaImage::new(width, height));
@@ -429,7 +472,8 @@ mod tests {
     /// 存在しないファイルを開くと I/O またはデコードエラーになることを確認する
     #[test]
     fn open_image_rejects_missing_file() {
-        let path = temp_path("missing.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.png");
         let err = open_image(&path).unwrap_err();
         assert!(matches!(err, LoadError::Io(_) | LoadError::Decode(_)));
     }
@@ -437,21 +481,21 @@ mod tests {
     /// 小さな PNG ファイルが正常に読み込めることを確認する
     #[test]
     fn open_image_loads_small_png() {
-        let path = temp_path("small.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.png");
         write_test_png(&path, 8, 8);
         let img = open_image(&path).expect("open small png");
         assert_eq!(img.width(), 8);
         assert_eq!(img.height(), 8);
-        let _ = fs::remove_file(&path);
     }
 
     /// EXIF Orientation が 6 (時計回り 90°) のとき回転して読み込まれることを確認する
     #[test]
     fn open_image_applies_exif_rotate90() {
-        let path = temp_path("orient6.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orient6.png");
         write_png_with_orientation(&path, 6);
         let img = open_image(&path).expect("open png").to_rgba8();
-        let _ = fs::remove_file(&path);
 
         // 幅と高さが入れ替わり、左上の赤が右上へ移る
         assert_eq!(img.dimensions(), (2, 3));
@@ -462,10 +506,10 @@ mod tests {
     /// EXIF Orientation が 2 (左右反転) のとき反転して読み込まれることを確認する
     #[test]
     fn open_image_applies_exif_flip_horizontal() {
-        let path = temp_path("orient2.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orient2.png");
         write_png_with_orientation(&path, 2);
         let img = open_image(&path).expect("open png").to_rgba8();
-        let _ = fs::remove_file(&path);
 
         // 寸法は変わらず、左上の赤が右上へ移る
         assert_eq!(img.dimensions(), (3, 2));
@@ -476,18 +520,73 @@ mod tests {
     /// EXIF Orientation が 1 (無変換) のとき元の向きのまま読み込まれることを確認する
     #[test]
     fn open_image_keeps_orientation_when_no_transform() {
-        let path = temp_path("orient1.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orient1.png");
         write_png_with_orientation(&path, 1);
         let img = open_image(&path).expect("open png").to_rgba8();
-        let _ = fs::remove_file(&path);
 
         assert_eq!(img.dimensions(), (3, 2));
         assert_eq!(*img.get_pixel(0, 0), RED);
     }
 
+    /// 16bit 画像を開けることを確認する
+    #[test]
+    fn open_image_loads_16bit_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rgba16.png");
+        DynamicImage::new_rgba16(8, 8)
+            .save(&path)
+            .expect("test png write");
+        let img = open_image(&path).expect("open 16bit png");
+
+        assert_eq!(img.color(), image::ColorType::Rgba16);
+        assert_eq!((img.width(), img.height()), (8, 8));
+    }
+
+    // ======================================================================
+    // decode_alloc_budget
+    // ======================================================================
+    /// 寸法上限ちょうどの 16bit・32bit float RGBA 画像でもデコード先バッファを確保できることを確認する
+    #[test]
+    fn decode_alloc_budget_covers_high_bit_depth_at_pixel_limit() {
+        for bytes_per_pixel in [8, 16] {
+            let total = MAX_IMAGE_PIXELS * bytes_per_pixel;
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(decode_alloc_budget(total));
+            assert!(limits.reserve(total).is_ok(), "{bytes_per_pixel} byte/px");
+        }
+    }
+
+    /// 小さな画像でも RGBA8 最大寸法分の上限を下回らないことを確認する
+    #[test]
+    fn decode_alloc_budget_keeps_rgba8_baseline() {
+        let baseline = MAX_IMAGE_PIXELS * 4 + DECODE_ALLOC_MARGIN_BYTES;
+        assert_eq!(decode_alloc_budget(0), baseline);
+        assert_eq!(decode_alloc_budget(1024), baseline);
+    }
+
     // ======================================================================
     // LoadError 表示
     // ======================================================================
+    /// メモリ上限による `Limits` エラーが寸法上限ではなくメモリ不足として表示されることを確認する
+    #[test]
+    fn display_distinguishes_memory_limit_from_dimension_limit() {
+        use image::error::LimitError;
+
+        let memory = LoadError::Decode(ImageError::Limits(LimitError::from_kind(
+            LimitErrorKind::InsufficientMemory,
+        )))
+        .to_string();
+        assert!(memory.contains("メモリ"));
+        assert!(!memory.contains("16384"));
+
+        let dimension = LoadError::Decode(ImageError::Limits(LimitError::from_kind(
+            LimitErrorKind::DimensionError,
+        )))
+        .to_string();
+        assert!(dimension.contains("16384"));
+    }
+
     /// `FileTooLarge` の表示文字列に上限情報が含まれることを確認する
     #[test]
     fn display_includes_limit_for_oversized_file() {

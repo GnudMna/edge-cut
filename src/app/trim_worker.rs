@@ -3,6 +3,9 @@
 //! スライダー操作のたびに `thread::spawn` する代わりに、アプリ起動時に 1 本の
 //! ワーカースレッドを立ててジョブを処理する。キューに溜まった未処理ジョブは
 //! 処理開始前に破棄し、常に最新の要求だけを実行する
+//!
+//! ワーカーはトリミング矩形の検出だけを行い、切り抜き画像やそのテクスチャは作らない。
+//! プレビューは元画像テクスチャへ矩形を重ねる・UV で切り出すことで表示する
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
@@ -10,7 +13,7 @@ use std::thread::{self, JoinHandle};
 
 use super::image_convert::to_preview_color_image;
 use super::state::TrimWorkerResult;
-use crate::trim::trim;
+use crate::trim::detect_trim;
 
 use eframe::egui;
 use image::DynamicImage;
@@ -47,20 +50,17 @@ impl TrimWorkerHandle {
                 } else {
                     None
                 };
-                let result = trim(
+                let bounds = detect_trim(
                     job.original.as_ref(),
                     job.tolerance,
                     job.padding,
                     job.bg_override,
                 );
-                let trimmed_color = to_preview_color_image(&result.image);
                 let _ = result_tx.send(TrimWorkerResult {
                     request_id: job.request_id,
-                    trimmed: result.image,
-                    trimmed_color,
-                    info: result.info,
+                    info: bounds.info,
                     orig_color,
-                    background: result.background,
+                    background: bounds.background,
                 });
                 job.ctx.request_repaint();
             }

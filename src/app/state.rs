@@ -7,8 +7,11 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use super::clipboard_worker::ClipboardWorkerHandle;
 use super::trim_worker::TrimWorkerHandle;
 use crate::consts::{PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN};
+use crate::image_load::LoadedImage;
+use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
 
 use eframe::egui;
@@ -17,8 +20,6 @@ use image::DynamicImage;
 /// バックグラウンドのプレビュートリミング結果
 pub(super) struct TrimWorkerResult {
     pub request_id: u64,
-    pub trimmed: DynamicImage,
-    pub trimmed_color: egui::ColorImage,
     pub info: TrimInfo,
     pub orig_color: Option<egui::ColorImage>,
     pub background: [u8; 4],
@@ -30,18 +31,29 @@ pub(super) struct TrimWorkerResult {
 /// 永続化する設定キー
 pub(super) const SETTINGS_KEY: &str = "settings";
 
-/// 永続化する設定項目
-#[derive(serde::Serialize, serde::Deserialize)]
+/// 永続化対象の UI・トリミング設定
+///
+/// アプリ状態 (`App::prefs`) としてそのまま保持し、終了時に正規化して保存する
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Settings {
+    /// 余白検出の許容度 (0–100)
     pub tolerance: u32,
+    /// トリミング後に残す余白ピクセル数
     pub padding: u32,
+    /// ダークモードの有効/無効
     pub dark_mode: bool,
+    /// 自動保存モードの有効/無効
     pub auto_save: bool,
+    /// 自動保存先ディレクトリ
     pub auto_save_dir: PathBuf,
+    /// コンパクト UI モードの有効/無効
     pub compact_mode: bool,
     /// 手動指定の背景色。`None` のとき四辺から自動検出する
     #[serde(default)]
     pub bg_override: Option<[u8; 4]>,
+    /// 保存・自動保存・一括トリミングの出力形式
+    #[serde(default)]
+    pub output_format: OutputFormat,
 }
 
 impl Default for Settings {
@@ -54,6 +66,7 @@ impl Default for Settings {
             auto_save_dir: default_auto_save_dir(),
             compact_mode: false,
             bg_override: None,
+            output_format: OutputFormat::default(),
         }
     }
 }
@@ -70,20 +83,6 @@ impl Settings {
             self.auto_save_dir = default_auto_save_dir();
         }
         self
-    }
-
-    /// 現在のアプリ状態から永続化用の設定を生成する
-    fn from_app(app: &App) -> Self {
-        Self {
-            tolerance: app.prefs.tolerance,
-            padding: app.prefs.padding,
-            dark_mode: app.prefs.dark_mode,
-            auto_save: app.prefs.auto_save,
-            auto_save_dir: app.prefs.auto_save_dir.clone(),
-            compact_mode: app.prefs.compact_mode,
-            bg_override: app.background.bg_override,
-        }
-        .normalize()
     }
 }
 
@@ -103,64 +102,20 @@ fn default_auto_save_dir() -> PathBuf {
 // ======================================================================
 // 状態の部分構造体
 // ======================================================================
-/// 永続化対象の UI・トリミング設定
-#[derive(Clone)]
-pub(super) struct AppPreferences {
-    /// 余白検出の許容度 (0–100)
-    pub tolerance: u32,
-    /// トリミング後に残す余白ピクセル数
-    pub padding: u32,
-    /// ダークモードの有効/無効
-    pub dark_mode: bool,
-    /// 自動保存モードの有効/無効
-    pub auto_save: bool,
-    /// 自動保存先ディレクトリ
-    pub auto_save_dir: PathBuf,
-    /// コンパクト UI モードの有効/無効
-    pub compact_mode: bool,
-}
-
-impl Default for AppPreferences {
-    fn default() -> Self {
-        let s = Settings::default();
-        Self {
-            tolerance: s.tolerance,
-            padding: s.padding,
-            dark_mode: s.dark_mode,
-            auto_save: s.auto_save,
-            auto_save_dir: s.auto_save_dir,
-            compact_mode: s.compact_mode,
-        }
-    }
-}
-
-impl From<&Settings> for AppPreferences {
-    fn from(s: &Settings) -> Self {
-        Self {
-            tolerance: s.tolerance,
-            padding: s.padding,
-            dark_mode: s.dark_mode,
-            auto_save: s.auto_save,
-            auto_save_dir: s.auto_save_dir.clone(),
-            compact_mode: s.compact_mode,
-        }
-    }
-}
-
 /// 読み込み画像とプレビュー表示
 #[derive(Default)]
 pub(super) struct ImageState {
     /// 読み込んだ元画像
     pub original: Option<Arc<DynamicImage>>,
-    /// 元画像の名前 (拡張子なし)。自動保存のファイル名に使う
-    pub source_stem: Option<String>,
-    /// トリミング後の画像。保存スレッドへ複製なしで渡すため `Arc` で保持する
-    pub trimmed: Option<Arc<DynamicImage>>,
-    /// 元画像の GPU テクスチャ
+    /// 元画像のファイル名 (クリップボード由来は拡張子なしの `clipboard`)
+    ///
+    /// 出力ファイル名と、出力形式が `Original` のときの形式の決定に使う
+    pub source_name: Option<PathBuf>,
+    /// 元画像の ICC プロファイル。保存時に埋め込む。保存スレッドへ複製なしで渡すため `Arc` で保持する
+    pub icc_profile: Option<Arc<[u8]>>,
+    /// 元画像の GPU テクスチャ。トリミング後のプレビューも UV で切り出して共用する
     pub orig_tex: Option<egui::TextureHandle>,
-    /// トリミング後画像の GPU テクスチャ
-    pub trim_tex: Option<egui::TextureHandle>,
-    /// 直近のトリミング情報
+    /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
     pub info: Option<TrimInfo>,
     /// 直近のトリミング実行時の `(tolerance, padding, bg_override)`。同じ値なら再実行をスキップする
     pub cache_key: Option<(u32, u32, Option<[u8; 4]>)>,
@@ -170,9 +125,17 @@ impl ImageState {
     /// 新しい画像読み込み前にプレビュー関連の状態をリセットする
     pub(super) fn prepare_for_load(&mut self) {
         self.orig_tex = None;
-        self.trimmed = None;
-        self.trim_tex = None;
+        self.info = None;
         self.cache_key = None;
+    }
+
+    /// 保存・コピー対象の元画像とトリミング矩形を返す
+    ///
+    /// # Returns
+    /// * `Option<(Arc<DynamicImage>, TrimInfo)>` - トリミング済みなら元画像と矩形、
+    ///   画像未読み込みまたはトリミング未完了なら `None`
+    pub(super) fn trim_target(&self) -> Option<(Arc<DynamicImage>, TrimInfo)> {
+        Some((Arc::clone(self.original.as_ref()?), self.info?))
     }
 
     /// トリミングパラメータ変更時にキャッシュを無効化する
@@ -189,8 +152,6 @@ impl ImageState {
 /// 背景色の手動指定と表示
 #[derive(Default)]
 pub(super) struct BackgroundState {
-    /// 手動指定の背景色。`None` のとき四辺から自動検出する
-    pub bg_override: Option<[u8; 4]>,
     /// 直近のトリミングで使用した背景色 (表示用)
     pub bg_color: Option<[u8; 4]>,
     /// スポイトモード: 元画像クリックで背景色を設定する
@@ -201,21 +162,19 @@ impl BackgroundState {
     /// 保存済みの手動背景色から状態を復元する
     fn restore_from_settings(bg_override: Option<[u8; 4]>) -> Self {
         Self {
-            bg_override,
             bg_color: bg_override,
             pick_mode: false,
         }
     }
 
-    /// 画像読み込み後に表示色を手動指定へ同期し、スポイトを終了する
-    pub(super) fn on_image_loaded(&mut self) {
-        self.bg_color = self.bg_override;
-        self.pick_mode = false;
-    }
-
-    /// 画像クリア後に表示色を手動指定へ戻し、スポイトを終了する
-    pub(super) fn on_image_cleared(&mut self) {
-        self.bg_color = self.bg_override;
+    /// 表示色を手動指定へ同期し、スポイトを終了する
+    ///
+    /// 画像の読み込み後・クリア後に呼ぶ
+    ///
+    /// # Arguments
+    /// * `bg_override` - 現在の手動指定の背景色 (`Settings::bg_override`)
+    pub(super) fn reset_to_override(&mut self, bg_override: Option<[u8; 4]>) {
+        self.bg_color = bg_override;
         self.pick_mode = false;
     }
 }
@@ -286,7 +245,7 @@ pub(super) enum IoMsg {
         /// ステータス表示用のファイル名
         file_name: String,
         /// 読み込んだ画像、または失敗時のステータスメッセージ
-        result: Result<DynamicImage, String>,
+        result: Result<LoadedImage, String>,
     },
     /// 画像保存の完了
     Saved {
@@ -294,6 +253,18 @@ pub(super) enum IoMsg {
         kind: SaveKind,
         /// 保存先パス、または失敗時のステータスメッセージ
         result: Result<PathBuf, String>,
+    },
+    /// クリップボードへのコピーの完了
+    Copied {
+        /// 成功、または失敗時のステータスメッセージ
+        result: Result<(), String>,
+    },
+    /// クリップボードからの貼り付けの完了
+    Pasted {
+        /// 読み込み要求 ID。古い結果を無視するために使用する
+        request_id: u64,
+        /// 取得した画像、または失敗時のステータスメッセージ
+        result: Result<DynamicImage, String>,
     },
 }
 
@@ -423,6 +394,8 @@ pub(super) struct UpdateState {
     pub phase: UpdateUiPhase,
     /// バックグラウンドからの結果受信
     pub rx: Option<mpsc::Receiver<UpdateWorkerMsg>>,
+    /// 更新ダイアログを表示中か
+    pub dialog_open: bool,
 }
 
 #[cfg(windows)]
@@ -443,11 +416,12 @@ impl UpdateState {
 pub struct App {
     pub(super) image: ImageState,
     pub(super) background: BackgroundState,
-    pub(super) prefs: AppPreferences,
+    /// 永続化対象の設定
+    pub(super) prefs: Settings,
     /// ステータスバーに表示するメッセージ
     pub(super) status: String,
-    /// クリップボードアクセス用インスタンス。初回使用時に遅延初期化する
-    pub(super) clipboard: Option<arboard::Clipboard>,
+    /// クリップボード操作用ワーカー。初回使用時に遅延起動する
+    pub(super) clipboard: Option<ClipboardWorkerHandle>,
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
     pub(super) io: IoState,
@@ -472,7 +446,7 @@ impl App {
         Self {
             image: ImageState::default(),
             background: BackgroundState::restore_from_settings(s.bg_override),
-            prefs: AppPreferences::from(&s),
+            prefs: s,
             status: "「画像を開く」で画像を選択してください".into(),
             clipboard: None,
             batch: BatchState::default(),
@@ -485,7 +459,7 @@ impl App {
 
     /// 現在の設定をストレージに保存する
     pub(super) fn save_settings(&self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, SETTINGS_KEY, &Settings::from_app(self));
+        eframe::set_value(storage, SETTINGS_KEY, &self.prefs.clone().normalize());
     }
 }
 
@@ -500,6 +474,8 @@ impl Default for App {
 // ======================================================================
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     /// `App::default()` が画像なしで初期化されることを確認する
@@ -507,10 +483,9 @@ mod tests {
     fn new_has_no_images() {
         let app = App::default();
         assert!(app.image.original.is_none());
-        assert!(app.image.trimmed.is_none());
         assert!(app.image.orig_tex.is_none());
-        assert!(app.image.trim_tex.is_none());
         assert!(app.image.info.is_none());
+        assert!(app.image.trim_target().is_none());
     }
 
     /// `App::default()` が許容度と余白をゼロで初期化することを確認する
@@ -596,18 +571,18 @@ mod tests {
         assert!(!s.auto_save_dir.as_os_str().is_empty());
     }
 
-    /// `from_app` が範囲外の値を保存前に正規化することを確認する
+    /// `save_settings` が範囲外の値を保存前に正規化することを確認する
     #[test]
-    fn settings_from_app_clamps_out_of_range_values() {
+    fn save_settings_clamps_out_of_range_values() {
         let app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 tolerance: 500,
                 padding: 500,
-                ..AppPreferences::default()
+                ..Settings::default()
             },
             ..App::default()
         };
-        let s = Settings::from_app(&app);
+        let s = save_and_load(&app);
         assert_eq!(s.tolerance, TOL_MAX);
         assert_eq!(s.padding, PADDING_MAX);
     }
@@ -619,46 +594,26 @@ mod tests {
         assert_eq!(s.bg_override, None);
     }
 
-    /// `from_app` が手動背景色を永続化用設定へ含めることを確認する
+    /// `save_settings` が手動背景色を保存することを確認する
     #[test]
-    fn settings_from_app_includes_bg_override() {
+    fn save_settings_includes_bg_override() {
         let manual = [10, 20, 30, 255];
         let app = App {
-            background: BackgroundState {
+            prefs: Settings {
                 bg_override: Some(manual),
-                ..BackgroundState::default()
+                ..Settings::default()
             },
             ..App::default()
         };
-        let s = Settings::from_app(&app);
+        let s = save_and_load(&app);
         assert_eq!(s.bg_override, Some(manual));
     }
 
     /// 起動時に保存済みの手動背景色がアプリ状態へ復元されることを確認する
     #[test]
     fn app_new_restores_bg_override_from_settings() {
-        use std::collections::HashMap;
-
-        struct TestStorage(HashMap<String, String>);
-
-        impl eframe::Storage for TestStorage {
-            fn get_string(&self, key: &str) -> Option<String> {
-                self.0.get(key).cloned()
-            }
-
-            fn set_string(&mut self, key: &str, value: String) {
-                self.0.insert(key.to_owned(), value);
-            }
-
-            fn remove_string(&mut self, key: &str) {
-                self.0.remove(key);
-            }
-
-            fn flush(&mut self) {}
-        }
-
         let manual = [40, 50, 60, 200];
-        let mut storage = TestStorage(HashMap::new());
+        let mut storage = TestStorage::default();
         eframe::set_value(
             &mut storage,
             SETTINGS_KEY,
@@ -669,7 +624,37 @@ mod tests {
         );
 
         let app = App::new(Some(&storage));
-        assert_eq!(app.background.bg_override, Some(manual));
+        assert_eq!(app.prefs.bg_override, Some(manual));
         assert_eq!(app.background.bg_color, Some(manual));
+    }
+
+    // ======================================================================
+    // ヘルパー
+    // ======================================================================
+    /// メモリ上のテスト用ストレージ
+    #[derive(Default)]
+    struct TestStorage(HashMap<String, String>);
+
+    impl eframe::Storage for TestStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    /// `save_settings` で保存した設定をそのまま読み戻す
+    fn save_and_load(app: &App) -> Settings {
+        let mut storage = TestStorage::default();
+        app.save_settings(&mut storage);
+        eframe::get_value(&storage, SETTINGS_KEY).expect("保存済みの設定")
     }
 }

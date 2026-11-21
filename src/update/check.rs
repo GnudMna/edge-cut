@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use super::error::UpdateError;
+use super::http;
 use super::types::{AvailableUpdate, UpdateCheckOutcome, VersionApiAsset, VersionApiResponse};
 use super::verify::{parse_asset_digest, validate_asset_name, validate_declared_download_size};
 use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, current_app_version};
@@ -63,15 +64,25 @@ fn version_api_url(base_url: &str) -> String {
 
 /// version API を取得してデシリアライズする
 fn fetch_version_api(url: &str) -> Result<VersionApiResponse, UpdateError> {
-    let mut response = ureq::get(url).call().map_err(|err| match err {
-        ureq::Error::StatusCode(status) => UpdateError::CheckHttp { status },
-        _ => UpdateError::CheckNetwork,
-    })?;
+    let mut response = http::small_request_agent()
+        .get(url)
+        .call()
+        .map_err(|err| match err {
+            ureq::Error::StatusCode(status) => UpdateError::CheckHttp { status },
+            err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
+            _ => UpdateError::CheckNetwork,
+        })?;
 
     response
         .body_mut()
         .read_json::<VersionApiResponse>()
-        .map_err(|_| UpdateError::InvalidJson)
+        .map_err(|err| {
+            if http::is_timeout(&err) {
+                UpdateError::NetworkTimeout
+            } else {
+                UpdateError::InvalidJson
+            }
+        })
 }
 
 // ======================================================================

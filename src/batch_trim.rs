@@ -5,8 +5,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::image_load::{LoadError, open_image};
-use crate::image_output::save_batch_output;
+use crate::image_load::{LoadError, open_image_with_icc};
+use crate::image_output::{OutputFormat, save_trimmed_output};
 use crate::trim::trim;
 
 // ======================================================================
@@ -63,6 +63,8 @@ pub struct BatchTrimParams {
     pub padding: u32,
     /// 手動指定の背景色。`None` のとき四辺から自動検出する
     pub bg_override: Option<[u8; 4]>,
+    /// 出力形式
+    pub format: OutputFormat,
 }
 
 /// バックグラウンド一括処理の進捗通知
@@ -237,9 +239,20 @@ fn process_one(
     out_dir: &Path,
     params: BatchTrimParams,
 ) -> Result<bool, BatchFileError> {
-    let img = open_image(path)?;
-    let trimmed = trim(&img, params.tolerance, params.padding, params.bg_override);
-    let (_, file_renamed) = save_batch_output(&trimmed.image, path, out_dir)?;
+    let loaded = open_image_with_icc(path)?;
+    let trimmed = trim(
+        &loaded.image,
+        params.tolerance,
+        params.padding,
+        params.bg_override,
+    );
+    let (_, file_renamed) = save_trimmed_output(
+        &trimmed.image,
+        loaded.icc_profile.as_deref(),
+        path,
+        out_dir,
+        params.format,
+    )?;
     Ok(file_renamed)
 }
 
@@ -250,7 +263,6 @@ fn process_one(
 mod tests {
     use std::fs;
     use std::sync::atomic::AtomicBool;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -259,26 +271,16 @@ mod tests {
     // ======================================================================
     // ヘルパー
     // ======================================================================
-    struct TempDir(PathBuf);
+    /// テスト用の一時ディレクトリ。破棄時に削除される
+    struct TempDir(tempfile::TempDir);
 
     impl TempDir {
-        fn new(prefix: &str) -> Self {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!("edge_cut_batch_{prefix}_{ts}"));
-            fs::create_dir_all(&dir).expect("temp dir");
-            Self(dir)
+        fn new() -> Self {
+            Self(tempfile::tempdir().expect("temp dir"))
         }
 
         fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path().join(name)
         }
     }
 
@@ -293,7 +295,7 @@ mod tests {
     /// 複数ファイルが既定の出力名で保存されることを確認する
     #[test]
     fn batch_saves_all_files() {
-        let ws = TempDir::new("save_all");
+        let ws = TempDir::new();
         let out = ws.path("out");
         fs::create_dir_all(&out).expect("out dir");
         let inputs = [ws.path("a.png"), ws.path("b.png")];
@@ -309,6 +311,7 @@ mod tests {
                 tolerance: 0,
                 padding: 0,
                 bg_override: None,
+                format: OutputFormat::Original,
             },
             &cancel,
             |_, _| {},
@@ -321,10 +324,75 @@ mod tests {
         assert!(out.join("b_trimmed.png").is_file());
     }
 
+    /// 元画像の ICC プロファイルが一括出力へ引き継がれることを確認する
+    #[test]
+    fn batch_preserves_icc_profile() {
+        let ws = TempDir::new();
+        let out = ws.path("out");
+        fs::create_dir_all(&out).expect("out dir");
+        let input = ws.path("photo.png");
+        let mut icc = vec![0u8; 132];
+        icc[16..20].copy_from_slice(b"RGB ");
+        let img = bordered_rgba(12, 8, 2, [255, 255, 255, 255], [0, 128, 0, 255]);
+        crate::image_output::save_image(&img, Some(&icc), &input).expect("write png");
+
+        let cancel = AtomicBool::new(false);
+        let result = run_batch_trim(
+            &[input],
+            &out,
+            BatchTrimParams {
+                tolerance: 0,
+                padding: 0,
+                bg_override: None,
+                format: OutputFormat::Original,
+            },
+            &cancel,
+            |_, _| {},
+        );
+
+        assert_eq!(result.saved, 1);
+        let loaded = crate::image_load::open_image_with_icc(&out.join("photo_trimmed.png"))
+            .expect("出力の再読み込み");
+        assert_eq!(loaded.icc_profile, Some(icc));
+    }
+
+    /// 出力形式を指定すると元の形式に関係なくその形式で保存することを確認する
+    #[test]
+    fn batch_saves_in_specified_format() {
+        let ws = TempDir::new();
+        let out = ws.path("out");
+        fs::create_dir_all(&out).expect("out dir");
+        let input = ws.path("a.png");
+        write_bordered_png(&input);
+
+        let cancel = AtomicBool::new(false);
+        let result = run_batch_trim(
+            &[input],
+            &out,
+            BatchTrimParams {
+                tolerance: 0,
+                padding: 0,
+                bg_override: None,
+                format: OutputFormat::Jpeg,
+            },
+            &cancel,
+            |_, _| {},
+        );
+
+        assert_eq!(result.saved, 1);
+        let saved = out.join("a_trimmed.jpg");
+        let bytes = fs::read(&saved).expect("read");
+        // 拡張子だけでなく中身も JPEG であること
+        assert_eq!(
+            image::guess_format(&bytes).expect("推定"),
+            image::ImageFormat::Jpeg
+        );
+    }
+
     /// 既存出力があるとき連番サフィックスで回避することを確認する
     #[test]
     fn batch_avoids_overwriting_existing_output() {
-        let ws = TempDir::new("no_overwrite");
+        let ws = TempDir::new();
         let out = ws.path("out");
         fs::create_dir_all(&out).expect("out dir");
         let input = ws.path("photo.png");
@@ -339,6 +407,7 @@ mod tests {
                 tolerance: 0,
                 padding: 0,
                 bg_override: None,
+                format: OutputFormat::Original,
             },
             &cancel,
             |_, _| {},
@@ -355,7 +424,7 @@ mod tests {
     /// キャンセル後は未処理ファイルを処理しないことを確認する
     #[test]
     fn batch_honours_cancel_before_next_file() {
-        let ws = TempDir::new("cancel");
+        let ws = TempDir::new();
         let out = ws.path("out");
         fs::create_dir_all(&out).expect("out dir");
         let inputs = [ws.path("a.png"), ws.path("b.png"), ws.path("c.png")];
@@ -371,6 +440,7 @@ mod tests {
                 tolerance: 0,
                 padding: 0,
                 bg_override: None,
+                format: OutputFormat::Original,
             },
             &cancel,
             |processed, _| {
@@ -389,7 +459,7 @@ mod tests {
     /// 存在しない入力はエラーとして集計し、他ファイルは継続することを確認する
     #[test]
     fn batch_collects_per_file_errors_and_continues() {
-        let ws = TempDir::new("errors");
+        let ws = TempDir::new();
         let out = ws.path("out");
         fs::create_dir_all(&out).expect("out dir");
         let good = ws.path("good.png");
@@ -404,6 +474,7 @@ mod tests {
                 tolerance: 0,
                 padding: 0,
                 bg_override: None,
+                format: OutputFormat::Original,
             },
             &cancel,
             |_, _| {},

@@ -5,45 +5,33 @@
 
 mod common;
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::images::bordered_rgba;
 use edge_cut::trim::{TrimInfo, sample_pixel};
-use edge_cut::{batch_trim_output_path, open_image, save_image, trim};
+use edge_cut::{OutputFormat, open_image, save_image, trim, trimmed_output_path};
 
 use image::DynamicImage;
 
 // ======================================================================
 // テスト用ヘルパー
 // ======================================================================
-/// 統合テスト用の一時ディレクトリ
+/// 統合テスト用の一時ディレクトリ。破棄時に削除される
 struct TempWorkspace {
-    dir: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempWorkspace {
     /// 一意な一時ディレクトリを作成する
     fn new() -> Self {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let dir = env::temp_dir().join(format!("edge_cut_integration_{ts}"));
-        fs::create_dir_all(&dir).expect("一時ディレクトリの作成に失敗");
+        let dir = tempfile::tempdir().expect("一時ディレクトリの作成に失敗");
         Self { dir }
     }
 
     /// 一時ディレクトリ内のファイルパスを返す
     fn path(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
+        self.dir.path().join(name)
     }
 }
 
@@ -63,7 +51,7 @@ fn trim_save_and_reload(
 ) -> (TrimInfo, DynamicImage) {
     let img = open_image(input).expect("入力画像の読み込みに失敗");
     let trimmed = trim(&img, tolerance, padding, bg_override);
-    save_image(&trimmed.image, output).expect("トリミング結果の保存に失敗");
+    save_image(&trimmed.image, None, output).expect("トリミング結果の保存に失敗");
 
     let reloaded = open_image(output).expect("出力画像の再読み込みに失敗");
     assert_eq!(reloaded.width(), trimmed.info.trim_w);
@@ -110,6 +98,25 @@ fn trim_with_padding_persists_after_save() {
     assert_eq!(info.trim_h, 14);
 }
 
+/// 画像端を越える padding の余白が背景色で塗られ、保存後も維持されることを検証する
+#[test]
+fn trim_with_padding_beyond_image_persists_after_save() {
+    let ws = TempWorkspace::new();
+    let input = ws.path("extended_input.png");
+    let output = ws.path("extended_output.png");
+
+    write_bordered_png(&input, 10, 10, 1, [255, 255, 255, 255], [0, 0, 255, 255]);
+
+    let (info, reloaded) = trim_save_and_reload(&input, &output, 0, 5, None);
+
+    // 内容 8px + 余白 5px*2 に揃う
+    assert_eq!(info.trim_w, 18);
+    assert_eq!(info.trim_h, 18);
+    assert_eq!(sample_pixel(&reloaded, 0, 0), Some([255, 255, 255, 255]));
+    assert_eq!(sample_pixel(&reloaded, 5, 5), Some([0, 0, 255, 255]));
+    assert_eq!(sample_pixel(&reloaded, 17, 17), Some([255, 255, 255, 255]));
+}
+
 /// 手動背景色を白に指定したとき、自動検出と同じ結果でラウンドトリップできることを検証する
 #[test]
 fn trim_with_manual_background_round_trips() {
@@ -127,7 +134,7 @@ fn trim_with_manual_background_round_trips() {
     assert_eq!(manual.background, manual_white);
     assert_eq!(auto.info, manual.info);
 
-    save_image(&auto.image, &output).expect("トリミング結果の保存に失敗");
+    save_image(&auto.image, None, &output).expect("トリミング結果の保存に失敗");
     let reloaded = open_image(&output).expect("出力画像の再読み込みに失敗");
     assert_eq!(reloaded.width(), manual.info.trim_w);
     assert_eq!(reloaded.height(), manual.info.trim_h);
@@ -151,7 +158,7 @@ fn batch_trim_workflow_writes_expected_output_files() {
         let input = ws.path(name);
         let img = open_image(&input).expect("一括入力の読み込みに失敗");
         let trimmed = trim(&img, 0, 0, None);
-        let out_path = batch_trim_output_path(&input, &out_dir);
+        let out_path = trimmed_output_path(&input, &out_dir, OutputFormat::Original);
 
         assert_eq!(
             out_path,
@@ -161,7 +168,7 @@ fn batch_trim_workflow_writes_expected_output_files() {
             ))
         );
 
-        save_image(&trimmed.image, &out_path).expect("一括出力の保存に失敗");
+        save_image(&trimmed.image, None, &out_path).expect("一括出力の保存に失敗");
         assert!(out_path.is_file());
 
         let reloaded = open_image(&out_path).expect("一括出力の再読み込みに失敗");

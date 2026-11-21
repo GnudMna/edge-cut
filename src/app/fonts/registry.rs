@@ -20,9 +20,9 @@ pub const JAPANESE_FONT_KEY: &str = "japanese_font";
 ///
 /// # Arguments
 /// * `ctx` - 追加対象のGUIコンテキスト
-pub fn regist_japanese_font(ctx: &Context) {
+pub fn register_japanese_font(ctx: &Context) {
     if let Some(font_data) = loader::load_japanese_font() {
-        regist_font(ctx, JAPANESE_FONT_KEY, font_data);
+        register_font(ctx, JAPANESE_FONT_KEY, font_data);
     }
 }
 
@@ -34,7 +34,7 @@ pub fn regist_japanese_font(ctx: &Context) {
 /// * `ctx` - 追加対象の GUI コンテキスト
 /// * `font_name` - 追加するフォントの名前
 /// * `font_data` - 追加するフォントのデータ
-fn regist_font(ctx: &Context, font_name: &str, font_data: FontData) {
+fn register_font(ctx: &Context, font_name: &str, font_data: FontData) {
     ctx.add_font(FontInsert::new(
         font_name,
         font_data,

@@ -51,6 +51,8 @@ pub(crate) enum UpdateError {
     CheckNetwork,
     /// version API の JSON 解釈失敗
     InvalidJson,
+    /// 更新サーバーとの通信のタイムアウト (確認・署名取得・ダウンロード共通)
+    NetworkTimeout,
 
     // ----------------------------------------------------------------------
     // 完全性 / ダウンロード
@@ -160,6 +162,10 @@ impl fmt::Display for UpdateError {
                 )
             }
             Self::InvalidJson => write!(f, "更新情報の形式が不正です"),
+            Self::NetworkTimeout => write!(
+                f,
+                "更新サーバーとの通信がタイムアウトしました。ネットワーク接続を確認してください"
+            ),
             Self::DigestEmpty => write!(f, "アセットの完全性情報 (digest) が空です"),
             Self::DigestInvalid { raw } => {
                 write!(f, "アセットの完全性情報 (digest) の形式が不正です: {raw}")

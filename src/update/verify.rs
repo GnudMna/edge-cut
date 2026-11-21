@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use super::error::UpdateError;
+use super::http;
 
 use sha2::{Digest, Sha256};
 
@@ -144,13 +145,14 @@ fn download_and_verify_inner(
 ) -> Result<(), UpdateError> {
     validate_declared_download_size(expected_size)?;
 
-    let mut request = ureq::get(url);
+    let mut request = http::download_agent().get(url);
     if let Some(key) = download_key {
         request = request.header("Authorization", &format!("Bearer {key}"));
     }
     let mut response = request.call().map_err(|err| match err {
         ureq::Error::StatusCode(401) => UpdateError::DownloadUnauthorized,
         ureq::Error::StatusCode(status) => UpdateError::DownloadHttp { status },
+        err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
         _ => UpdateError::DownloadFailed,
     })?;
 
@@ -188,9 +190,13 @@ fn copy_and_hash_limited<R: Read, W: Write>(
     let mut written = 0u64;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|_| UpdateError::DownloadFailed)?;
+        let n = reader.read(&mut buffer).map_err(|err| {
+            if http::is_timeout_io(err) {
+                UpdateError::NetworkTimeout
+            } else {
+                UpdateError::DownloadFailed
+            }
+        })?;
         if n == 0 {
             break;
         }

@@ -1,5 +1,6 @@
 //! アプリケーションモジュール
 mod actions;
+mod clipboard_worker;
 mod fonts;
 mod icon;
 mod image_convert;
@@ -36,7 +37,7 @@ pub fn run() -> eframe::Result {
         options,
         Box::new(|cc| {
             // フォントの追加
-            fonts::regist_japanese_font(&cc.egui_ctx);
+            fonts::register_japanese_font(&cc.egui_ctx);
 
             Ok(Box::new(state::App::new(cc.storage)))
         }),

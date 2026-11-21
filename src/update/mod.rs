@@ -11,6 +11,7 @@
 mod apply;
 mod check;
 mod error;
+mod http;
 mod signature;
 mod types;
 mod verify;

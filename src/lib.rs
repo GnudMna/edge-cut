@@ -19,13 +19,13 @@
 //!
 //! | モジュール | 責務 |
 //! | ---------- | ---- |
-//! | [`trim`] | 背景色検出・余白除去 |
-//! | [`image_load`] | サイズ上限付きの画像読み込み |
-//! | [`image_output`] | 画像保存・出力パス生成 |
+//! | [`trim`] | 背景色検出・余白の矩形検出・切り出し |
+//! | [`image_load`] | サイズ上限付きの画像読み込み (ICC プロファイル取得を含む) |
+//! | [`image_output`] | 出力形式の決定・画像保存 (ICC プロファイル再埋め込み)・出力パス生成 |
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
 //! | [`app`] | egui ベースの GUI (`app::run`) |
-//! | `update` | gh-release-bridge 経由の更新確認・MSI 適用 (Windows) |
+//! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 (Windows) |
 
 pub mod batch_trim;
 pub mod consts;
@@ -48,10 +48,14 @@ pub use batch_trim::{
     BatchFileError, BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim,
 };
 pub use image_load::{
-    DimensionLimitKind, LoadError, check_dimensions, check_file_size, open_image,
-    validate_clipboard_rgba,
+    DimensionLimitKind, LoadError, LoadedImage, check_dimensions, check_file_size, open_image,
+    open_image_with_icc, validate_clipboard_rgba,
 };
 pub use image_output::{
-    SaveError, batch_trim_output_path, save_batch_output, save_image, save_image_unique,
+    OutputFormat, SaveError, save_image, save_image_unique, save_trimmed_output, trimmed_file_name,
+    trimmed_output_path,
 };
-pub use trim::{TrimInfo, TrimResult, detect_background_rgba, sample_pixel, trim};
+pub use trim::{
+    TrimBounds, TrimInfo, TrimResult, apply_trim, detect_background_rgba, detect_trim,
+    sample_pixel, trim,
+};

@@ -8,15 +8,14 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
 use super::state::{App, IoMsg, SaveKind};
 use super::trim_worker::TrimJob;
 use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
-use crate::consts::{
-    DEFAULT_IMAGE_EXTENSION, SUPPORTED_IMAGE_EXTENSIONS, TRIM_DEBOUNCE_MS,
-    is_supported_image_extension,
-};
-use crate::image_load::{open_image, validate_clipboard_rgba};
-use crate::image_output;
+use crate::consts::{SUPPORTED_IMAGE_EXTENSIONS, TRIM_DEBOUNCE_MS, is_supported_image_extension};
+use crate::image_load::open_image_with_icc;
+use crate::image_output::{self, OutputFormat};
+use crate::trim::apply_trim;
 
 use eframe::egui;
 use image::DynamicImage;
@@ -24,11 +23,8 @@ use image::DynamicImage;
 // ======================================================================
 // 定数
 // ======================================================================
-/// 元画像名を取得できないときの自動保存ファイル名
-const AUTO_SAVE_FALLBACK_STEM: &str = "image";
-
-/// クリップボードから貼り付けた画像の自動保存ファイル名
-const CLIPBOARD_SOURCE_STEM: &str = "clipboard";
+/// クリップボードから貼り付けた画像の元ファイル名 (拡張子なしのため `Original` 形式では PNG)
+const CLIPBOARD_SOURCE_NAME: &str = "clipboard";
 
 // ======================================================================
 // 画像読み込み
@@ -70,7 +66,7 @@ impl App {
         let tx = self.io.tx.clone();
         let ctx_clone = ctx.clone();
         thread::spawn(move || {
-            let result = open_image(&path).map_err(|e| e.to_string());
+            let result = open_image_with_icc(&path).map_err(|e| e.to_string());
             let _ = tx.send(IoMsg::Loaded {
                 request_id,
                 file_name,
@@ -85,20 +81,23 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (トリミングのスケジュールに使用)
     /// * `img` - 元画像
+    /// * `icc_profile` - 元画像の ICC プロファイル (保存時に埋め込む)
     /// * `status` - 設定するステータスメッセージ
-    /// * `source_stem` - 自動保存のファイル名に使う元画像名 (拡張子なし)
+    /// * `source_name` - 出力ファイル名・形式の決定に使う元画像のファイル名
     fn set_original_image(
         &mut self,
         ctx: &egui::Context,
         img: DynamicImage,
+        icc_profile: Option<Vec<u8>>,
         status: String,
-        source_stem: String,
+        source_name: PathBuf,
     ) {
         self.image.prepare_for_load();
         self.status = status;
         self.image.original = Some(Arc::new(img));
-        self.image.source_stem = Some(source_stem);
-        self.background.on_image_loaded();
+        self.image.icc_profile = icc_profile.map(Arc::from);
+        self.image.source_name = Some(source_name);
+        self.background.reset_to_override(self.prefs.bg_override);
         self.schedule_trim(ctx, false, true, true);
     }
 }
@@ -125,13 +124,15 @@ impl App {
                     }
                     let note = self.io.load_note.take().unwrap_or_default();
                     match result {
-                        Ok(img) => {
+                        Ok(loaded) => {
                             let status = format!("読み込み完了: {file_name}{note}");
-                            let stem = Path::new(&file_name).file_stem().map_or_else(
-                                || AUTO_SAVE_FALLBACK_STEM.into(),
-                                |s| s.to_string_lossy().into_owned(),
+                            self.set_original_image(
+                                ctx,
+                                loaded.image,
+                                loaded.icc_profile,
+                                status,
+                                file_name.into(),
                             );
-                            self.set_original_image(ctx, img, status, stem);
                         }
                         Err(msg) => self.status = format!("{msg}{note}"),
                     }
@@ -146,6 +147,27 @@ impl App {
                     }
                     (_, Err(msg)) => self.status = msg,
                 },
+                IoMsg::Copied { result } => match result {
+                    Ok(()) => self.status = "クリップボードへコピーしました".into(),
+                    Err(msg) => self.status = msg,
+                },
+                IoMsg::Pasted { request_id, result } => {
+                    // 後続の読み込み・貼り付け・クリアで無効化された結果は捨てる
+                    if request_id != self.io.load_request_id {
+                        continue;
+                    }
+                    match result {
+                        // クリップボード画像は ICC プロファイルを持たない
+                        Ok(img) => self.set_original_image(
+                            ctx,
+                            img,
+                            None,
+                            "クリップボードから貼り付け完了".into(),
+                            CLIPBOARD_SOURCE_NAME.into(),
+                        ),
+                        Err(msg) => self.status = msg,
+                    }
+                }
             }
         }
         self.io.save_handles.retain(|h| !h.is_finished());
@@ -177,9 +199,9 @@ impl App {
         let key = (
             self.prefs.tolerance,
             self.prefs.padding,
-            self.background.bg_override,
+            self.prefs.bg_override,
         );
-        if self.image.trimmed.is_some() && self.image.cache_key == Some(key) && !refresh_orig_tex {
+        if self.image.info.is_some() && self.image.cache_key == Some(key) && !refresh_orig_tex {
             if auto_save_after {
                 self.auto_save_if_enabled(ctx);
             }
@@ -224,15 +246,12 @@ impl App {
                 self.image.orig_tex =
                     Some(ctx.load_texture("orig", orig, egui::TextureOptions::LINEAR));
             }
-            self.image.trim_tex =
-                Some(ctx.load_texture("trim", result.trimmed_color, egui::TextureOptions::LINEAR));
-            self.image.trimmed = Some(Arc::new(result.trimmed));
             self.image.info = Some(result.info);
             self.background.bg_color = Some(result.background);
             self.image.cache_key = Some((
                 self.prefs.tolerance,
                 self.prefs.padding,
-                self.background.bg_override,
+                self.prefs.bg_override,
             ));
             self.trim_worker.in_flight = false;
 
@@ -251,7 +270,7 @@ impl App {
         let request_id = self.trim_worker.request_id;
         let tolerance = self.prefs.tolerance;
         let padding = self.prefs.padding;
-        let bg_override = self.background.bg_override;
+        let bg_override = self.prefs.bg_override;
         let refresh_orig_tex = self.trim_worker.refresh_orig_tex;
         self.trim_worker.refresh_orig_tex = false;
         self.trim_worker.in_flight = true;
@@ -274,10 +293,10 @@ impl App {
 impl App {
     /// 背景色を自動検出モードに戻す
     pub(super) fn reset_bg_to_auto(&mut self, ctx: &egui::Context) {
-        if self.background.bg_override.is_none() {
+        if self.prefs.bg_override.is_none() {
             return;
         }
-        self.background.bg_override = None;
+        self.prefs.bg_override = None;
         self.background.pick_mode = false;
         self.image.invalidate_cache();
         self.schedule_trim(ctx, false, false, false);
@@ -285,7 +304,7 @@ impl App {
 
     /// 背景色を手動で設定する
     pub(super) fn set_manual_bg(&mut self, ctx: &egui::Context, color: [u8; 4]) {
-        self.background.bg_override = Some(color);
+        self.prefs.bg_override = Some(color);
         self.background.bg_color = Some(color);
         self.background.pick_mode = false;
         self.image.invalidate_cache();
@@ -302,7 +321,7 @@ impl App {
             return;
         };
         self.background.pick_mode = false;
-        self.background.bg_override = Some(color);
+        self.prefs.bg_override = Some(color);
         self.background.bg_color = Some(color);
         self.image.invalidate_cache();
         self.status = format!(
@@ -319,32 +338,43 @@ impl App {
 impl App {
     /// ファイルダイアログを開いてトリミング後の画像をバックグラウンドで保存する
     ///
+    /// 既定のファイル名と形式は自動保存・一括トリミングと同じ規則 (`trimmed_file_name`) で決め、
+    /// ダイアログで入力された拡張子があればそれに従う
+    /// 元画像の切り出しも保存スレッドで行う
+    ///
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(super) fn save_image(&mut self, ctx: &egui::Context) {
-        let Some(img) = self.image.trimmed.clone() else {
+        let Some((original, info)) = self.image.trim_target() else {
             return;
         };
-        let Some(mut path) = rfd::FileDialog::new()
-            .add_filter("PNG", &["png"])
-            .add_filter("JPEG", &["jpg", "jpeg"])
-            .save_file()
-        else {
+        let icc_profile = self.image.icc_profile.clone();
+        let source = self.image.source_name.clone().unwrap_or_default();
+        let format = self.prefs.output_format;
+        let ext = format.output_extension(&source);
+        let mut dialog =
+            rfd::FileDialog::new().set_file_name(image_output::trimmed_file_name(&source, format));
+        for f in save_dialog_formats(OutputFormat::from_extension(&ext)) {
+            dialog = dialog.add_filter(f.label(), f.extensions());
+        }
+        let Some(mut path) = dialog.save_file() else {
             return;
         };
-        // 拡張子なしで入力された場合は形式を判定できないため PNG とする
+        // 拡張子なしで入力された場合は形式を判定できないため設定の形式とする
         if path.extension().is_none() {
-            path.set_extension(DEFAULT_IMAGE_EXTENSION);
+            path.set_extension(&ext);
         }
         self.spawn_save(ctx, SaveKind::Manual, move || {
-            image_output::save_image(&img, &path).map_err(|e| e.to_string())?;
+            let img = apply_trim(&original, &info);
+            image_output::save_image(&img, icc_profile.as_deref(), &path)
+                .map_err(|e| e.to_string())?;
             Ok(path)
         });
     }
 
     /// 自動保存が有効な場合にトリミング後の画像を保存先フォルダへバックグラウンドで保存する
     ///
-    /// ファイル名は `{元画像名}_trimmed.png` とし、既存ファイルは上書きせず連番で回避する
+    /// ファイル名は `{元画像名}_trimmed.{出力形式の拡張子}` とし、既存ファイルは上書きせず連番で回避する
     /// 成功時は既存のステータスメッセージに追記し、エラー時のみ上書きする
     ///
     /// # Arguments
@@ -353,27 +383,29 @@ impl App {
         if !self.prefs.auto_save {
             return;
         }
-        let Some(img) = self.image.trimmed.clone() else {
+        let Some((original, info)) = self.image.trim_target() else {
             return;
         };
+        let icc_profile = self.image.icc_profile.clone();
         let dir = self.prefs.auto_save_dir.clone();
-        let stem = format!(
-            "{}_trimmed",
-            self.image
-                .source_stem
-                .as_deref()
-                .unwrap_or(AUTO_SAVE_FALLBACK_STEM)
-        );
+        let source = self.image.source_name.clone().unwrap_or_default();
+        let format = self.prefs.output_format;
         self.spawn_save(ctx, SaveKind::Auto, move || {
             fs::create_dir_all(&dir).map_err(|e| format!("自動保存フォルダの作成に失敗: {e}"))?;
-            let (path, _) =
-                image_output::save_image_unique(&img, &dir, &stem, DEFAULT_IMAGE_EXTENSION)
-                    .map_err(|e| {
-                        let cause = e
-                            .source()
-                            .map_or_else(|| e.to_string(), ToString::to_string);
-                        format!("自動保存エラー: {cause}")
-                    })?;
+            let img = apply_trim(&original, &info);
+            let (path, _) = image_output::save_trimmed_output(
+                &img,
+                icc_profile.as_deref(),
+                &source,
+                &dir,
+                format,
+            )
+            .map_err(|e| {
+                let cause = e
+                    .source()
+                    .map_or_else(|| e.to_string(), ToString::to_string);
+                format!("自動保存エラー: {cause}")
+            })?;
             Ok(path)
         });
     }
@@ -410,7 +442,7 @@ impl App {
         self.trim_worker.abort();
         self.io.abort_load();
         self.image.clear();
-        self.background.on_image_cleared();
+        self.background.reset_to_override(self.prefs.bg_override);
         self.status = "「画像を開く」で画像を選択してください".into();
     }
 }
@@ -419,84 +451,43 @@ impl App {
 // クリップボード
 // ======================================================================
 impl App {
-    /// クリップボードアクセス用インスタンスを返す。未初期化ならここで作成する
-    fn get_clipboard(&mut self) -> Result<&mut arboard::Clipboard, String> {
-        if self.clipboard.is_none() {
-            self.clipboard = Some(
-                arboard::Clipboard::new()
-                    .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?,
-            );
-        }
-        Ok(self.clipboard.as_mut().unwrap())
+    /// クリップボード操作用ワーカーを返す。未起動ならここで起動する
+    fn clipboard_worker(&mut self) -> &ClipboardWorkerHandle {
+        let tx = self.io.tx.clone();
+        self.clipboard
+            .get_or_insert_with(|| ClipboardWorkerHandle::spawn(tx))
     }
 
-    /// トリミング後の画像をクリップボードへコピーする
-    pub(super) fn copy_trimmed_to_clipboard(&mut self) {
-        let Some(ref img) = self.image.trimmed else {
-            return;
-        };
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        let bytes = rgba.into_raw();
-        let img_data = arboard::ImageData {
-            width: w as usize,
-            height: h as usize,
-            bytes: bytes.into(),
-        };
-        match self.get_clipboard() {
-            Ok(cb) => match cb.set_image(img_data) {
-                Ok(()) => self.status = "クリップボードへコピーしました".into(),
-                Err(e) => self.status = format!("コピーエラー: {e}"),
-            },
-            Err(msg) => self.status = msg,
-        }
-    }
-
-    /// クリップボードから画像を読み込む
+    /// トリミング後の画像をバックグラウンドでクリップボードへコピーする
+    ///
+    /// 完了後は `poll_io` でステータスを更新する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (テクスチャ登録に使用)
+    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
+    pub(super) fn copy_trimmed_to_clipboard(&mut self, ctx: &egui::Context) {
+        let Some((image, info)) = self.image.trim_target() else {
+            return;
+        };
+        self.status = "クリップボードへコピー中…".into();
+        let ctx = ctx.clone();
+        self.clipboard_worker()
+            .submit(ClipboardJob::Copy { image, info, ctx });
+    }
+
+    /// クリップボードの画像をバックグラウンドで読み込む
+    ///
+    /// 完了後は `poll_io` で元画像として設定する
+    /// 読み込み中のファイルがあっても貼り付けを優先し、その結果は破棄する
+    ///
+    /// # Arguments
+    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(super) fn paste_from_clipboard(&mut self, ctx: &egui::Context) {
-        let img_data = match self.get_clipboard() {
-            Err(msg) => {
-                self.status = msg;
-                return;
-            }
-            Ok(cb) => {
-                if let Ok(data) = cb.get_image() {
-                    data
-                } else {
-                    self.status = "クリップボードに画像がありません".into();
-                    return;
-                }
-            }
-        };
-        let Ok(w) = u32::try_from(img_data.width) else {
-            self.status = "クリップボードの画像サイズが不正です".into();
-            return;
-        };
-        let Ok(h) = u32::try_from(img_data.height) else {
-            self.status = "クリップボードの画像サイズが不正です".into();
-            return;
-        };
-        let bytes: Vec<u8> = img_data.bytes.into_owned();
-        if let Err(e) = validate_clipboard_rgba(w, h, bytes.len()) {
-            self.status = e.to_string();
-            return;
-        }
-        match image::RgbaImage::from_raw(w, h, bytes) {
-            Some(rgba) => {
-                // 読み込み中のファイルがあっても貼り付けた画像を優先する
-                self.io.abort_load();
-                self.set_original_image(
-                    ctx,
-                    DynamicImage::ImageRgba8(rgba),
-                    "クリップボードから貼り付け完了".into(),
-                    CLIPBOARD_SOURCE_STEM.into(),
-                );
-            }
-            None => self.status = "クリップボード画像の変換に失敗しました".into(),
-        }
+        self.io.abort_load();
+        let request_id = self.io.load_request_id;
+        self.status = "クリップボードから貼り付け中…".into();
+        let ctx = ctx.clone();
+        self.clipboard_worker()
+            .submit(ClipboardJob::Paste { request_id, ctx });
     }
 }
 
@@ -543,7 +534,8 @@ impl App {
 
         let tolerance = self.prefs.tolerance;
         let padding = self.prefs.padding;
-        let bg_override = self.background.bg_override;
+        let bg_override = self.prefs.bg_override;
+        let format = self.prefs.output_format;
         let ctx_clone = ctx.clone();
         let total = paths.len();
 
@@ -573,6 +565,7 @@ impl App {
                     tolerance,
                     padding,
                     bg_override,
+                    format,
                 },
                 &cancel_flag,
                 |processed, batch_total| {
@@ -632,10 +625,11 @@ impl App {
 // ドラッグ & ドロップ
 // ======================================================================
 impl App {
-    /// ドロップされたファイルを件数に応じて処理する
+    /// ドロップされたファイル・フォルダを件数に応じて処理する
     ///
-    /// 対応外の拡張子・フォルダは除外する。対象が 1 件ならプレビューで開き、
-    /// 2 件以上なら保存先フォルダを選択させて一括トリミングする。
+    /// フォルダは直下のファイルに展開する (サブフォルダは走査しない)。対応外の拡張子は除外する。
+    /// ファイルのみで対象が 1 件ならプレビューで開き、2 件以上またはフォルダを含む場合は
+    /// 保存先フォルダを選択させて一括トリミングする。
     ///
     /// # Arguments
     /// * `ctx` - egui のコンテキスト
@@ -644,12 +638,18 @@ impl App {
         if paths.is_empty() {
             return;
         }
-        let (images, skipped) = partition_supported_images(paths);
+        let expanded = expand_dropped_dirs(paths);
+        let (images, skipped) = partition_supported_images(expanded.paths);
+        let skipped = skipped + expanded.unreadable_dirs;
         match images.as_slice() {
+            [] if expanded.has_dir => {
+                let note = skipped_note(skipped);
+                self.status = format!("フォルダに対応画像がありません{note}");
+            }
             [] => {
                 self.status = format!("対応していないファイルです ({skipped} 件)");
             }
-            [path] => {
+            [path] if !expanded.has_dir => {
                 self.load_image_from_path(ctx, path);
                 if skipped > 0 {
                     let note = skipped_note(skipped);
@@ -660,11 +660,55 @@ impl App {
             }
             _ if self.batch.running => {
                 self.status =
-                    "一括トリミングの実行中は複数ファイルのドロップを受け付けません".into();
+                    "一括トリミングの実行中は複数ファイル・フォルダのドロップを受け付けません"
+                        .into();
             }
             _ => self.start_batch_trim(ctx, images, skipped),
         }
     }
+}
+
+/// フォルダを展開したドロップ対象
+struct ExpandedDrop {
+    /// ファイルのパスと、フォルダ直下のエントリ (フォルダごとに名前順)
+    paths: Vec<PathBuf>,
+    /// フォルダを 1 つ以上含んでいたか
+    has_dir: bool,
+    /// 読み取りに失敗したフォルダの件数
+    unreadable_dirs: usize,
+}
+
+/// ドロップされたパスのうちフォルダを直下のエントリに展開する
+///
+/// サブフォルダは再帰せずそのままエントリとして残す (後段の振り分けで除外される)
+/// `read_dir` の順序は OS 依存のため、フォルダごとに名前順へ並べ替える
+///
+/// # Arguments
+/// * `paths` - ドロップされたパス
+///
+/// # Returns
+/// * `ExpandedDrop` - 展開後のパス (入力順を維持)、フォルダの有無、読み取り失敗件数
+fn expand_dropped_dirs(paths: Vec<PathBuf>) -> ExpandedDrop {
+    let mut expanded = ExpandedDrop {
+        paths: Vec::with_capacity(paths.len()),
+        has_dir: false,
+        unreadable_dirs: 0,
+    };
+    for path in paths {
+        if !path.is_dir() {
+            expanded.paths.push(path);
+            continue;
+        }
+        expanded.has_dir = true;
+        let Ok(entries) = fs::read_dir(&path) else {
+            expanded.unreadable_dirs += 1;
+            continue;
+        };
+        let mut children: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        children.sort();
+        expanded.paths.extend(children);
+    }
+    expanded
 }
 
 /// パスを対応画像ファイルとそれ以外に振り分ける
@@ -691,6 +735,24 @@ fn partition_supported_images(paths: Vec<PathBuf>) -> (Vec<PathBuf>, usize) {
     (images, skipped)
 }
 
+/// 保存ダイアログのファイル種類フィルタに並べる形式を返す
+///
+/// 既定で選択される先頭のフィルタを `first` とし、残りは `OutputFormat::ALL` の順に並べる
+///
+/// # Arguments
+/// * `first` - 先頭に置く形式。`None` のときは `OutputFormat::ALL` の順
+fn save_dialog_formats(first: Option<OutputFormat>) -> Vec<OutputFormat> {
+    let mut formats: Vec<OutputFormat> = OutputFormat::ALL
+        .into_iter()
+        .filter(|f| *f != OutputFormat::Original)
+        .collect();
+    if let Some(i) = formats.iter().position(|f| Some(*f) == first) {
+        let f = formats.remove(i);
+        formats.insert(0, f);
+    }
+    formats
+}
+
 /// 除外件数をステータスへ追記する補足文を返す (0 件なら空文字列)
 fn skipped_note(skipped: usize) -> String {
     if skipped == 0 {
@@ -705,6 +767,15 @@ fn skipped_note(skipped: usize) -> String {
 // ======================================================================
 #[cfg(windows)]
 impl App {
+    /// 更新ダイアログを開き、処理中でなければ更新確認を開始する
+    ///
+    /// # Arguments
+    /// * `ctx` - 完了時の再描画に使う egui コンテキスト
+    pub(super) fn open_update_dialog(&mut self, ctx: &egui::Context) {
+        self.update.dialog_open = true;
+        self.start_update_check(ctx);
+    }
+
     /// 更新確認をバックグラウンドで開始する
     ///
     /// # Arguments
@@ -811,15 +882,18 @@ impl App {
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
-    use super::super::state::{App, AppPreferences, ImageState};
-    use super::{partition_supported_images, skipped_note};
+    use super::super::state::{App, ImageState, IoMsg, Settings};
+    use super::{
+        CLIPBOARD_SOURCE_NAME, expand_dropped_dirs, partition_supported_images,
+        save_dialog_formats, skipped_note,
+    };
+    use crate::image_output::OutputFormat;
 
     use eframe::egui;
     use image::{DynamicImage, RgbaImage};
@@ -833,6 +907,27 @@ mod tests {
         DynamicImage::ImageRgba8(RgbaImage::from_raw(4, 4, buf).unwrap())
     }
 
+    /// テスト画像と画像全体のトリミング矩形を持つ (トリミング済みの) 画像状態を生成する
+    fn trimmed_image_state() -> ImageState {
+        ImageState {
+            original: Some(Arc::new(make_test_image())),
+            info: Some(crate::trim::TrimInfo {
+                orig_w: 4,
+                orig_h: 4,
+                trim_w: 4,
+                trim_h: 4,
+                offset_x: 0,
+                offset_y: 0,
+                extend_left: 0,
+                extend_top: 0,
+                extend_right: 0,
+                extend_bottom: 0,
+                fill: [255, 255, 255, 255],
+            }),
+            ..ImageState::default()
+        }
+    }
+
     /// 条件を満たすまで `poll_io()` を繰り返す。タイムアウト時は `false` を返す
     fn poll_io_until(app: &mut App, ctx: &egui::Context, cond: impl Fn(&App) -> bool) -> bool {
         for _ in 0..500 {
@@ -843,17 +938,6 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         false
-    }
-
-    /// テスト用の一時ディレクトリパスを生成する
-    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-        env::temp_dir().join(format!(
-            "{prefix}_{}_{:?}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-            thread::current().id()
-        ))
     }
 
     // ======================================================================
@@ -873,18 +957,16 @@ mod tests {
         assert!(app.image.original.is_none());
     }
 
-    /// `clear_image()` がトリミング後の画像を None に設定することを確認する
+    /// `clear_image()` 後は保存・コピー対象がなくなることを確認する
     #[test]
-    fn clear_image_sets_trimmed_to_none() {
+    fn clear_image_clears_trim_target() {
         let mut app = App {
-            image: ImageState {
-                trimmed: Some(Arc::new(make_test_image())),
-                ..ImageState::default()
-            },
+            image: trimmed_image_state(),
             ..App::default()
         };
+        assert!(app.image.trim_target().is_some());
         app.clear_image();
-        assert!(app.image.trimmed.is_none());
+        assert!(app.image.trim_target().is_none());
     }
 
     /// `clear_image()` がテクスチャを None に設定することを確認する
@@ -899,6 +981,11 @@ mod tests {
                     trim_h: 8,
                     offset_x: 1,
                     offset_y: 1,
+                    extend_left: 0,
+                    extend_top: 0,
+                    extend_right: 0,
+                    extend_bottom: 0,
+                    fill: [255, 255, 255, 255],
                 }),
                 ..ImageState::default()
             },
@@ -928,7 +1015,7 @@ mod tests {
         // 既に空の状態でも安全に動作すること
         app.clear_image();
         assert!(app.image.original.is_none());
-        assert!(app.image.trimmed.is_none());
+        assert!(app.image.trim_target().is_none());
     }
 
     // ======================================================================
@@ -939,14 +1026,11 @@ mod tests {
     fn auto_save_skips_when_disabled() {
         let ctx = egui::Context::default();
         let mut app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 auto_save: false,
-                ..AppPreferences::default()
+                ..Settings::default()
             },
-            image: ImageState {
-                trimmed: Some(Arc::new(make_test_image())),
-                ..ImageState::default()
-            },
+            image: trimmed_image_state(),
             ..App::default()
         };
         let status_before = app.status.clone();
@@ -961,9 +1045,9 @@ mod tests {
     fn auto_save_skips_when_no_trimmed_image() {
         let ctx = egui::Context::default();
         let mut app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 auto_save: true,
-                ..AppPreferences::default()
+                ..Settings::default()
             },
             ..App::default()
         };
@@ -977,17 +1061,14 @@ mod tests {
     #[test]
     fn auto_save_writes_png_file_to_dir() {
         let ctx = egui::Context::default();
-        let tmp = unique_temp_dir("edge_cut_test");
+        let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 auto_save: true,
-                auto_save_dir: tmp.clone(),
-                ..AppPreferences::default()
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
             },
-            image: ImageState {
-                trimmed: Some(Arc::new(make_test_image())),
-                ..ImageState::default()
-            },
+            image: trimmed_image_state(),
             ..App::default()
         };
         app.auto_save_if_enabled(&ctx);
@@ -997,49 +1078,73 @@ mod tests {
         assert!(done, "status = {}", app.status);
 
         // 実際にファイルが生成されていること
-        let saved_files: Vec<_> = fs::read_dir(&tmp)
+        let saved_files: Vec<_> = fs::read_dir(tmp.path())
             .map(|rd| rd.filter_map(std::result::Result::ok).collect())
             .unwrap_or_default();
         assert!(
             !saved_files.is_empty(),
             "自動保存フォルダにファイルが存在しない"
         );
-
-        // クリーンアップ
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     /// 自動保存が元画像名でファイルを作成し、2 回目は上書きせず連番を付けることを確認する
     #[test]
     fn auto_save_uses_source_name_and_avoids_overwrite() {
         let ctx = egui::Context::default();
-        let tmp = unique_temp_dir("edge_cut_auto_name");
+        let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 auto_save: true,
-                auto_save_dir: tmp.clone(),
-                ..AppPreferences::default()
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
             },
             image: ImageState {
-                trimmed: Some(Arc::new(make_test_image())),
-                source_stem: Some("photo".into()),
-                ..ImageState::default()
+                source_name: Some("photo.png".into()),
+                ..trimmed_image_state()
             },
             ..App::default()
         };
 
         // 1 回目は `{元画像名}_trimmed.png`
         app.auto_save_if_enabled(&ctx);
-        let first = tmp.join("photo_trimmed.png");
+        let first = tmp.path().join("photo_trimmed.png");
         assert!(poll_io_until(&mut app, &ctx, |_| first.is_file()));
 
         // 2 回目は既存ファイルを残したまま連番で保存する
         app.auto_save_if_enabled(&ctx);
-        let second = tmp.join("photo_trimmed_2.png");
+        let second = tmp.path().join("photo_trimmed_2.png");
         assert!(poll_io_until(&mut app, &ctx, |_| second.is_file()));
         assert!(first.is_file());
+    }
 
-        let _ = fs::remove_dir_all(&tmp);
+    /// 自動保存が出力形式の設定に従い、`Original` では元画像の形式を維持することを確認する
+    #[test]
+    fn auto_save_follows_output_format() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: ImageState {
+                source_name: Some("photo.JPG".into()),
+                ..trimmed_image_state()
+            },
+            ..App::default()
+        };
+
+        // `Original` は元の拡張子 (小文字化) で保存する
+        app.auto_save_if_enabled(&ctx);
+        let original = tmp.path().join("photo_trimmed.jpg");
+        assert!(poll_io_until(&mut app, &ctx, |_| original.is_file()));
+
+        // 形式を指定するとその形式で保存する
+        app.prefs.output_format = OutputFormat::Webp;
+        app.auto_save_if_enabled(&ctx);
+        let webp = tmp.path().join("photo_trimmed.webp");
+        assert!(poll_io_until(&mut app, &ctx, |_| webp.is_file()));
     }
 
     /// `auto_save_if_enabled()` がディレクトリ作成に失敗した場合にエラーステータスを設定することを確認する
@@ -1047,28 +1152,23 @@ mod tests {
     fn auto_save_error_status_when_dir_creation_fails() {
         let ctx = egui::Context::default();
         // 既存ファイルをディレクトリとして扱おうとすると create_dir_all が失敗する
-        let existing_file = unique_temp_dir("ec_blocker").with_extension("bin");
-        fs::write(&existing_file, b"x").expect("テスト用ファイルの作成に失敗");
+        let blocker = tempfile::NamedTempFile::new().expect("テスト用ファイルの作成に失敗");
+        let existing_file = blocker.path();
 
         // ファイルのパス配下にサブディレクトリを作ろうとするので失敗する
         let mut app = App {
-            prefs: AppPreferences {
+            prefs: Settings {
                 auto_save: true,
                 auto_save_dir: existing_file.join("subdir_cannot_exist"),
-                ..AppPreferences::default()
+                ..Settings::default()
             },
-            image: ImageState {
-                trimmed: Some(Arc::new(make_test_image())),
-                ..ImageState::default()
-            },
+            image: trimmed_image_state(),
             ..App::default()
         };
         app.auto_save_if_enabled(&ctx);
         let done = poll_io_until(&mut app, &ctx, |a| {
             a.status.contains("失敗") || a.status.contains("エラー")
         });
-
-        let _ = fs::remove_file(&existing_file);
 
         assert!(done, "エラーメッセージを期待したが: {}", app.status);
     }
@@ -1102,9 +1202,8 @@ mod tests {
     #[test]
     fn load_image_from_path_sets_original_in_background() {
         let ctx = egui::Context::default();
-        let tmp = unique_temp_dir("edge_cut_load");
-        fs::create_dir_all(&tmp).unwrap();
-        let path = tmp.join("input.png");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
@@ -1113,7 +1212,6 @@ mod tests {
         assert!(app.status.contains("読み込み中"), "status = {}", app.status);
 
         let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
-        let _ = fs::remove_dir_all(&tmp);
 
         assert!(done, "元画像が設定されなかった: {}", app.status);
         assert!(
@@ -1127,9 +1225,8 @@ mod tests {
     #[test]
     fn clear_image_discards_pending_load_result() {
         let ctx = egui::Context::default();
-        let tmp = unique_temp_dir("edge_cut_stale");
-        fs::create_dir_all(&tmp).unwrap();
-        let path = tmp.join("input.png");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
@@ -1139,10 +1236,85 @@ mod tests {
         // 読み込みスレッドの完了を待ってから結果を受信する
         thread::sleep(Duration::from_millis(300));
         app.poll_io(&ctx);
-        let _ = fs::remove_dir_all(&tmp);
 
         assert!(app.image.original.is_none());
         assert!(app.status.contains("画像を開く"), "status = {}", app.status);
+    }
+
+    // ======================================================================
+    // クリップボード結果の受信
+    // ======================================================================
+    /// 有効な貼り付け結果を受信すると元画像として設定することを確認する
+    #[test]
+    fn poll_io_applies_pasted_image() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let request_id = app.io.load_request_id;
+        app.io
+            .tx
+            .send(IoMsg::Pasted {
+                request_id,
+                result: Ok(make_test_image()),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert!(app.image.original.is_some());
+        assert_eq!(
+            app.image.source_name.as_deref(),
+            Some(Path::new(CLIPBOARD_SOURCE_NAME))
+        );
+        assert!(
+            app.status.contains("貼り付け完了"),
+            "status = {}",
+            app.status
+        );
+    }
+
+    /// 貼り付け後に `clear_image()` した場合、遅れて届いた貼り付け結果を無視することを確認する
+    #[test]
+    fn clear_image_discards_pending_paste_result() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let request_id = app.io.load_request_id;
+        app.clear_image();
+        app.io
+            .tx
+            .send(IoMsg::Pasted {
+                request_id,
+                result: Ok(make_test_image()),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert!(app.image.original.is_none());
+        assert!(app.status.contains("画像を開く"), "status = {}", app.status);
+    }
+
+    /// コピー結果に応じてステータスを更新することを確認する
+    #[test]
+    fn poll_io_reports_copy_result() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+
+        // 成功時は完了メッセージ
+        app.io.tx.send(IoMsg::Copied { result: Ok(()) }).unwrap();
+        app.poll_io(&ctx);
+        assert!(
+            app.status.contains("コピーしました"),
+            "status = {}",
+            app.status
+        );
+
+        // 失敗時はワーカーのメッセージをそのまま表示
+        app.io
+            .tx
+            .send(IoMsg::Copied {
+                result: Err("コピーエラー: test".into()),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+        assert_eq!(app.status, "コピーエラー: test");
     }
 
     // ======================================================================
@@ -1166,17 +1338,16 @@ mod tests {
 
         for _ in 0..50 {
             app.poll_trim_work(&ctx);
-            if app.image.trimmed.is_some() {
+            if app.image.info.is_some() {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
 
         assert!(
-            app.image.trimmed.is_some(),
+            app.image.trim_target().is_some(),
             "トリミング結果が反映されませんでした"
         );
-        assert!(app.image.trim_tex.is_some());
         assert!(app.image.orig_tex.is_some());
         assert!(!app.trim_worker.in_flight);
     }
@@ -1205,13 +1376,23 @@ mod tests {
     /// 画像の拡張子を持つフォルダを除外することを確認する
     #[test]
     fn partition_supported_images_skips_directories() {
-        let tmp = unique_temp_dir("edge_cut_dir").with_extension("png");
-        fs::create_dir_all(&tmp).unwrap();
-        let (images, skipped) = partition_supported_images(vec![tmp.clone()]);
-        let _ = fs::remove_dir_all(&tmp);
+        let tmp = tempfile::Builder::new().suffix(".png").tempdir().unwrap();
+        let (images, skipped) = partition_supported_images(vec![tmp.path().to_path_buf()]);
 
         assert!(images.is_empty());
         assert_eq!(skipped, 1);
+    }
+
+    /// 保存ダイアログのフィルタが指定形式を先頭に、`Original` を除く全形式を並べることを確認する
+    #[test]
+    fn save_dialog_formats_puts_selected_first() {
+        let formats = save_dialog_formats(Some(OutputFormat::Webp));
+        assert_eq!(formats.first(), Some(&OutputFormat::Webp));
+        assert_eq!(formats.len(), OutputFormat::ALL.len() - 1);
+        assert!(!formats.contains(&OutputFormat::Original));
+
+        // 指定なしは `ALL` の順
+        assert_eq!(save_dialog_formats(None).first(), Some(&OutputFormat::Png));
     }
 
     /// 除外件数が 0 のときのみ補足文が空になることを確認する
@@ -1250,19 +1431,17 @@ mod tests {
     #[test]
     fn handle_dropped_paths_loads_single_image_with_note() {
         let ctx = egui::Context::default();
-        let tmp = unique_temp_dir("edge_cut_drop");
-        fs::create_dir_all(&tmp).unwrap();
-        let path = tmp.join("input.png");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
-        app.handle_dropped_paths(&ctx, vec![tmp.join("readme.txt"), path]);
+        app.handle_dropped_paths(&ctx, vec![tmp.path().join("readme.txt"), path]);
         // 読み込み中の時点で除外件数を表示する
         assert!(app.status.contains("読み込み中"), "status = {}", app.status);
         assert!(app.status.contains("除外"), "status = {}", app.status);
 
         let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
-        let _ = fs::remove_dir_all(&tmp);
 
         // 読み込み完了で上書きされても補足は残る
         assert!(done, "元画像が設定されなかった: {}", app.status);
@@ -1285,5 +1464,87 @@ mod tests {
             "status = {}",
             app.status
         );
+    }
+
+    // ======================================================================
+    // expand_dropped_dirs() / フォルダのドロップ
+    // ======================================================================
+    /// フォルダを直下のエントリへ名前順に展開し、ファイルは入力順のまま残すことを確認する
+    #[test]
+    fn expand_dropped_dirs_lists_direct_children_sorted() {
+        let ws = tempfile::tempdir().unwrap();
+        let tmp = ws.path();
+        let sub = tmp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        for name in ["b.png", "a.png"] {
+            fs::write(tmp.join(name), b"").unwrap();
+        }
+        fs::write(sub.join("nested.png"), b"").unwrap();
+
+        let expanded = expand_dropped_dirs(vec![PathBuf::from("x.png"), tmp.to_path_buf()]);
+
+        // サブフォルダは中身を展開せずエントリとして残す
+        assert_eq!(
+            expanded.paths,
+            vec![
+                PathBuf::from("x.png"),
+                tmp.join("a.png"),
+                tmp.join("b.png"),
+                sub,
+            ]
+        );
+        assert!(expanded.has_dir);
+        assert_eq!(expanded.unreadable_dirs, 0);
+    }
+
+    /// フォルダを含まない場合は入力をそのまま返すことを確認する
+    #[test]
+    fn expand_dropped_dirs_keeps_files_as_is() {
+        let paths = vec![PathBuf::from("b.png"), PathBuf::from("a.txt")];
+        let expanded = expand_dropped_dirs(paths.clone());
+        assert_eq!(expanded.paths, paths);
+        assert!(!expanded.has_dir);
+    }
+
+    /// 対応画像のないフォルダでは専用のメッセージと除外件数を表示することを確認する
+    #[test]
+    fn handle_dropped_paths_reports_folder_without_images() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("sub")).unwrap();
+        fs::write(tmp.path().join("readme.txt"), b"").unwrap();
+
+        let mut app = App::default();
+        app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
+
+        // サブフォルダとテキストファイルの 2 件を除外として数える
+        assert!(
+            app.status.contains("フォルダに対応画像がありません") && app.status.contains("2 件"),
+            "status = {}",
+            app.status
+        );
+        assert!(app.image.original.is_none());
+    }
+
+    /// 対応画像が 1 件だけのフォルダでもプレビューではなく一括トリミングとして扱うことを確認する
+    #[test]
+    fn handle_dropped_paths_treats_folder_as_batch() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        make_test_image()
+            .save(tmp.path().join("input.png"))
+            .unwrap();
+
+        // 保存先ダイアログを開かずに一括トリミング経路へ入ったことを確認するため実行中にしておく
+        let mut app = App::default();
+        app.batch.running = true;
+        app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
+
+        assert!(
+            app.status.contains("受け付けません"),
+            "status = {}",
+            app.status
+        );
+        assert!(app.io.load_note.is_none());
     }
 }

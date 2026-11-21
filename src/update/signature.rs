@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::Path;
 
 use super::error::UpdateError;
+use super::http;
 
 use minisign_verify::{PublicKey, Signature};
 
@@ -73,13 +74,14 @@ pub(crate) fn download_signature(
     url: &str,
     download_key: Option<&str>,
 ) -> Result<String, UpdateError> {
-    let mut request = ureq::get(url);
+    let mut request = http::small_request_agent().get(url);
     if let Some(key) = download_key {
         request = request.header("Authorization", &format!("Bearer {key}"));
     }
     let mut response = request.call().map_err(|err| match err {
         ureq::Error::StatusCode(401) => UpdateError::DownloadUnauthorized,
         ureq::Error::StatusCode(status) => UpdateError::SignatureDownloadHttp { status },
+        err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
         _ => UpdateError::SignatureDownloadFailed,
     })?;
 
@@ -88,7 +90,13 @@ pub(crate) fn download_signature(
         .with_config()
         .limit(MAX_SIGNATURE_BYTES)
         .read_to_string()
-        .map_err(|_| UpdateError::SignatureDownloadFailed)
+        .map_err(|err| {
+            if http::is_timeout(&err) {
+                UpdateError::NetworkTimeout
+            } else {
+                UpdateError::SignatureDownloadFailed
+            }
+        })
 }
 
 /// ファイルの minisign 署名と信頼コメントを検証する

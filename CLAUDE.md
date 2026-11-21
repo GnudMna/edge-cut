@@ -28,11 +28,11 @@ lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/
 | パス | 責務 |
 | ---- | ---- |
 | `src/trim.rs` | 背景色検出 (四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA)・余白除去のコアロジック |
-| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation を反映) |
-| `src/image_output.rs` | 画像保存・一括処理の出力パス生成 (衝突時は連番サフィックス) |
+| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation を反映、ICC プロファイルを取得) |
+| `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルを再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
 | `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
-| `src/app/` | egui GUI。`state` (状態)、`view` (描画)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド) |
+| `src/app/` | egui GUI。`state` (状態)、`view` (描画・更新ダイアログ)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
 | `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定 |
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
 
