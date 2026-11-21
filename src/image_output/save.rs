@@ -17,6 +17,7 @@ use crate::consts::{
     JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX,
     WEBP_QUALITY_DEFAULT, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
+use crate::dpi::Dpi;
 
 // ======================================================================
 // 保存オプション
@@ -65,6 +66,7 @@ impl SaveOptions {
 /// # Arguments
 /// * `img`         - 保存する画像
 /// * `icc_profile` - 埋め込む ICC プロファイル (元画像から引き継いだもの)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `path`        - 保存先パス
 ///
 /// # Errors
@@ -72,9 +74,10 @@ impl SaveOptions {
 pub fn save_image(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     path: &Path,
 ) -> Result<(), SaveError> {
-    save_image_with(img, icc_profile, path, SaveOptions::default())
+    save_image_with(img, icc_profile, dpi, path, SaveOptions::default())
 }
 
 /// 画像をエンコード設定を指定してファイルへ保存する (既存ファイルは上書き)
@@ -84,12 +87,14 @@ pub fn save_image(
 /// WebP は品質 `options.webp_quality` でエンコードし、最大値のときだけロスレスにする
 /// ICC プロファイルは PNG / JPEG / TIFF / WebP に埋め込む。BMP / GIF など非対応の形式や、
 /// プロファイルの色空間が出力画像と合わない場合は埋め込まない
+/// 解像度は PNG / JPEG / TIFF に書き込む。それ以外の形式では書き込まない
 /// エンコードをメモリ上で済ませ、同じディレクトリの一時ファイルへ書き込んでから置き換えるため、
 /// エンコードや書き込みに失敗しても既存ファイルを壊さない
 ///
 /// # Arguments
 /// * `img`         - 保存する画像
 /// * `icc_profile` - 埋め込む ICC プロファイル (元画像から引き継いだもの)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `path`        - 保存先パス
 /// * `options`     - エンコード設定
 ///
@@ -98,10 +103,17 @@ pub fn save_image(
 pub fn save_image_with(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     path: &Path,
     options: SaveOptions,
 ) -> Result<(), SaveError> {
-    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(path)?, options)?;
+    let bytes = encode_image(
+        img,
+        icc_profile,
+        dpi,
+        ImageFormat::from_path(path)?,
+        options,
+    )?;
     TempFile::write(path, &bytes)?.replace(path)?;
     Ok(())
 }
@@ -113,6 +125,7 @@ pub fn save_image_with(
 /// # Arguments
 /// * `img`         - 保存する画像
 /// * `icc_profile` - 埋め込む ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `stem`        - 拡張子を除くファイル名
 /// * `ext`         - 拡張子 (ドットなし。形式の判定にも使う)
@@ -125,11 +138,20 @@ pub fn save_image_with(
 pub fn save_image_unique(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     out_dir: &Path,
     stem: &str,
     ext: &str,
 ) -> Result<(PathBuf, bool), SaveError> {
-    save_image_unique_with(img, icc_profile, out_dir, stem, ext, SaveOptions::default())
+    save_image_unique_with(
+        img,
+        icc_profile,
+        dpi,
+        out_dir,
+        stem,
+        ext,
+        SaveOptions::default(),
+    )
 }
 
 /// 画像をエンコード設定を指定して `out_dir` に新規ファイルとして保存する (既存ファイルは上書きしない)
@@ -141,6 +163,7 @@ pub fn save_image_unique(
 /// # Arguments
 /// * `img`         - 保存する画像
 /// * `icc_profile` - 埋め込む ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `stem`        - 拡張子を除くファイル名
 /// * `ext`         - 拡張子 (ドットなし。形式の判定にも使う)
@@ -154,13 +177,20 @@ pub fn save_image_unique(
 pub fn save_image_unique_with(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     out_dir: &Path,
     stem: &str,
     ext: &str,
     options: SaveOptions,
 ) -> Result<(PathBuf, bool), SaveError> {
     let base = out_dir.join(format!("{stem}.{ext}"));
-    let bytes = encode_image(img, icc_profile, ImageFormat::from_path(&base)?, options)?;
+    let bytes = encode_image(
+        img,
+        icc_profile,
+        dpi,
+        ImageFormat::from_path(&base)?,
+        options,
+    )?;
     // 書き込みは 1 回だけ行い、空いている名前が見つかるまで公開を試す
     let mut temp = TempFile::write(&base, &bytes)?;
 
@@ -191,6 +221,7 @@ pub fn save_image_unique_with(
 /// # Arguments
 /// * `img`         - トリミング後の画像
 /// * `icc_profile` - 元画像の ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `source`      - 元画像ファイルのパス (名前と `Original` 時の形式に使う)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `format`      - 出力形式
@@ -203,6 +234,7 @@ pub fn save_image_unique_with(
 pub fn save_trimmed_output(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     source: &Path,
     out_dir: &Path,
     format: OutputFormat,
@@ -210,6 +242,7 @@ pub fn save_trimmed_output(
     save_trimmed_output_with(
         img,
         icc_profile,
+        dpi,
         source,
         out_dir,
         format,
@@ -225,6 +258,7 @@ pub fn save_trimmed_output(
 /// # Arguments
 /// * `img`         - トリミング後の画像
 /// * `icc_profile` - 元画像の ICC プロファイル (扱いは `save_image_with` と同じ)
+/// * `dpi`         - 書き込む解像度 (元画像から引き継いだもの。扱いは `save_image_with` と同じ)
 /// * `source`      - 元画像ファイルのパス (名前と `Original` 時の形式に使う)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `format`      - 出力形式
@@ -238,6 +272,7 @@ pub fn save_trimmed_output(
 pub fn save_trimmed_output_with(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     source: &Path,
     out_dir: &Path,
     format: OutputFormat,
@@ -247,6 +282,7 @@ pub fn save_trimmed_output_with(
     save_image_unique_with(
         img,
         icc_profile,
+        dpi,
         out_dir,
         &stem,
         &format.output_extension(source),

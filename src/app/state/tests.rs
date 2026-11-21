@@ -162,3 +162,55 @@ fn save_and_load(app: &App) -> Settings {
     app.save_settings(&mut storage);
     eframe::get_value(&storage, SETTINGS_KEY).expect("保存済みの設定")
 }
+
+/// 完了しないスレッドは上限で待つのをやめ、完了済みのスレッドは待てること
+#[test]
+fn join_with_timeout_gives_up_on_stuck_thread() {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let stuck = std::thread::spawn(move || {
+        let _ = rx.recv();
+    });
+    assert!(!join_with_timeout(
+        stuck,
+        Instant::now() + Duration::from_millis(50)
+    ));
+    // 解放してスレッドを終わらせる
+    drop(tx);
+
+    let done = std::thread::spawn(|| {});
+    assert!(join_with_timeout(
+        done,
+        Instant::now() + Duration::from_secs(5)
+    ));
+}
+
+/// 詰まった保存スレッドが複数あっても、共通の期限内に終了処理が戻ること
+#[test]
+fn shutdown_shares_one_deadline_across_stuck_threads() {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    // `App::new` は一括トリミングと保存で期限を共有する
+    let mut app = App::new(None);
+    for _ in 0..3 {
+        let rx = std::sync::Arc::clone(&rx);
+        app.io.save_handles.push(std::thread::spawn(move || {
+            let _ = rx.lock().map(|rx| rx.recv());
+        }));
+    }
+    let batch_rx = std::sync::Arc::clone(&rx);
+    app.batch.handle = Some(std::thread::spawn(move || {
+        let _ = batch_rx.lock().map(|rx| rx.recv());
+    }));
+
+    let start = Instant::now();
+    app.batch
+        .shutdown_deadline
+        .set(start + Duration::from_millis(200))
+        .expect("期限は未設定");
+    drop(app);
+    // 4 本それぞれに 200ms ずつ待つと 800ms 以上かかる
+    assert!(start.elapsed() < Duration::from_millis(500));
+
+    // 解放してスレッドを終わらせる
+    drop(tx);
+}

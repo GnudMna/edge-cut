@@ -10,8 +10,9 @@ use super::background::detect_background_with;
 use super::options::TrimOptions;
 use super::types::{TrimBounds, TrimInfo};
 use crate::consts::{
-    ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, PADDING_MAX, TOL_MAX, TOL_SCALE_DENOM,
-    TRIM_PARALLEL_MIN_PIXELS, TRIM_ROW_BLOCK_PIXELS,
+    ALPHA_TRANSPARENT_THRESHOLD, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH,
+    MAX_RGB_SQ_DIST, PADDING_MAX, TOL_MAX, TOL_SCALE_DENOM, TRIM_PARALLEL_MIN_PIXELS,
+    TRIM_ROW_BLOCK_PIXELS,
 };
 
 // ======================================================================
@@ -331,12 +332,56 @@ fn content_rect(bounds: &ContentBounds, w: u32, h: u32, opts: &TrimOptions) -> R
             i64::from(image_edge)
         }
     };
-    Rect {
+    let rect = Rect {
         x0: edge(sides.left, bounds.left, m.left, 0, -1),
         y0: edge(sides.top, bounds.top, m.top, 0, -1),
         x1: edge(sides.right, bounds.right + 1, m.right, w, 1),
         y1: edge(sides.bottom, bounds.bottom + 1, m.bottom, h, 1),
+    };
+    limit_output_size(rect, w, h)
+}
+
+/// 余白を加えた矩形が出力サイズの上限を超えないように、範囲外へ広げた分を削る
+///
+/// 幅・高さが `MAX_IMAGE_WIDTH` / `MAX_IMAGE_HEIGHT` を超える軸は、範囲外の余白を左右 (上下) から
+/// 均等に削る。画素数が `MAX_IMAGE_PIXELS` を超える場合は範囲外の余白をすべて削る
+/// 保存後に再読み込みできない画像を作らないための制限で、元画像が上限内なら必ず収まる
+///
+/// # Arguments
+/// * `rect` - 余白を加えた矩形
+/// * `w`    - 元画像の幅 (px)
+/// * `h`    - 元画像の高さ (px)
+///
+/// # Returns
+/// * `Rect` - 上限内に収めた矩形
+fn limit_output_size(rect: Rect, w: u32, h: u32) -> Rect {
+    let (x0, x1) = shrink_axis(rect.x0, rect.x1, i64::from(MAX_IMAGE_WIDTH), i64::from(w));
+    let (y0, y1) = shrink_axis(rect.y0, rect.y1, i64::from(MAX_IMAGE_HEIGHT), i64::from(h));
+    let limited = Rect { x0, y0, x1, y1 };
+    let pixels = (x1 - x0) * (y1 - y0);
+    if pixels > i64::try_from(MAX_IMAGE_PIXELS).unwrap_or(i64::MAX) {
+        return Rect {
+            x0: limited.x0.max(0),
+            y0: limited.y0.max(0),
+            x1: limited.x1.min(i64::from(w)),
+            y1: limited.y1.min(i64::from(h)),
+        };
     }
+    limited
+}
+
+/// 1 軸の区間 `[lo, hi)` が `limit` を超える分を、範囲 `[0, size)` の外側から削る
+fn shrink_axis(lo: i64, hi: i64, limit: i64, size: i64) -> (i64, i64) {
+    let excess = hi - lo - limit;
+    if excess <= 0 {
+        return (lo, hi);
+    }
+    let (out_lo, out_hi) = ((-lo).max(0), (hi - size).max(0));
+    // 先に小さい側の余白を削り、残りを反対側から削る
+    let cut_lo = (excess / 2).min(out_lo);
+    let cut_hi = (excess - cut_lo).min(out_hi);
+    let cut_lo = (excess - cut_hi).min(out_lo);
+    (lo + cut_lo, hi - cut_hi)
 }
 
 /// 元画像の座標系の矩形を、切り出し位置と範囲外へ拡張する余白に分けて `TrimInfo` にする
@@ -425,6 +470,42 @@ mod tests {
         // 内容 (14x10) の四辺に PADDING_MAX ずつ足した大きさになる
         assert_eq!(clamped.info.trim_w, 14 + PADDING_MAX * 2);
         assert_eq!(clamped.info.trim_h, 10 + PADDING_MAX * 2);
+    }
+
+    /// 余白を加えた矩形が幅・高さ・画素数の上限を超えないこと
+    #[test]
+    fn limit_output_size_keeps_rect_within_limits() {
+        let max_w = i64::from(MAX_IMAGE_WIDTH);
+        // 幅が上限ちょうどの画像に余白を足しても上限内へ戻る
+        let r = Rect {
+            x0: -10,
+            y0: 0,
+            x1: max_w + 10,
+            y1: 10,
+        };
+        let limited = limit_output_size(r, MAX_IMAGE_WIDTH, 10);
+        assert_eq!((limited.x0, limited.x1), (0, max_w));
+        assert_eq!((limited.y0, limited.y1), (0, 10));
+
+        // 片側だけ余白がある場合はその側から削る
+        let r = Rect {
+            x0: 0,
+            y0: 0,
+            x1: max_w + 10,
+            y1: 10,
+        };
+        assert_eq!(limit_output_size(r, MAX_IMAGE_WIDTH, 10).x1, max_w);
+
+        // 画素数が上限を超える場合は範囲外の余白をすべて削る
+        let r = Rect {
+            x0: -5,
+            y0: -5,
+            x1: max_w + 5,
+            y1: max_w + 5,
+        };
+        let limited = limit_output_size(r, MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT);
+        assert_eq!((limited.x0, limited.y0), (0, 0));
+        assert_eq!((limited.x1, limited.y1), (max_w, max_w));
     }
 
     /// 各色形式で RGBA8 へ一括変換した画像と同じ矩形・背景色を返すこと

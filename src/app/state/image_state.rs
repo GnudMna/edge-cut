@@ -7,6 +7,7 @@ use eframe::egui;
 use image::DynamicImage;
 
 use super::trim_state::TrimParams;
+use crate::dpi::Dpi;
 use crate::trim::TrimInfo;
 
 // ======================================================================
@@ -15,7 +16,7 @@ use crate::trim::TrimInfo;
 /// プレビュー 1 ペイン分のズームとパンの状態
 #[derive(Clone, Copy, Default)]
 pub(in crate::app) struct PaneView {
-    /// 画像 1 px あたりの画面 px 数。`None` のときはペインに収まる倍率 (最大 1.0) に追従する
+    /// 画像 1 px あたりの物理 px 数。`None` のときはペインに収まる倍率 (最大 1.0) に追従する
     pub zoom: Option<f32>,
     /// 画像の中心がペインの中心からずれている量 (画面 px)
     pub offset: egui::Vec2,
@@ -32,6 +33,8 @@ pub(in crate::app) struct ImageState {
     pub source_name: Option<PathBuf>,
     /// 元画像の ICC プロファイル。保存時に埋め込む。保存スレッドへ複製なしで渡すため `Arc` で保持する
     pub icc_profile: Option<Arc<[u8]>>,
+    /// 元画像の解像度。保存時に書き込む
+    pub dpi: Option<Dpi>,
     /// 元画像の GPU テクスチャ。トリミング後のプレビューも UV で切り出して共用する
     pub orig_tex: Option<egui::TextureHandle>,
     /// プレビューのズームとパン。`[0]` が元画像、`[1]` がトリミング後のペイン

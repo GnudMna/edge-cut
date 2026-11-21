@@ -54,7 +54,7 @@ fn trim_save_and_reload(
 ) -> (TrimInfo, DynamicImage) {
     let img = open_image(input).expect("入力画像の読み込みに失敗");
     let trimmed = trim(&img, tolerance, padding, bg_override);
-    save_image(&trimmed.image, None, output).expect("トリミング結果の保存に失敗");
+    save_image(&trimmed.image, None, None, output).expect("トリミング結果の保存に失敗");
 
     let reloaded = open_image(output).expect("出力画像の再読み込みに失敗");
     assert_eq!(reloaded.width(), trimmed.info.trim_w);
@@ -137,7 +137,7 @@ fn trim_with_manual_background_round_trips() {
     assert_eq!(manual.background, manual_white);
     assert_eq!(auto.info, manual.info);
 
-    save_image(&auto.image, None, &output).expect("トリミング結果の保存に失敗");
+    save_image(&auto.image, None, None, &output).expect("トリミング結果の保存に失敗");
     let reloaded = open_image(&output).expect("出力画像の再読み込みに失敗");
     assert_eq!(reloaded.width(), manual.info.trim_w);
     assert_eq!(reloaded.height(), manual.info.trim_h);
@@ -171,7 +171,7 @@ fn batch_trim_workflow_writes_expected_output_files() {
             ))
         );
 
-        save_image(&trimmed.image, None, &out_path).expect("一括出力の保存に失敗");
+        save_image(&trimmed.image, None, None, &out_path).expect("一括出力の保存に失敗");
         assert!(out_path.is_file());
 
         let reloaded = open_image(&out_path).expect("一括出力の再読み込みに失敗");
@@ -263,7 +263,7 @@ fn trim_with_options_persists_after_save() {
         ..TrimOptions::default()
     };
     let trimmed = trim_with_options(&img, &opts);
-    save_image(&trimmed.image, None, &output).expect("save output");
+    save_image(&trimmed.image, None, None, &output).expect("save output");
     let reloaded = open_image(&output).expect("reload output");
 
     // 左 2 + 内容 10 = 幅 12、上の内容端 5 から下端 20 までで高さ 15。1:1 に広げて 15x15

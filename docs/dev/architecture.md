@@ -7,7 +7,8 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | パス | 責務 |
 | :--- | :--- |
 | `src/trim/` | 背景色検出・余白除去のコアロジック (下表) |
-| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルの取得とサイズ上限・複数フレームの検出を含む) |
+| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルと解像度の取得・複数フレームの検出を含む) |
+| `src/dpi.rs` | 解像度 (DPI) の型。PNG `pHYs` / JPEG JFIF・EXIF / TIFF 解像度タグからの読み取りと、PNG / TIFF のエンコード済みバイト列への書き込み (JPEG は `image` のエンコーダ経由) |
 | `src/image_output/` | 出力形式の決定・画像保存・出力パス生成 (下表) |
 | `src/batch_trim/` | 複数ファイルの一括トリミング (下表) |
 | `src/panic_hook.rs` | panic フック。panic の内容を `%LOCALAPPDATA%\EdgeCut\panic.log` (`LOCALAPPDATA` 未設定時は一時ディレクトリ配下) へ追記し、256 KiB を超える場合は `panic.log.1` へ退避 (1 世代のみ)、UI スレッドの panic ではダイアログも表示 |
@@ -84,9 +85,9 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 
 ## 設計方針
 
-- コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
+- コアロジック (`trim` / `image_load` / `dpi` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
 - 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す。プレビュー・クリップボード・読み込みは常駐ワーカー、ファイルダイアログ・保存・一括トリミング・ドロップされたフォルダの展開・更新確認はその都度起こすスレッドで行い、結果はチャネル経由で UI スレッドへ返す。ワーカーの panic は `catch_panic` で捕捉して失敗として通知する
-- ウィンドウを閉じる要求があったフレームでウィンドウを非表示にし (`view` の `hide_window_on_close`)、保存スレッドと一括トリミングは `IoState` / `BatchState` の `Drop` で完了を待ってからプロセスを終える (一括トリミングは未着手のファイルをキャンセルする)
+- ウィンドウを閉じる要求があったフレームでウィンドウを非表示にし (`view` の `hide_window_on_close`)、保存スレッドと一括トリミングは `App` の `Drop` で完了を待ってからプロセスを終える (期限を 1 つだけ決めて全スレッドで共有するため、待つのは合計で最大 10 秒で、超えたら切り離して終了する) (一括トリミングは未着手のファイルをキャンセルする)
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する。ライブラリとしての使い方は `src/lib.rs` の doc コメント (`cargo doc --open`) を参照
 - 対応 OS は Windows のみ。`cfg(windows)` などの OS 分岐は置かず、Windows 専用 API を直接使う
 

@@ -17,7 +17,7 @@ const TRIM_FRAME_WIDTH: f32 = 1.5;
 /// 画像プレビューに敷く市松模様の 1 マスの大きさ
 const PREVIEW_CHECKER_CELL: f32 = 8.0;
 
-/// プレビューのズーム倍率の上限 (画像 1 px あたりの画面 px 数)
+/// プレビューのズーム倍率の上限 (画像 1 px あたりの物理 px 数)
 const MAX_ZOOM: f32 = 16.0;
 
 /// スクロール 1 ポイントあたりのズーム量 (指数)
@@ -259,56 +259,51 @@ impl App {
     }
 }
 
+/// 市松模様のテクスチャを保持する egui の一時データ ID
+const CHECKER_TEXTURE_ID: &str = "preview_checker_texture";
+
+/// 市松模様の 2×2 テクスチャを返す
+///
+/// 初回だけ生成して `ctx` に保持し、以降は同じハンドルを使い回す
+///
+/// # Arguments
+/// * `ctx` - テクスチャの登録先
+///
+/// # Returns
+/// * `egui::TextureHandle` - 明暗が交互に並ぶ 2×2 のテクスチャ。`Repeat` で敷き詰める
+fn checker_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique(CHECKER_TEXTURE_ID);
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return tex;
+    }
+    let light = egui::Color32::from_gray(210);
+    let dark = egui::Color32::from_gray(170);
+    let image = egui::ColorImage::new([2, 2], vec![light, dark, dark, light]);
+    let options = egui::TextureOptions::NEAREST_REPEAT;
+    let tex = ctx.load_texture("preview_checker", image, options);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
 /// 透明部分を見分けるための市松模様を `rect` に描く
 ///
-/// マス目は `rect` の左上を基準に並べ、描画先のクリップ領域と重なるマスだけを描く
+/// 2×2 のテクスチャを繰り返し指定で 1 枚の矩形に貼る。マス目は `rect` の左上を基準に並ぶ
 ///
 /// # Arguments
 /// * `painter` - 描画先
 /// * `rect` - 市松模様を敷く領域
 /// * `cell` - 1 マスの一辺の長さ
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "可視範囲の開始位置は 0 以上で、マス数は usize に収まる"
-)]
 fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
-    let visible = rect.intersect(painter.clip_rect());
-    if !visible.is_positive() {
+    if !rect.intersects(painter.clip_rect()) {
         return;
     }
-    // 大きなプレビューでも見えている範囲のマスだけを描くよう、開始位置をマス目に揃える
-    let first_col = ((visible.min.x - rect.min.x) / cell).floor() as usize;
-    let first_row = ((visible.min.y - rect.min.y) / cell).floor() as usize;
-    let light = egui::Color32::from_gray(210);
-    let dark = egui::Color32::from_gray(170);
-    let mut row = first_row;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "描画座標の算出で、マス数は f32 の精度内に収まる"
-    )]
-    let mut y = rect.min.y + row as f32 * cell;
-    while y < visible.max.y {
-        let mut col = first_col;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "描画座標の算出で、マス数は f32 の精度内に収まる"
-        )]
-        let mut x = rect.min.x + col as f32 * cell;
-        while x < visible.max.x {
-            let tile = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell, cell));
-            let color = if (row + col).is_multiple_of(2) {
-                light
-            } else {
-                dark
-            };
-            painter.rect_filled(tile.intersect(rect), 0.0, color);
-            x += cell;
-            col += 1;
-        }
-        y += cell;
-        row += 1;
-    }
+    let tex = checker_texture(painter.ctx());
+    // テクスチャ 1 周 (2 マス) を UV の 1.0 とし、領域の大きさ分だけ繰り返す
+    let uv = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        (rect.size() / (cell * 2.0)).to_pos2().to_vec2(),
+    );
+    painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
 }
 
 /// 画像全体を表す正規化座標の矩形
@@ -459,7 +454,9 @@ fn show_pane_contents(
         reason = "画像寸法は f32 の精度内で表示倍率の算出に使うだけ"
     )]
     let src = egui::vec2(sw as f32, sh as f32) * uv.size();
-    let fit = fit_scale(src, viewport.size());
+    // 倍率は物理 px 基準とし、表示サイズへ変換するときに論理ポイントへ戻す
+    let ppp = ui.ctx().pixels_per_point();
+    let fit = fit_scale(src, viewport.size(), ppp);
 
     // ズームとパンの入力を反映する
     let mut scale = view.zoom.unwrap_or(fit).clamp(fit, MAX_ZOOM);
@@ -477,14 +474,13 @@ fn show_pane_contents(
     }
     // 収まる倍率まで戻したら、ウィンドウサイズへの追従に戻す
     view.zoom = (scale > fit + 1e-3).then_some(scale);
-    let disp = src * scale;
+    let disp = src * scale / ppp;
     view.offset = clamp_offset(view.offset, disp, viewport.size());
 
     let painter = ui.painter_at(viewport);
     let palette = theme::palette_of(ui);
     painter.rect_filled(viewport, theme::CARD_RADIUS - 4, palette.canvas);
     // 等倍付近で画素がにじまないよう、画像の位置を物理ピクセルに揃える
-    let ppp = painter.pixels_per_point();
     let min = (viewport.center() + view.offset - disp / 2.0).to_vec2();
     let min = egui::Pos2::ZERO + (min * ppp).round() / ppp;
     let rect = egui::Rect::from_min_size(min, disp);
@@ -569,14 +565,15 @@ fn pixel_at(rel: egui::Vec2, disp: egui::Vec2, source: [u32; 2]) -> (u32, u32) {
 ///
 /// # Arguments
 /// * `src` - 表示する範囲の元画像上の大きさ (px)
-/// * `viewport` - ペインの大きさ (画面 px)
+/// * `viewport` - ペインの大きさ (論理ポイント)
+/// * `ppp` - 1 論理ポイントあたりの物理 px 数
 ///
 /// # Returns
-/// * `f32` - 画像 1 px あたりの画面 px 数
-fn fit_scale(src: egui::Vec2, viewport: egui::Vec2) -> f32 {
+/// * `f32` - 画像 1 px あたりの物理 px 数
+fn fit_scale(src: egui::Vec2, viewport: egui::Vec2, ppp: f32) -> f32 {
     let src = src.max(egui::Vec2::splat(1.0));
-    ((viewport.x - PANE_MARGIN) / src.x)
-        .min((viewport.y - PANE_MARGIN) / src.y)
+    (((viewport.x - PANE_MARGIN) * ppp) / src.x)
+        .min(((viewport.y - PANE_MARGIN) * ppp) / src.y)
         .clamp(MIN_FIT_SCALE, 1.0)
 }
 
@@ -620,7 +617,7 @@ fn zoom_about(
 /// # Arguments
 /// * `painter` - ペインにクリップした描画先
 /// * `viewport` - ペインの領域
-/// * `scale` - 画像 1 px あたりの画面 px 数
+/// * `scale` - 画像 1 px あたりの物理 px 数
 fn paint_zoom_badge(painter: &egui::Painter, viewport: egui::Rect, scale: f32) {
     let galley = painter.layout_no_wrap(
         format!("{:.0}%", scale * 100.0),
@@ -647,16 +644,27 @@ mod tests {
     #[test]
     fn fit_scale_shrinks_large_and_never_enlarges() {
         let viewport = egui::vec2(408.0, 308.0);
-        let large = fit_scale(egui::vec2(4000.0, 1000.0), viewport);
+        let large = fit_scale(egui::vec2(4000.0, 1000.0), viewport, 1.0);
         assert!((large - 0.1).abs() < 1e-6);
-        assert!((fit_scale(egui::vec2(100.0, 100.0), viewport) - 1.0).abs() < f32::EPSILON);
+        assert!((fit_scale(egui::vec2(100.0, 100.0), viewport, 1.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// 高 DPI ではペインの物理 px 数を基準に収まる倍率を求め、拡大しないこと
+    #[test]
+    fn fit_scale_uses_physical_pixels() {
+        let viewport = egui::vec2(408.0, 308.0);
+        // 物理幅 (408 - 8) * 1.5 = 600 px に 6000 px の画像を収める
+        let large = fit_scale(egui::vec2(6000.0, 1500.0), viewport, 1.5);
+        assert!((large - 0.1).abs() < 1e-6);
+        // 論理ポイントでは収まっても、物理 px では 1.0 を超えない
+        assert!((fit_scale(egui::vec2(100.0, 100.0), viewport, 1.5) - 1.0).abs() < f32::EPSILON);
     }
 
     /// 寸法 0 の範囲やペインが極端に小さい場合でも正の倍率を返すこと
     #[test]
     fn fit_scale_stays_positive_for_degenerate_input() {
-        assert!(fit_scale(egui::Vec2::ZERO, egui::vec2(100.0, 100.0)) > 0.0);
-        assert!(fit_scale(egui::vec2(500.0, 500.0), egui::vec2(4.0, 4.0)) > 0.0);
+        assert!(fit_scale(egui::Vec2::ZERO, egui::vec2(100.0, 100.0), 1.0) > 0.0);
+        assert!(fit_scale(egui::vec2(500.0, 500.0), egui::vec2(4.0, 4.0), 1.0) > 0.0);
     }
 
     /// 画像がペインより小さい軸は中央に固定し、大きい軸ははみ出さない範囲に収めること

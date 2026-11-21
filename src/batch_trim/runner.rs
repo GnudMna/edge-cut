@@ -242,7 +242,10 @@ fn process_one(
     // ヘッダの検証後、デコード前に見積もり分を確保する
     let (
         LoadedImage {
-            image, icc_profile, ..
+            image,
+            icc_profile,
+            dpi,
+            ..
         },
         mut permit,
     ) = open_image_with_icc_reserving(path, |decoded_bytes| {
@@ -261,6 +264,7 @@ fn process_one(
     let (_, file_renamed) = save_trimmed_output_with(
         &trimmed,
         icc_profile.as_deref(),
+        dpi,
         path,
         out_dir,
         params.format,

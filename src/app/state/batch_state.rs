@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// 一括トリミングのバックグラウンド処理
 pub(in crate::app) struct BatchState {
@@ -20,6 +21,8 @@ pub(in crate::app) struct BatchState {
     pub errors_open: bool,
     /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
     pub skipped_inputs: usize,
+    /// 終了時の待機期限 (`IoState` と共有する)
+    pub shutdown_deadline: super::SharedDeadline,
 }
 
 impl Default for BatchState {
@@ -32,17 +35,28 @@ impl Default for BatchState {
             last_error_details: Vec::new(),
             errors_open: false,
             skipped_inputs: 0,
+            shutdown_deadline: super::SharedDeadline::default(),
+        }
+    }
+}
+
+impl BatchState {
+    /// 未着手のファイルを打ち切り、処理中のファイルの保存完了を期限まで待つ
+    ///
+    /// # Arguments
+    /// * `deadline` - 待つのをやめる時刻
+    pub(in crate::app) fn shutdown(&mut self, deadline: Instant) {
+        if let Some(handle) = self.handle.take() {
+            self.cancel.store(true, Ordering::Relaxed);
+            super::join_with_timeout(handle, deadline);
         }
     }
 }
 
 impl Drop for BatchState {
-    /// 未着手のファイルを打ち切り、処理中のファイルの保存完了を待つ
+    /// 共有された期限まで完了を待つ
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            self.cancel.store(true, Ordering::Relaxed);
-            let _ = handle.join();
-        }
+        self.shutdown(super::shutdown_deadline(&self.shutdown_deadline));
     }
 }
 

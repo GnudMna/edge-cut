@@ -8,6 +8,7 @@ use eframe::egui;
 use image::DynamicImage;
 
 use crate::app::state::{App, IoMsg, SaveKind};
+use crate::dpi::Dpi;
 
 // ======================================================================
 // 定数
@@ -28,6 +29,7 @@ impl App {
     /// * `ctx` - egui のコンテキスト (トリミングのスケジュールに使用)
     /// * `img` - 元画像
     /// * `icc_profile` - 元画像の ICC プロファイル (保存時に埋め込む)
+    /// * `dpi` - 元画像の解像度 (保存時に書き込む)
     /// * `status` - 設定するステータスメッセージ
     /// * `source_name` - 出力ファイル名・形式の決定に使う元画像のファイル名
     pub(super) fn set_original_image(
@@ -35,6 +37,7 @@ impl App {
         ctx: &egui::Context,
         img: DynamicImage,
         icc_profile: Option<Vec<u8>>,
+        dpi: Option<Dpi>,
         status: String,
         source_name: PathBuf,
     ) {
@@ -42,6 +45,7 @@ impl App {
         self.status = status;
         self.image.original = Some(Arc::new(img));
         self.image.icc_profile = icc_profile.map(Arc::from);
+        self.image.dpi = dpi;
         self.image.source_name = Some(source_name);
         self.background.reset_to_override(self.prefs.bg_override);
         self.schedule_trim(ctx, false, true, true);
@@ -76,6 +80,7 @@ impl App {
                                 ctx,
                                 loaded.image,
                                 loaded.icc_profile,
+                                loaded.dpi,
                                 status,
                                 file_name.into(),
                             );
@@ -113,14 +118,19 @@ impl App {
                         continue;
                     }
                     match result {
-                        // クリップボード画像は ICC プロファイルを持たない
-                        Ok(img) => self.set_original_image(
-                            ctx,
-                            img,
-                            None,
-                            "クリップボードから貼り付け完了".into(),
-                            CLIPBOARD_SOURCE_NAME.into(),
-                        ),
+                        Ok(img) => {
+                            // 貼り付けを優先し、読み込み中のファイルの結果は破棄する
+                            self.io.abort_load();
+                            // クリップボード画像は ICC プロファイルも解像度も持たない
+                            self.set_original_image(
+                                ctx,
+                                img,
+                                None,
+                                None,
+                                "クリップボードから貼り付け完了".into(),
+                                CLIPBOARD_SOURCE_NAME.into(),
+                            );
+                        }
                         Err(msg) => self.status = msg,
                     }
                 }
@@ -181,6 +191,7 @@ mod tests {
                     result: Ok(LoadedImage {
                         image: make_test_image(),
                         icc_profile: None,
+                        dpi: None,
                         has_extra_frames,
                     }),
                 })
@@ -219,6 +230,76 @@ mod tests {
             app.image.source_name.as_deref(),
             Some(Path::new(CLIPBOARD_SOURCE_NAME))
         );
+        assert!(
+            app.status.contains("貼り付け完了"),
+            "status = {}",
+            app.status
+        );
+    }
+
+    /// 貼り付けが失敗した場合は、読み込み中のファイルの結果を破棄しないこと
+    #[test]
+    fn failed_paste_keeps_pending_load() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let load_id = app.io.load_request_id;
+
+        // 貼り付け失敗の後に、読み込み中だったファイルの結果が届く
+        app.io
+            .tx
+            .send(IoMsg::Pasted {
+                request_id: load_id,
+                result: Err("クリップボードに画像がありません".into()),
+            })
+            .unwrap();
+        app.io
+            .tx
+            .send(IoMsg::Loaded {
+                request_id: load_id,
+                file_name: "a.png".into(),
+                result: Ok(LoadedImage {
+                    image: make_test_image(),
+                    icc_profile: None,
+                    dpi: None,
+                    has_extra_frames: false,
+                }),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert_eq!(app.io.load_request_id, load_id);
+        assert!(app.image.original.is_some());
+        assert!(
+            app.status.contains("読み込み完了"),
+            "status = {}",
+            app.status
+        );
+    }
+
+    /// 貼り付けが成功した場合は、読み込み中のファイルの結果を破棄すること
+    #[test]
+    fn successful_paste_discards_pending_load() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let load_id = app.io.load_request_id;
+        app.io
+            .tx
+            .send(IoMsg::Pasted {
+                request_id: load_id,
+                result: Ok(make_test_image()),
+            })
+            .unwrap();
+        app.io
+            .tx
+            .send(IoMsg::Loaded {
+                request_id: load_id,
+                file_name: "a.png".into(),
+                result: Err("読み込み失敗".into()),
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert_ne!(app.io.load_request_id, load_id);
         assert!(
             app.status.contains("貼り付け完了"),
             "status = {}",

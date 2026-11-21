@@ -3,9 +3,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use image::DynamicImage;
 
+use crate::dpi::Dpi;
 use crate::image_load::LoadedImage;
 use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
@@ -85,6 +87,8 @@ pub(in crate::app) struct SaveRequest {
     pub info: TrimInfo,
     /// 元画像の ICC プロファイル
     pub icc_profile: Option<Arc<[u8]>>,
+    /// 元画像の解像度
+    pub dpi: Option<Dpi>,
     /// 拡張子なしで入力された場合に補う拡張子
     pub ext: String,
 }
@@ -121,7 +125,7 @@ pub(in crate::app) enum DialogResult {
 
 /// 画像の読み込み・保存のバックグラウンド処理
 ///
-/// 破棄時は実行中の保存スレッドの完了を待ち、書きかけのファイルが残らないようにする
+/// 破棄時は実行中の保存スレッドの完了を一定時間まで待ち、書きかけのファイルが残らないようにする
 pub(in crate::app) struct IoState {
     /// ワーカースレッドへ渡す送信側
     pub tx: mpsc::Sender<IoMsg>,
@@ -147,6 +151,8 @@ pub(in crate::app) struct IoState {
     ///
     /// 親を指定するとダイアログがモーダルになり、メインウィンドウの裏に隠れない
     pub dialog_template: rfd::FileDialog,
+    /// 終了時の待機期限 (`BatchState` と共有する)
+    pub shutdown_deadline: super::SharedDeadline,
 }
 
 /// 自動保存の内容を識別するキー
@@ -180,6 +186,7 @@ impl Default for IoState {
             auto_save_status: None,
             dialog_open: false,
             dialog_template: rfd::FileDialog::new(),
+            shutdown_deadline: super::SharedDeadline::default(),
         }
     }
 }
@@ -197,10 +204,21 @@ impl IoState {
     }
 }
 
-impl Drop for IoState {
-    fn drop(&mut self) {
+impl IoState {
+    /// 実行中の保存スレッドすべての完了を、共通の期限まで待つ
+    ///
+    /// # Arguments
+    /// * `deadline` - 待つのをやめる時刻
+    pub(in crate::app) fn shutdown(&mut self, deadline: Instant) {
         for handle in self.save_handles.drain(..) {
-            let _ = handle.join();
+            super::join_with_timeout(handle, deadline);
         }
+    }
+}
+
+impl Drop for IoState {
+    /// 共有された期限まで完了を待つ
+    fn drop(&mut self) {
+        self.shutdown(super::shutdown_deadline(&self.shutdown_deadline));
     }
 }

@@ -7,6 +7,9 @@ use image::error::{EncodingError, ImageFormatHint};
 use image::{DynamicImage, ImageError, ImageFormat};
 use webp::Encoder;
 
+/// libwebp (ロッシー) が受け付ける幅・高さの上限 (px)
+const WEBP_LOSSY_MAX_DIMENSION: u32 = 16_383;
+
 /// VP8X チャンクのフラグのうち、ICC プロファイルの有無を示すビット
 const VP8X_FLAG_ICC: u8 = 0x20;
 
@@ -34,6 +37,12 @@ pub(super) fn encode_lossy(
     quality: u8,
 ) -> Result<Vec<u8>, ImageError> {
     let (width, height) = (img.width(), img.height());
+    if width > WEBP_LOSSY_MAX_DIMENSION || height > WEBP_LOSSY_MAX_DIMENSION {
+        return Err(encoding_error(format!(
+            "ロッシー WebP は幅・高さとも {WEBP_LOSSY_MAX_DIMENSION} px までのため保存できません \
+             (現在 {width} x {height} px)。ロスレス (品質最大) か別の形式を選んでください"
+        )));
+    }
     let source = match img {
         DynamicImage::ImageRgb8(rgb) => Encoder::from_rgb(rgb.as_raw(), width, height),
         DynamicImage::ImageRgba8(rgba) => Encoder::from_rgba(rgba.as_raw(), width, height),

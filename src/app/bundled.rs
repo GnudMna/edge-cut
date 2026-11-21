@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
+use known_folders::{KnownFolder, get_known_folder_path};
+
 // ======================================================================
 // 同梱文書
 // ======================================================================
@@ -102,7 +104,9 @@ impl Bundled {
         let path = self
             .locate()
             .ok_or("配布物に同梱されたファイルが見つからない")?;
-        let mut child = open_command(&path, self.is_html())
+        let mut command =
+            open_command(&path, self.is_html()).ok_or("システムフォルダの場所を取得できない")?;
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -133,22 +137,24 @@ fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
 
 /// 文書を開くコマンドを組み立てる
 ///
-/// 拡張子のないテキストは関連付けが無いため、メモ帳で開く
+/// 拡張子のないテキストは関連付けが無いため、メモ帳で開く。
+/// 実行ファイルと同じフォルダの同名ファイルを拾わないよう、システムフォルダの絶対パスで起動する。
 ///
 /// # Arguments
 /// * `path` - 開く文書のパス
 /// * `is_html` - HTML か (`false` はテキスト)
 ///
 /// # Returns
-/// * `Command` - 未起動のコマンド
-fn open_command(path: &Path, is_html: bool) -> Command {
-    let mut command = Command::new(if is_html {
-        "explorer.exe"
+/// * `Option<Command>` - 未起動のコマンド。システムフォルダを取得できない場合は `None`
+fn open_command(path: &Path, is_html: bool) -> Option<Command> {
+    let program = if is_html {
+        get_known_folder_path(KnownFolder::Windows)?.join("explorer.exe")
     } else {
-        "notepad.exe"
-    });
+        get_known_folder_path(KnownFolder::System)?.join("notepad.exe")
+    };
+    let mut command = Command::new(program);
     command.arg(path);
-    command
+    Some(command)
 }
 
 // ======================================================================
@@ -198,12 +204,17 @@ mod tests {
         );
     }
 
-    /// 開くコマンドの引数に文書のパスを渡すこと
+    /// 開くコマンドをシステムフォルダの絶対パスで起動し、引数に文書のパスを渡すこと
     #[test]
-    fn open_command_passes_path() {
+    fn open_command_uses_absolute_program_and_passes_path() {
         let path = Path::new("dir with space").join("LICENSE");
         for is_html in [true, false] {
-            let command = open_command(&path, is_html);
+            let command = open_command(&path, is_html).expect("system folder");
+            // 名前だけでは実行ファイルと同じフォルダが先に探索されるため、絶対パスであること
+            assert!(
+                Path::new(command.get_program()).is_absolute(),
+                "is_html={is_html}"
+            );
             assert_eq!(
                 command.get_args().last(),
                 Some(path.as_os_str()),

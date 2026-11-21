@@ -17,6 +17,7 @@ use crate::consts::{
     MAX_ICC_PROFILE_BYTES, MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS,
     MAX_IMAGE_WIDTH,
 };
+use crate::dpi::{Dpi, read_dpi};
 
 /// デコーダ内部の作業領域として、画像バッファとは別に確保を許す量
 const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
@@ -35,6 +36,8 @@ pub struct LoadedImage {
     pub image: DynamicImage,
     /// 埋め込まれていた ICC プロファイル。無い、取得に失敗した、または `MAX_ICC_PROFILE_BYTES` を超える場合は `None`
     pub icc_profile: Option<Vec<u8>>,
+    /// 埋め込まれていた解像度 (表示上の向きに合わせた値)。PNG / JPEG / TIFF 以外、記録が無い、または長さの単位でない場合は `None`
+    pub dpi: Option<Dpi>,
     /// 先頭フレーム以外にも画像を含むファイルか (アニメーション GIF / WebP、複数ページ TIFF)
     ///
     /// 読み込むのは先頭の 1 フレームだけで、残りは無視される。判定に失敗した場合は `false`
@@ -248,9 +251,14 @@ pub(crate) fn open_image_with_icc_reserving<G>(
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
     let has_extra_frames = format.is_some_and(|format| detect_extra_frames(&mut file, format));
+    // 解像度の取得に失敗しても読み込みは成功とする (保存時に書き込まないだけ)
+    let dpi = format
+        .and_then(|format| read_dpi(&mut BufReader::new(&file), format))
+        .map(|dpi| dpi.oriented(orientation));
     let loaded = LoadedImage {
         image,
         icc_profile,
+        dpi,
         has_extra_frames,
     };
     Ok((loaded, reserved))

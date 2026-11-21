@@ -110,7 +110,7 @@ fn batch_preserves_icc_profile() {
     let mut icc = vec![0u8; 132];
     icc[16..20].copy_from_slice(b"RGB ");
     let img = bordered_rgba(12, 8, 2, [255, 255, 255, 255], [0, 128, 0, 255]);
-    crate::image_output::save_image(&img, Some(&icc), &input).expect("write png");
+    crate::image_output::save_image(&img, Some(&icc), None, &input).expect("write png");
 
     let cancel = AtomicBool::new(false);
     let result = run_batch_trim(
@@ -129,6 +129,36 @@ fn batch_preserves_icc_profile() {
     let loaded = crate::image_load::open_image_with_icc(&out.join("photo_trimmed.png"))
         .expect("出力の再読み込み");
     assert_eq!(loaded.icc_profile, Some(icc));
+}
+
+/// 元画像の解像度が一括出力へ引き継がれること
+#[test]
+fn batch_preserves_dpi() {
+    let ws = TempDir::new();
+    let out = ws.path("out");
+    fs::create_dir_all(&out).expect("out dir");
+    let input = ws.path("scan.png");
+    let dpi = crate::dpi::Dpi::new(300.0, 300.0).unwrap();
+    let img = bordered_rgba(12, 8, 2, [255, 255, 255, 255], [0, 128, 0, 255]);
+    crate::image_output::save_image(&img, None, Some(dpi), &input).expect("write png");
+
+    let cancel = AtomicBool::new(false);
+    let result = run_batch_trim(
+        &[input],
+        &out,
+        BatchTrimParams {
+            trim: TrimOptions::default(),
+            format: OutputFormat::Original,
+            save_options: SaveOptions::default(),
+        },
+        &cancel,
+        |_, _| {},
+    );
+
+    assert_eq!(result.saved, 1);
+    let loaded = crate::image_load::open_image_with_icc(&out.join("scan_trimmed.png"))
+        .expect("出力の再読み込み");
+    assert_eq!(loaded.dpi, Some(dpi));
 }
 
 /// 出力形式を指定すると元の形式に関係なくその形式で保存すること

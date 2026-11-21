@@ -51,12 +51,12 @@ impl App {
     /// クリップボードの画像をバックグラウンドで読み込む
     ///
     /// 完了後は `poll_io` で元画像として設定する
-    /// 読み込み中のファイルがあっても貼り付けを優先し、その結果は破棄する
+    /// 読み込み中のファイルは、貼り付けが成功した時点で破棄する
+    /// 貼り付けが失敗した場合 (クリップボードが空など) は読み込みを継続する
     ///
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(in crate::app) fn paste_from_clipboard(&mut self, ctx: &egui::Context) {
-        self.io.abort_load();
         let request_id = self.io.load_request_id;
         self.status = "クリップボードから貼り付け中…".into();
         let ctx = ctx.clone();

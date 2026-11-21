@@ -20,8 +20,9 @@
 //! | モジュール | 責務 |
 //! | ---------- | ---- |
 //! | [`trim`] | 背景色検出・余白の矩形検出・アスペクト比の固定・切り出し |
-//! | [`image_load`] | サイズ上限付きの画像読み込み (ICC プロファイル取得・複数フレームの検出を含む) |
-//! | [`image_output`] | 出力形式の決定・画像保存 (ICC プロファイル再埋め込み)・出力パス生成 |
+//! | [`image_load`] | サイズ上限付きの画像読み込み (ICC プロファイル・解像度の取得、複数フレームの検出を含む) |
+//! | [`image_output`] | 出力形式の決定・画像保存 (ICC プロファイル・解像度の再埋め込み)・出力パス生成 |
+//! | [`dpi`] | 解像度 (DPI) の型と、PNG / JPEG / TIFF からの読み取り・書き込み |
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
 //! | [`app`] | egui ベースの GUI (`app::run`) |
@@ -31,6 +32,7 @@
 
 pub mod batch_trim;
 pub mod consts;
+pub mod dpi;
 pub mod image_load;
 pub mod image_output;
 pub mod trim;
@@ -51,6 +53,7 @@ pub mod test_helpers;
 pub use batch_trim::{
     BatchFileError, BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim,
 };
+pub use dpi::Dpi;
 pub use image_load::{
     DimensionLimitKind, LoadError, LoadedImage, check_dimensions, check_file_size, open_image,
     open_image_with_icc, validate_clipboard_rgba,

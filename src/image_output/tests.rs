@@ -8,6 +8,7 @@ use crate::consts::{
     JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, WEBP_QUALITY_DEFAULT,
     WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
+use crate::dpi::Dpi;
 use crate::image_load::open_image_with_icc;
 
 /// 左半分が完全透明、右半分が不透明な赤の RGBA 画像
@@ -41,7 +42,7 @@ fn save_image_flattens_alpha_for_jpeg() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let path = dir.join("out.jpg");
-    save_image(&half_transparent_image(), None, &path).expect("JPEG 保存");
+    save_image(&half_transparent_image(), None, None, &path).expect("JPEG 保存");
 
     // 透明だった左側は白、不透明だった右側は赤として再読み込みされる
     let reloaded = image::open(&path).expect("再読み込み").to_rgb8();
@@ -73,6 +74,7 @@ fn save_image_with_applies_jpeg_quality() {
         let path = dir.join(format!("q{quality}.jpg"));
         save_image_with(
             &img,
+            None,
             None,
             &path,
             SaveOptions {
@@ -111,6 +113,7 @@ fn save_image_with_applies_webp_quality() {
         save_image_with(
             &img,
             None,
+            None,
             &path,
             SaveOptions {
                 webp_quality: quality,
@@ -145,9 +148,15 @@ fn save_options_default_matches_save_image() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let (a, b) = (dir.join("a.jpg"), dir.join("b.jpg"));
-    save_image(&half_transparent_image(), None, &a).expect("save_image");
-    save_image_with(&half_transparent_image(), None, &b, SaveOptions::default())
-        .expect("save_image_with");
+    save_image(&half_transparent_image(), None, None, &a).expect("save_image");
+    save_image_with(
+        &half_transparent_image(),
+        None,
+        None,
+        &b,
+        SaveOptions::default(),
+    )
+    .expect("save_image_with");
     assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap());
 }
 
@@ -162,7 +171,7 @@ fn save_image_converts_16bit_for_jpeg() {
         4,
         Rgba([65535u16, 0, 0, 65535]),
     ));
-    save_image(&img, None, &path).expect("16bit 画像の JPEG 保存");
+    save_image(&img, None, None, &path).expect("16bit 画像の JPEG 保存");
     assert!(path.is_file());
 }
 
@@ -195,7 +204,7 @@ fn save_image_supports_all_formats_and_color_types() {
                 img.color(),
                 format.output_extension(Path::new(""))
             ));
-            save_image(img, None, &path)
+            save_image(img, None, None, &path)
                 .unwrap_or_else(|e| panic!("{format:?} / {:?}: {e}", img.color()));
             let reloaded = image::open(&path).expect("再読み込み");
             assert_eq!((reloaded.width(), reloaded.height()), (8, 8));
@@ -211,7 +220,7 @@ fn save_image_unknown_extension_keeps_existing_file() {
     let path = dir.join("out.xyz");
     fs::write(&path, b"keep").expect("placeholder");
 
-    let result = save_image(&half_transparent_image(), None, &path);
+    let result = save_image(&half_transparent_image(), None, None, &path);
     assert!(matches!(result, Err(SaveError::Encode(_))));
     assert_eq!(fs::read(&path).expect("read"), b"keep");
 }
@@ -224,7 +233,7 @@ fn save_image_overwrites_without_leaving_temp_file() {
     let path = dir.join("out.png");
     fs::write(&path, b"old").expect("placeholder");
 
-    save_image(&half_transparent_image(), None, &path).expect("上書き保存");
+    save_image(&half_transparent_image(), None, None, &path).expect("上書き保存");
     assert!(image::open(&path).is_ok());
     // ディレクトリには保存先のファイルだけが残る
     assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 1);
@@ -239,7 +248,7 @@ fn save_image_replace_failure_cleans_up_temp_file() {
     let path = dir.join("out.png");
     fs::create_dir(&path).expect("blocking dir");
 
-    let result = save_image(&half_transparent_image(), None, &path);
+    let result = save_image(&half_transparent_image(), None, None, &path);
     assert!(matches!(result, Err(SaveError::Io(_))));
     assert!(path.is_dir());
     assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 1);
@@ -259,7 +268,7 @@ fn save_image_embeds_icc_profile() {
     let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, Rgba([255, 0, 0, 255])));
     for ext in ["png", "jpg", "tif", "webp"] {
         let path = dir.join(format!("out.{ext}"));
-        save_image(&img, Some(&icc), &path).expect("保存");
+        save_image(&img, Some(&icc), None, &path).expect("保存");
 
         // 再読み込みで同じバイト列が取り出せる
         let loaded = open_image_with_icc(&path).expect("再読み込み");
@@ -273,7 +282,7 @@ fn save_image_without_icc_profile() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let path = dir.join("out.png");
-    save_image(&half_transparent_image(), None, &path).expect("保存");
+    save_image(&half_transparent_image(), None, None, &path).expect("保存");
     assert!(
         open_image_with_icc(&path)
             .expect("再読み込み")
@@ -288,7 +297,13 @@ fn save_image_skips_mismatched_icc_color_space() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let path = dir.join("out.jpg");
-    save_image(&half_transparent_image(), Some(&fake_icc(*b"CMYK")), &path).expect("保存");
+    save_image(
+        &half_transparent_image(),
+        Some(&fake_icc(*b"CMYK")),
+        None,
+        &path,
+    )
+    .expect("保存");
     assert!(
         open_image_with_icc(&path)
             .expect("再読み込み")
@@ -303,7 +318,13 @@ fn save_image_skips_gray_icc_after_rgb_conversion() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let path = dir.join("out.jpg");
-    save_image(&half_transparent_image(), Some(&fake_icc(*b"GRAY")), &path).expect("保存");
+    save_image(
+        &half_transparent_image(),
+        Some(&fake_icc(*b"GRAY")),
+        None,
+        &path,
+    )
+    .expect("保存");
     assert!(
         open_image_with_icc(&path)
             .expect("再読み込み")
@@ -326,7 +347,7 @@ fn save_image_keeps_gray_icc_for_grayscale_jpeg() {
     ];
     for img in &images {
         let path = dir.join(format!("{:?}.jpg", img.color()));
-        save_image(img, Some(&icc), &path).expect("JPEG 保存");
+        save_image(img, Some(&icc), None, &path).expect("JPEG 保存");
 
         // 8bit グレースケールとして保存され、プロファイルも埋め込まれる
         let loaded = open_image_with_icc(&path).expect("再読み込み");
@@ -350,7 +371,7 @@ fn save_image_flattens_gray_alpha_for_jpeg() {
     let img = DynamicImage::ImageLumaA8(image::ImageBuffer::from_fn(8, 8, |x, _| {
         LumaA([0, if x < 4 { 0 } else { 255 }])
     }));
-    save_image(&img, None, &path).expect("JPEG 保存");
+    save_image(&img, None, None, &path).expect("JPEG 保存");
 
     let reloaded = image::open(&path).expect("再読み込み").to_luma8();
     let left = reloaded.get_pixel(1, 4).0[0];
@@ -365,7 +386,13 @@ fn save_image_ignores_icc_for_unsupported_format() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let path = dir.join("out.bmp");
-    save_image(&half_transparent_image(), Some(&fake_icc(*b"RGB ")), &path).expect("保存");
+    save_image(
+        &half_transparent_image(),
+        Some(&fake_icc(*b"RGB ")),
+        None,
+        &path,
+    )
+    .expect("保存");
     assert!(path.is_file());
 }
 // ======================================================================
@@ -377,7 +404,8 @@ fn save_unique_uses_base_name_when_not_exists() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let (path, renamed) =
-        save_image_unique(&half_transparent_image(), None, dir, "photo", "png").expect("保存");
+        save_image_unique(&half_transparent_image(), None, None, dir, "photo", "png")
+            .expect("保存");
     assert_eq!(path, dir.join("photo.png"));
     assert!(!renamed);
     assert!(path.is_file());
@@ -392,7 +420,8 @@ fn save_unique_appends_suffix_without_overwriting() {
     fs::write(&existing, b"x").expect("placeholder");
 
     let (path, renamed) =
-        save_image_unique(&half_transparent_image(), None, dir, "photo", "png").expect("保存");
+        save_image_unique(&half_transparent_image(), None, None, dir, "photo", "png")
+            .expect("保存");
     assert_eq!(path, dir.join("photo_2.png"));
     assert!(renamed);
     // 既存ファイルの内容は変わらない
@@ -405,8 +434,8 @@ fn save_unique_leaves_no_temp_file() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let img = half_transparent_image();
-    save_image_unique(&img, None, dir, "photo", "png").expect("1 回目");
-    save_image_unique(&img, None, dir, "photo", "png").expect("2 回目");
+    save_image_unique(&img, None, None, dir, "photo", "png").expect("1 回目");
+    save_image_unique(&img, None, None, dir, "photo", "png").expect("2 回目");
 
     let mut names: Vec<_> = fs::read_dir(dir)
         .expect("read_dir")
@@ -424,21 +453,73 @@ fn save_trimmed_output_names_and_suffixes() {
     let src = Path::new("in/photo.JPG");
 
     let (first, renamed_first) =
-        save_trimmed_output(&img, None, src, dir, OutputFormat::Original).expect("1 回目");
+        save_trimmed_output(&img, None, None, src, dir, OutputFormat::Original).expect("1 回目");
     assert_eq!(first, dir.join("photo_trimmed.jpg"));
     assert!(!renamed_first);
 
     let (second, renamed_second) =
-        save_trimmed_output(&img, None, src, dir, OutputFormat::Original).expect("2 回目");
+        save_trimmed_output(&img, None, None, src, dir, OutputFormat::Original).expect("2 回目");
     assert_eq!(second, dir.join("photo_trimmed_2.jpg"));
     assert!(renamed_second);
 
     // 形式を指定すると元の拡張子に関係なくその形式で保存する
     let (webp, _) =
-        save_trimmed_output(&img, None, src, dir, OutputFormat::Webp).expect("WebP 保存");
+        save_trimmed_output(&img, None, None, src, dir, OutputFormat::Webp).expect("WebP 保存");
     assert_eq!(webp, dir.join("photo_trimmed.webp"));
     assert_eq!(
         ImageFormat::from_path(&webp).expect("形式"),
         image::guess_format(&fs::read(&webp).expect("read")).expect("推定")
     );
+}
+
+// ======================================================================
+// 解像度 (DPI)
+// ======================================================================
+/// PNG / JPEG / TIFF で保存すると解像度が書き込まれ、再読み込みで同じ値を得られること
+#[test]
+fn save_image_embeds_dpi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dpi = Dpi::new(300.0, 600.0).unwrap();
+    let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(16, 16, Rgba([255, 0, 0, 255])));
+    for ext in ["png", "jpg", "tif"] {
+        let path = tmp.path().join(format!("out.{ext}"));
+        save_image(&img, None, Some(dpi), &path).expect("保存");
+        let loaded = open_image_with_icc(&path).expect("再読み込み");
+        assert_eq!(loaded.dpi, Some(dpi), "{ext}");
+    }
+}
+
+/// 解像度と ICC プロファイルを同時に指定しても両方が残ること
+#[test]
+fn save_image_keeps_dpi_with_icc_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dpi = Dpi::new(300.0, 300.0).unwrap();
+    let icc = fake_icc(*b"RGB ");
+    let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, Rgba([255, 0, 0, 255])));
+    for ext in ["png", "jpg", "tif"] {
+        let path = tmp.path().join(format!("out.{ext}"));
+        save_image(&img, Some(&icc), Some(dpi), &path).expect("保存");
+        let loaded = open_image_with_icc(&path).expect("再読み込み");
+        assert_eq!(loaded.dpi, Some(dpi), "{ext}");
+        assert_eq!(loaded.icc_profile.as_deref(), Some(icc.as_slice()), "{ext}");
+    }
+}
+
+/// 解像度未指定なら書き込まず、記録のない形式でもエラーにならないこと
+#[test]
+fn save_image_without_dpi_or_unsupported_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dpi = Dpi::new(300.0, 300.0).unwrap();
+    let img = half_transparent_image();
+
+    let png = tmp.path().join("plain.png");
+    save_image(&img, None, None, &png).expect("保存");
+    assert_eq!(open_image_with_icc(&png).unwrap().dpi, None);
+
+    // WebP / BMP / GIF には書き込まない
+    for ext in ["webp", "bmp", "gif"] {
+        let path = tmp.path().join(format!("out.{ext}"));
+        save_image(&img, None, Some(dpi), &path).expect("保存");
+        assert_eq!(open_image_with_icc(&path).unwrap().dpi, None, "{ext}");
+    }
 }

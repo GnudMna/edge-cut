@@ -1,6 +1,6 @@
 //! 保存形式に合わせた画像のエンコード
 //!
-//! JPEG の透過合成、エンコーダ非対応のカラータイプの変換、ICC プロファイルの再埋め込み、
+//! JPEG の透過合成、エンコーダ非対応のカラータイプの変換、ICC プロファイルと解像度の再埋め込み、
 //! WebP のロスレス / ロッシーの切り替えを担う。
 
 use std::borrow::Cow;
@@ -18,6 +18,7 @@ use image::{
 use super::save::SaveOptions;
 use super::webp_lossy::encode_lossy;
 use crate::consts::{JPEG_FLATTEN_BACKGROUND, WEBP_QUALITY_MAX};
+use crate::dpi::{Dpi, embed_png, embed_tiff};
 
 // ======================================================================
 // エンコード
@@ -26,9 +27,11 @@ use crate::consts::{JPEG_FLATTEN_BACKGROUND, WEBP_QUALITY_MAX};
 ///
 /// ICC プロファイルを埋め込める形式はエンコーダを直接生成して設定する
 /// それ以外の形式は `DynamicImage::write_to` に任せ、プロファイルは破棄する
+/// 解像度は JPEG ではエンコーダへ設定し、PNG / TIFF ではエンコード後のバイト列へ書き足す
 pub(super) fn encode_image(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
+    dpi: Option<Dpi>,
     format: ImageFormat,
     options: SaveOptions,
 ) -> Result<Vec<u8>, ImageError> {
@@ -41,8 +44,11 @@ pub(super) fn encode_image(
     };
     match format {
         ImageFormat::Jpeg => {
-            let encoder =
+            let mut encoder =
                 JpegEncoder::new_with_quality(&mut cursor, options.clamped_jpeg_quality());
+            if let Some(dpi) = dpi {
+                encoder.set_pixel_density(dpi.to_jpeg_density());
+            }
             write_with_icc(&img, icc_profile, encoder)?;
         }
         ImageFormat::Png => write_with_icc(&img, icc_profile, PngEncoder::new(&mut cursor))?,
@@ -53,11 +59,25 @@ pub(super) fn encode_image(
             if quality >= WEBP_QUALITY_MAX {
                 write_with_icc(&img, icc_profile, WebPEncoder::new_lossless(&mut cursor))?;
             } else {
+                // libwebp は RGB / RGBA のみ受け付けるため、グレースケールは RGB 化する
+                // (RGB 画像に GRAY のプロファイルは付けられないため、プロファイルは外れる)
+                let img = match img.color() {
+                    ColorType::L8 => Cow::Owned(DynamicImage::ImageRgb8(img.to_rgb8())),
+                    ColorType::La8 => Cow::Owned(DynamicImage::ImageRgba8(img.to_rgba8())),
+                    _ => img,
+                };
                 let icc = icc_profile.filter(|icc| icc_matches_color(icc, &img));
                 return encode_lossy(&img, icc, quality);
             }
         }
         _ => img.write_to(&mut cursor, format)?,
+    }
+    if let Some(dpi) = dpi {
+        match format {
+            ImageFormat::Png => embed_png(&mut buf, dpi),
+            ImageFormat::Tiff => embed_tiff(&mut buf, dpi),
+            _ => {}
+        }
     }
     Ok(buf)
 }
@@ -97,8 +117,9 @@ fn icc_matches_color(icc: &[u8], img: &DynamicImage) -> bool {
 
 /// JPEG 以外のエンコーダが受け付けるカラータイプへ変換する
 ///
-/// PNG / TIFF は 16bit までそのまま保存し、それ以外の形式と未対応のカラータイプは
-/// 8bit RGB / RGBA に変換する
+/// PNG / TIFF は 16bit までそのまま保存し (TIFF は 32bit float も保存する)、
+/// 未対応のカラータイプは元のチャンネル幅に応じて 16bit か 8bit の RGB / RGBA に変換する
+/// BMP / WebP は 8bit グレースケールも維持し、それ以外の形式は 8bit RGB / RGBA に変換する
 fn to_encoder_compatible(img: &DynamicImage, format: ImageFormat) -> Cow<'_, DynamicImage> {
     let supported = match format {
         ImageFormat::Png => matches!(
@@ -120,15 +141,29 @@ fn to_encoder_compatible(img: &DynamicImage, format: ImageFormat) -> Cow<'_, Dyn
                 | ColorType::L16
                 | ColorType::Rgb16
                 | ColorType::Rgba16
+                | ColorType::Rgb32F
+                | ColorType::Rgba32F
+        ),
+        // BMP エンコーダとロスレス WebP エンコーダは 8bit グレースケールも直接書ける
+        // (ロッシー WebP は呼び出し側で RGB / RGBA に変換する)
+        ImageFormat::Bmp | ImageFormat::WebP => matches!(
+            img.color(),
+            ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8
         ),
         _ => matches!(img.color(), ColorType::Rgb8 | ColorType::Rgba8),
     };
     if supported {
         Cow::Borrowed(img)
-    } else if img.color().has_alpha() {
-        Cow::Owned(DynamicImage::ImageRgba8(img.to_rgba8()))
     } else {
-        Cow::Owned(DynamicImage::ImageRgb8(img.to_rgb8()))
+        // 8bit を超えるチャンネル幅は PNG / TIFF のみ 16bit を維持する
+        let keep_16bit = matches!(format, ImageFormat::Png | ImageFormat::Tiff)
+            && img.color().bytes_per_pixel() / img.color().channel_count() > 1;
+        Cow::Owned(match (img.color().has_alpha(), keep_16bit) {
+            (true, true) => DynamicImage::ImageRgba16(img.to_rgba16()),
+            (true, false) => DynamicImage::ImageRgba8(img.to_rgba8()),
+            (false, true) => DynamicImage::ImageRgb16(img.to_rgb16()),
+            (false, false) => DynamicImage::ImageRgb8(img.to_rgb8()),
+        })
     }
 }
 
@@ -190,5 +225,69 @@ mod tests {
         assert_eq!(blend_over(0, 255, 0), 255);
         assert_eq!(blend_over(0, 255, 255), 0);
         assert_eq!(blend_over(0, 255, 128), 127);
+    }
+
+    /// 16bit グレー+アルファと 32bit float が PNG / TIFF で 8bit に落ちないこと
+    #[test]
+    fn high_bit_depth_is_kept_for_png_and_tiff() {
+        let la16 = DynamicImage::ImageLumaA16(image::ImageBuffer::new(2, 2));
+        let rgb32f = DynamicImage::ImageRgb32F(image::ImageBuffer::new(2, 2));
+
+        // TIFF: La16 は Rgba16、32bit float はそのまま
+        assert_eq!(
+            to_encoder_compatible(&la16, ImageFormat::Tiff).color(),
+            ColorType::Rgba16
+        );
+        assert_eq!(
+            to_encoder_compatible(&rgb32f, ImageFormat::Tiff).color(),
+            ColorType::Rgb32F
+        );
+        // PNG: 32bit float は Rgb16
+        assert_eq!(
+            to_encoder_compatible(&rgb32f, ImageFormat::Png).color(),
+            ColorType::Rgb16
+        );
+        // それ以外の形式は 8bit
+        assert_eq!(
+            to_encoder_compatible(&rgb32f, ImageFormat::WebP).color(),
+            ColorType::Rgb8
+        );
+    }
+
+    /// 8bit グレースケールが BMP / ロスレス WebP で RGB 化されず、GIF では RGB 系になること
+    #[test]
+    fn gray8_is_kept_for_bmp_and_webp() {
+        let gray = DynamicImage::ImageLuma8(GrayImage::new(2, 2));
+        for format in [ImageFormat::Bmp, ImageFormat::WebP] {
+            assert_eq!(to_encoder_compatible(&gray, format).color(), ColorType::L8);
+        }
+        assert_eq!(
+            to_encoder_compatible(&gray, ImageFormat::Gif).color(),
+            ColorType::Rgb8
+        );
+    }
+
+    /// グレースケール画像の GRAY プロファイルがロスレス WebP に残り、BMP はグレーで書けること
+    #[test]
+    fn gray_icc_survives_lossless_webp() {
+        use image::ImageDecoder;
+        use image::codecs::webp::WebPDecoder;
+
+        let mut icc = vec![0u8; 128];
+        icc[16..20].copy_from_slice(b"GRAY");
+        let gray = DynamicImage::ImageLuma8(GrayImage::from_pixel(4, 4, Luma([90])));
+
+        let options = SaveOptions::default();
+        let webp_options = SaveOptions {
+            webp_quality: WEBP_QUALITY_MAX,
+            ..options
+        };
+        let bytes = encode_image(&gray, Some(&icc), None, ImageFormat::WebP, webp_options).unwrap();
+        let mut decoder = WebPDecoder::new(Cursor::new(&bytes)).unwrap();
+        assert_eq!(decoder.icc_profile().unwrap(), Some(icc.clone()));
+
+        // BMP は 8bit グレーのまま書けること (ヘッダのビット深度で確認する)
+        let bmp = encode_image(&gray, None, None, ImageFormat::Bmp, options).unwrap();
+        assert_eq!(u16::from_le_bytes([bmp[28], bmp[29]]), 8);
     }
 }

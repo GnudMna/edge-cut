@@ -40,6 +40,7 @@ impl App {
             original,
             info,
             icc_profile: self.image.icc_profile.clone(),
+            dpi: self.image.dpi,
             ext,
         };
         let file_name = image_output::trimmed_file_name(&source, format);
@@ -73,8 +74,14 @@ impl App {
         let options = self.save_options();
         self.spawn_save(ctx, SaveKind::Manual, move || {
             let img = apply_trim(&request.original, &request.info);
-            image_output::save_image_with(&img, request.icc_profile.as_deref(), &path, options)
-                .map_err(|e| e.to_string())?;
+            image_output::save_image_with(
+                &img,
+                request.icc_profile.as_deref(),
+                request.dpi,
+                &path,
+                options,
+            )
+            .map_err(|e| e.to_string())?;
             Ok(path)
         });
     }
@@ -96,7 +103,8 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(super) fn auto_save_if_enabled(&mut self, ctx: &egui::Context) {
-        if !self.prefs.auto_save {
+        // 更新の適用中は手動保存と同じく書き込みを始めない (自動実行のためステータスは変えない)
+        if !self.prefs.auto_save || self.update.is_applying() {
             return;
         }
         let Some((original, info)) = self.current_trim_target() else {
@@ -118,6 +126,7 @@ impl App {
         }
         self.io.last_auto_save = Some(key);
         let icc_profile = self.image.icc_profile.clone();
+        let dpi = self.image.dpi;
         let source = self.image.source_name.clone().unwrap_or_default();
         let options = self.save_options();
         self.spawn_save(ctx, SaveKind::Auto, move || {
@@ -126,6 +135,7 @@ impl App {
             let (path, _) = image_output::save_trimmed_output_with(
                 &img,
                 icc_profile.as_deref(),
+                dpi,
                 &source,
                 &dir,
                 format,
@@ -248,7 +258,7 @@ mod tests {
     use crate::app::actions::test_helpers::{
         poll_io_until, poll_trim_until_idle, trimmed_image_state,
     };
-    use crate::app::state::{App, ImageState, SaveKind, Settings};
+    use crate::app::state::{App, ImageState, SaveKind, Settings, UpdateUiPhase};
     use crate::image_output::OutputFormat;
 
     // ======================================================================
@@ -271,6 +281,31 @@ mod tests {
         // 保存スレッドを起動しないこと
         assert!(!app.io.is_saving());
         assert_eq!(app.status, status_before);
+    }
+
+    /// `auto_save_if_enabled()` が更新の適用中に保存を開始しないこと
+    #[test]
+    fn auto_save_skips_while_updating() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: tmp.path().to_path_buf(),
+                ..Settings::default()
+            },
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.update.phase = UpdateUiPhase::MsiStarted;
+        let status_before = app.status.clone();
+
+        app.auto_save_if_enabled(&ctx);
+
+        // 保存スレッドを起動せず、ステータスも変えないこと
+        assert!(!app.io.is_saving());
+        assert_eq!(app.status, status_before);
+        assert!(app.io.last_auto_save.is_none());
     }
 
     /// `auto_save_if_enabled()` がトリミング後の画像がない場合に何もしないこと

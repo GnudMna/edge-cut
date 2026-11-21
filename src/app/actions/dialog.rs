@@ -191,6 +191,7 @@ mod tests {
             original: state.original.clone().unwrap(),
             info: state.info.unwrap(),
             icc_profile: None,
+            dpi: None,
             ext: "png".into(),
         };
 
@@ -220,6 +221,7 @@ mod tests {
             original: state.original.clone().unwrap(),
             info: state.info.unwrap(),
             icc_profile: None,
+            dpi: None,
             ext: "png".into(),
         };
 
