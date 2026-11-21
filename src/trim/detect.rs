@@ -10,7 +10,7 @@ use super::background::detect_background_with;
 use super::options::TrimOptions;
 use super::types::{TrimBounds, TrimInfo};
 use crate::consts::{
-    ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, TOL_MAX, TOL_SCALE_DENOM,
+    ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, PADDING_MAX, TOL_MAX, TOL_SCALE_DENOM,
     TRIM_PARALLEL_MIN_PIXELS, TRIM_ROW_BLOCK_PIXELS,
 };
 
@@ -126,7 +126,7 @@ fn raw_pixel<T: Copy + Default, const N: usize>(raw: &[T], w: u32, x: u32, y: u3
 /// 16bit の成分を 8bit へ丸めて変換する
 ///
 /// `image` クレートの `DynamicImage::get_pixel` と同じ `round(c * 255 / 65535)` になる
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, reason = "結果は 255 以下に収まる")]
 pub(super) fn u16_to_u8(c: u16) -> u8 {
     // 最大でも (65535 + 128) / 257 = 255 に収まる
     ((u32::from(c) + 128) / 257) as u8
@@ -135,7 +135,11 @@ pub(super) fn u16_to_u8(c: u16) -> u8 {
 /// 浮動小数点の成分 (0.0–1.0) を 8bit へ丸めて変換する
 ///
 /// 範囲外は 0.0–1.0 に丸め、NaN は白 (1.0) として扱う。`image` クレートの変換に合わせる
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "0.0–1.0 に丸めた値なので 0–255 に収まる"
+)]
 pub(super) fn f32_to_u8(c: f32) -> u8 {
     let clamped = if c < 1.0 { c.max(0.0) } else { 1.0 };
     // clamped は 0.0–1.0 なので 0–255 に収まる
@@ -317,11 +321,12 @@ fn full_rect(w: u32, h: u32) -> Rect {
 ///
 /// 除去しない辺は元画像の端を使い、余白も加えない
 /// 余白により元画像の端を越える分は、範囲外の矩形として残す
+/// 公開 API から上限を超える余白が渡されても、`PADDING_MAX` に収めて巨大な確保を防ぐ
 fn content_rect(bounds: &ContentBounds, w: u32, h: u32, opts: &TrimOptions) -> Rect {
     let (m, sides) = (opts.margins, opts.sides);
     let edge = |enabled: bool, content: u32, margin: u32, image_edge: u32, sign: i64| -> i64 {
         if enabled {
-            i64::from(content) + sign * i64::from(margin)
+            i64::from(content) + sign * i64::from(margin.min(PADDING_MAX))
         } else {
             i64::from(image_edge)
         }
@@ -370,6 +375,7 @@ mod tests {
 
     use super::*;
     use crate::test_helpers::bordered_rgba;
+    use crate::trim::options::Margins;
     use crate::trim::trim;
 
     /// `detect_trim` が `trim` と同じ矩形と背景色を返すこと
@@ -399,6 +405,26 @@ mod tests {
             ),
             (4, 3, 1, 1)
         );
+    }
+
+    /// 上限を超える余白は `PADDING_MAX` に収めて矩形を求めること
+    ///
+    /// `u32::MAX` を渡しても巨大な確保にならず、上限値を指定した場合と同じ結果になる
+    #[test]
+    fn detect_trim_clamps_margins_to_padding_max() {
+        let img = bordered_rgba(20, 16, 3, [255, 255, 255, 255], [0, 0, 255, 255]);
+        let clamped = detect_trim_with_options(
+            &img,
+            &TrimOptions {
+                margins: Margins::uniform(u32::MAX),
+                ..TrimOptions::new(0, 0, None)
+            },
+        );
+        let expected = detect_trim(&img, 0, PADDING_MAX, None);
+        assert_eq!(clamped, expected);
+        // 内容 (14x10) の四辺に PADDING_MAX ずつ足した大きさになる
+        assert_eq!(clamped.info.trim_w, 14 + PADDING_MAX * 2);
+        assert_eq!(clamped.info.trim_h, 10 + PADDING_MAX * 2);
     }
 
     /// 各色形式で RGBA8 へ一括変換した画像と同じ矩形・背景色を返すこと

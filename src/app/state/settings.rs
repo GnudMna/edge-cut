@@ -26,8 +26,10 @@ pub(in crate::app) const SETTINGS_KEY: &str = "settings";
 /// 残りの設定を読み込める
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-// 独立した ON/OFF の設定項目であり、状態の組み合わせではない
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "独立した ON/OFF の設定項目であり、状態の組み合わせではない"
+)]
 pub(in crate::app) struct Settings {
     /// 余白検出の許容度 (0–100)
     pub tolerance: u32,

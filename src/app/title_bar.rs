@@ -3,7 +3,7 @@
 //! OS 標準のタイトルバーの背景色と文字色を、アプリのテーマ色へ合わせる
 //! Win32 API の呼び出しを含むため、このモジュールだけ `unsafe_code` を許可する
 
-#![allow(unsafe_code)]
+#![expect(unsafe_code, reason = "Win32 API の呼び出しに unsafe が必要なため")]
 
 use std::ffi::c_void;
 

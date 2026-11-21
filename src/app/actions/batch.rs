@@ -29,8 +29,8 @@ impl App {
         if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
-        self.spawn_dialog(ctx, || {
-            let paths = rfd::FileDialog::new()
+        self.spawn_dialog(ctx, |dialog| {
+            let paths = dialog
                 .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
                 .pick_files();
             DialogResult::BatchInputs(paths)
@@ -54,10 +54,8 @@ impl App {
         if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
-        self.spawn_dialog(ctx, move || {
-            let dir = rfd::FileDialog::new()
-                .set_title("保存先フォルダを選択")
-                .pick_folder();
+        self.spawn_dialog(ctx, move |dialog| {
+            let dir = dialog.set_title("保存先フォルダを選択").pick_folder();
             DialogResult::BatchOutput {
                 paths,
                 skipped,

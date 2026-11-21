@@ -14,7 +14,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱う) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
 | `src/app/` | egui GUI (下表) |
-| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用 (結合テストは `tests.rs`) |
+| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用 (下表) |
 | `src/test_helpers.rs` | `#[cfg(test)]` 限定。`tests/common/images.rs` を `include!` してユニットテストと画像生成ヘルパーを共有 |
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
 | `docs/user/` | 利用者向けドキュメント (mdBook の原稿)。`scripts/common/build-user-docs.ps1` が HTML 化して MSI の `docs\` に同梱する |
@@ -67,6 +67,20 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `image_convert` | プレビュー用テクスチャ変換。長辺が上限を超える画像の縮小と、RGB の ICC プロファイルから sRGB への色変換 (`moxcms`) を行う |
 | `fonts/` / `icon` | フォント (`loader` / `registry`)・アイコンの読み込み |
 | `title_bar` | タイトルバーの色を `theme` の配色に合わせる (`unsafe_code` を許可する唯一のモジュール) |
+
+`src/update/` の構成:
+
+| パス | 責務 |
+| :--- | :--- |
+| `check` | version API の取得・SemVer の比較・アセットの選択 |
+| `apply` | アセットのダウンロードと検証・`msiexec` の起動・過去の版の作業フォルダの削除 |
+| `verify` | アセット名・宣言サイズ・digest の検証と、サイズ上限付きのダウンロード・SHA-256 の照合 |
+| `signature` | minisign 署名の検証 (ビルド時に埋め込んだ公開鍵・信頼コメントの照合) |
+| `http` | 全リクエストにタイムアウトを設定した HTTP クライアント |
+| `types` | version API のレスポンス・`AvailableUpdate`・確認と適用の結果 |
+| `error` | `UpdateError` (利用者向けの文言は `Display` に集約) |
+| `mod` | bridge の URL・リリース元・ダウンロードキー (`EDGE_CUT_KEY`) の定義と再エクスポート |
+| `tests` | ローカルの HTTP サーバーを使う更新フローの結合テスト |
 
 ## 設計方針
 

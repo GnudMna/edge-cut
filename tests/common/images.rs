@@ -11,7 +11,6 @@ use image::{DynamicImage, Rgba, RgbaImage};
 ///
 /// # Returns
 /// * `DynamicImage` - 生成した RGBA8 画像
-#[allow(clippy::missing_panics_doc, clippy::must_use_candidate, dead_code)]
 pub fn solid_rgba(w: u32, h: u32, color: [u8; 4]) -> DynamicImage {
     let buf: Vec<u8> = std::iter::repeat_n(color, (w * h) as usize)
         .flatten()
@@ -30,7 +29,6 @@ pub fn solid_rgba(w: u32, h: u32, color: [u8; 4]) -> DynamicImage {
 ///
 /// # Returns
 /// * `DynamicImage` - 生成した RGBA8 画像
-#[allow(clippy::missing_panics_doc, clippy::must_use_candidate)]
 pub fn bordered_rgba(w: u32, h: u32, border: u32, bg: [u8; 4], fg: [u8; 4]) -> DynamicImage {
     let mut img = RgbaImage::new(w, h);
     for y in 0..h {

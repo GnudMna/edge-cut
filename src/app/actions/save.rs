@@ -43,8 +43,8 @@ impl App {
             ext,
         };
         let file_name = image_output::trimmed_file_name(&source, format);
-        self.spawn_dialog(ctx, move || {
-            let mut dialog = rfd::FileDialog::new().set_file_name(file_name);
+        self.spawn_dialog(ctx, move |dialog| {
+            let mut dialog = dialog.set_file_name(file_name);
             for f in save_dialog_formats(OutputFormat::from_extension(&request.ext)) {
                 dialog = dialog.add_filter(f.label(), f.extensions());
             }
@@ -149,8 +149,8 @@ impl App {
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(in crate::app) fn pick_auto_save_dir(&mut self, ctx: &egui::Context) {
         let current = self.prefs.auto_save_dir.clone();
-        self.spawn_dialog(ctx, move || {
-            let dir = rfd::FileDialog::new().set_directory(current).pick_folder();
+        self.spawn_dialog(ctx, move |dialog| {
+            let dir = dialog.set_directory(current).pick_folder();
             DialogResult::AutoSaveDir(dir)
         });
     }

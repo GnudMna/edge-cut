@@ -211,7 +211,10 @@ impl Pen<'_> {
     }
 
     /// 上端から反時計回りに `turns` 周分の円弧
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "分割数 (24) は f32 で正確に表せる"
+    )]
     fn arc(&self, center: (f32, f32), radius: f32, turns: f32) {
         const SEGMENTS: usize = 24;
         let center = self.pos(center);

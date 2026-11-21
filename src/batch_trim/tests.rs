@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::runner::{run_batch_trim_with_workers, run_batch_with};
+use super::runner::{estimate_peak_bytes, run_batch_trim_with_workers, run_batch_with};
 use super::*;
 use crate::image_output::{OutputFormat, SaveOptions};
 use crate::test_helpers::bordered_rgba;
@@ -35,6 +35,35 @@ fn default_params() -> BatchTrimParams {
         format: OutputFormat::Original,
         save_options: SaveOptions::default(),
     }
+}
+
+// ======================================================================
+// メモリ見積もり
+// ======================================================================
+/// 出力が元画像以下のときは、デコード後のバイト数の 3 倍の見積もりになること
+#[test]
+fn peak_estimate_for_smaller_output_is_three_times_decoded() {
+    assert_eq!(estimate_peak_bytes(1000, 400), 3000);
+    assert_eq!(estimate_peak_bytes(1000, 1000), 3000);
+}
+
+/// 余白の追加で出力が大きくなる場合は、出力側の分を見積もりに含むこと
+///
+/// 100x100 の RGBA8 画像が 64MP の出力に広がる例
+#[test]
+fn peak_estimate_includes_extended_output() {
+    let decoded = 100 * 100 * 4;
+    let output = 64_000_000 * 4;
+    let peak = estimate_peak_bytes(decoded, output);
+
+    assert_eq!(peak, output * 3);
+    assert!(peak > decoded * 3);
+}
+
+/// 見積もりの計算がオーバーフローせず飽和すること
+#[test]
+fn peak_estimate_saturates_on_overflow() {
+    assert_eq!(estimate_peak_bytes(u64::MAX, u64::MAX), u64::MAX);
 }
 
 // ======================================================================

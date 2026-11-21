@@ -19,8 +19,8 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(in crate::app) fn open_image(&mut self, ctx: &egui::Context) {
-        self.spawn_dialog(ctx, || {
-            let path = rfd::FileDialog::new()
+        self.spawn_dialog(ctx, |dialog| {
+            let path = dialog
                 .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
                 .pick_file();
             DialogResult::OpenImage(path)

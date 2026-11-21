@@ -3,6 +3,7 @@
 use std::thread;
 
 use eframe::egui;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::app::state::{App, DialogResult, IoMsg};
 use crate::panic_message::catch_panic;
@@ -11,31 +12,46 @@ use crate::panic_message::catch_panic;
 // ファイルダイアログ
 // ======================================================================
 impl App {
+    /// ファイルダイアログの親ウィンドウを設定する
+    ///
+    /// 親を指定したダイアログはモーダルになり、親ウィンドウの裏に隠れない
+    ///
+    /// # Arguments
+    /// * `parent` - ダイアログの親にするウィンドウ (アプリのメインウィンドウ)
+    pub(in crate::app) fn set_dialog_parent<W>(&mut self, parent: &W)
+    where
+        W: HasWindowHandle + HasDisplayHandle,
+    {
+        self.io.dialog_template = rfd::FileDialog::new().set_parent(parent);
+    }
+
     /// ファイルダイアログを別スレッドで開き、閉じられたときに結果を `IoMsg::DialogClosed` で通知する
     ///
     /// UI スレッドをブロックしないため、ダイアログ表示中も描画とワーカー結果の取り込みが続く
     /// 別のダイアログを表示中は開かない。結果は `poll_io` で処理する
+    /// `job` にはメインウィンドウを親に設定したダイアログを渡し、ダイアログがウィンドウの裏に隠れないようにする
     ///
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    /// * `job` - ダイアログを開いて結果を返す処理
+    /// * `job` - 渡されたダイアログを開いて結果を返す処理
     ///
     /// # Returns
     /// * `bool` - ダイアログを開始した場合は `true`、別のダイアログを表示中で見送った場合は `false`
     pub(super) fn spawn_dialog<F>(&mut self, ctx: &egui::Context, job: F) -> bool
     where
-        F: FnOnce() -> DialogResult + Send + 'static,
+        F: FnOnce(rfd::FileDialog) -> DialogResult + Send + 'static,
     {
         if self.io.dialog_open {
             self.status = "ファイルダイアログを表示中です".into();
             return false;
         }
         self.io.dialog_open = true;
+        let dialog = self.io.dialog_template.clone();
         let tx = self.io.tx.clone();
         let ctx_clone = ctx.clone();
         thread::spawn(move || {
             // panic しても表示中の状態が残らないよう、失敗として結果を通知する
-            let result = catch_panic(job).unwrap_or_else(|msg| {
+            let result = catch_panic(|| job(dialog)).unwrap_or_else(|msg| {
                 DialogResult::Failed(format!("ファイルダイアログでエラーが発生しました: {msg}"))
             });
             let _ = tx.send(IoMsg::DialogClosed(result));

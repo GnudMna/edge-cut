@@ -39,6 +39,15 @@ impl MemoryBudget {
     /// * `MemoryPermit` - 破棄時 (panic による巻き戻しを含む) に確保分を返却する許可
     pub(super) fn acquire(&self, bytes: u64) -> MemoryPermit<'_> {
         let bytes = bytes.min(self.capacity);
+        self.wait_and_take(bytes);
+        MemoryPermit {
+            budget: self,
+            bytes,
+        }
+    }
+
+    /// `bytes` (予算全体以下) を確保できるまで待ち、未確保のバイト数から差し引く
+    fn wait_and_take(&self, bytes: u64) {
         // 保護対象は数値 1 つで、panic 後も不整合にならない
         let mut available = self
             .released
@@ -50,10 +59,6 @@ impl MemoryBudget {
             )
             .unwrap_or_else(PoisonError::into_inner);
         *available -= bytes;
-        MemoryPermit {
-            budget: self,
-            bytes,
-        }
     }
 }
 
@@ -63,6 +68,42 @@ pub(super) struct MemoryPermit<'a> {
     budget: &'a MemoryBudget,
     /// 確保したバイト数
     bytes: u64,
+}
+
+impl MemoryPermit<'_> {
+    /// 確保量を `bytes` まで増やす
+    ///
+    /// 現在の確保量以下の場合は何もしない。予算全体を超える要求は予算全体に切り詰める
+    /// 差額を直ちに確保できれば保持したまま増やす
+    /// 確保できない場合は、保持分をいったん返却してから `bytes` 全体を確保し直す
+    /// (許可を保持したまま待つと、複数のワーカーが互いに待ち合ってデッドロックするため)
+    ///
+    /// # Arguments
+    /// * `bytes` - 増やした後の確保量
+    pub(super) fn grow_to(&mut self, bytes: u64) {
+        let budget = self.budget;
+        let bytes = bytes.min(budget.capacity);
+        if bytes <= self.bytes {
+            return;
+        }
+        {
+            let mut available = budget
+                .available
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let extra = bytes - self.bytes;
+            if *available >= extra {
+                *available -= extra;
+                self.bytes = bytes;
+                return;
+            }
+            *available += self.bytes;
+            self.bytes = 0;
+        }
+        budget.released.notify_all();
+        budget.wait_and_take(bytes);
+        self.bytes = bytes;
+    }
 }
 
 impl Drop for MemoryPermit<'_> {
@@ -124,6 +165,51 @@ mod tests {
         assert_eq!(*budget.available.lock().unwrap(), 0);
         // 破棄すると全額が返却される
         drop(permit);
+        assert_eq!(*budget.available.lock().unwrap(), 100);
+    }
+
+    /// 空きがあれば保持したまま差額だけ追加で確保し、確保量を減らす要求は無視すること
+    #[test]
+    fn memory_permit_grow_takes_only_the_difference() {
+        let budget = MemoryBudget::new(100);
+        let mut permit = budget.acquire(30);
+
+        permit.grow_to(50);
+        assert_eq!(permit.bytes, 50);
+        assert_eq!(*budget.available.lock().unwrap(), 50);
+
+        // 小さい値への変更は確保量を変えない
+        permit.grow_to(10);
+        assert_eq!(permit.bytes, 50);
+
+        // 予算全体を超える要求は予算全体に切り詰める
+        permit.grow_to(u64::MAX);
+        assert_eq!(permit.bytes, 100);
+        assert_eq!(*budget.available.lock().unwrap(), 0);
+
+        drop(permit);
+        assert_eq!(*budget.available.lock().unwrap(), 100);
+    }
+
+    /// 空きが足りない状態で増やそうとする複数のワーカーがデッドロックしないこと
+    #[test]
+    fn memory_permit_grow_does_not_deadlock() {
+        let budget = MemoryBudget::new(100);
+
+        thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..5 {
+                        // 4 つの許可で予算の全体を使い切り、全員が増やす側に回る
+                        let mut permit = budget.acquire(25);
+                        thread::sleep(std::time::Duration::from_millis(1));
+                        permit.grow_to(60);
+                        assert_eq!(permit.bytes, 60);
+                    }
+                });
+            }
+        });
+
         assert_eq!(*budget.available.lock().unwrap(), 100);
     }
 

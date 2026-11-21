@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -24,6 +24,7 @@ linker-args = ["-sice:ICE91"]
 arboard = "3.7.0"
 clipboard-win = "5.4.3"
 eframe = { version = "0.37.0", features = ["persistence"] }
+gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 moxcms = "0.9.1"
 tiff = { version = "0.11.3", default-features = false }
@@ -62,6 +63,16 @@ unsafe_code = "deny"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+# unsafe ブロックには `// SAFETY:` コメントを必須とする
+undocumented_unsafe_blocks = "warn"
+# 警告の抑制は理由付きの #[expect] に限る (不要になった抑制は警告で検出する)
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+[profile.dev.package."*"]
+# 依存クレート (画像デコード・エンコード等) だけ最適化し、デバッグ実行とテストを速くする。
+# 自作コードは最適化しないため、増分ビルドの速さとデバッグのしやすさは変わらない
+opt-level = 2
 
 [profile.release]
 opt-level = 3

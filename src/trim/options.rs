@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 /// 四辺それぞれの余白ピクセル数
 ///
 /// 内容から各辺までに残す幅。元画像の端を越える分は背景色で塗って追加する
+/// 検出時に `consts::PADDING_MAX` を超える値は `PADDING_MAX` として扱う
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Margins {
@@ -47,8 +48,10 @@ impl Margins {
 /// `false` の辺は元画像の端を維持し、その辺の余白指定も適用しない
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
-// 四辺それぞれの独立した指定であり、状態の組み合わせではない
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "四辺それぞれの独立した指定であり、状態の組み合わせではない"
+)]
 pub struct TrimSides {
     /// 上辺を除去する
     pub top: bool,

@@ -29,7 +29,7 @@ cargo deny check                          # 依存の脆弱性・ライセンス
 ```
 
 - ツールチェーンは `rust-toolchain.toml` で 1.96 固定、edition 2024
-- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)
+- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする
 - rustfmt の `max_width` は 100
 
 ## 実装時の注意

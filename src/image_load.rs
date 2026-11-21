@@ -3,16 +3,15 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io::{self, BufReader, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::num::NonZeroU64;
 use std::path::Path;
 
-use image::codecs::gif::GifDecoder;
+use gif::{DecodeOptions, MemoryLimit};
 use image::codecs::webp::WebPDecoder;
 use image::error::LimitErrorKind;
 use image::metadata::Orientation;
-use image::{
-    AnimationDecoder, DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits,
-};
+use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
 
 use crate::consts::{
     MAX_ICC_PROFILE_BYTES, MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS,
@@ -278,12 +277,33 @@ fn detect_extra_frames(file: &mut fs::File, format: ImageFormat) -> bool {
     }
     let reader = BufReader::new(&*file);
     match format {
-        // 2 枚目まで読めれば複数フレームと分かる
-        ImageFormat::Gif => GifDecoder::new(reader)
-            .is_ok_and(|decoder| decoder.into_frames().take(2).flatten().count() > 1),
+        ImageFormat::Gif => gif_has_extra_frames(reader),
         ImageFormat::WebP => WebPDecoder::new(reader).is_ok_and(|decoder| decoder.has_animation()),
         _ => tiff::decoder::Decoder::new(reader).is_ok_and(|decoder| decoder.more_images()),
     }
+}
+
+/// GIF が 2 フレーム以上を含むかを、画素を展開せずに判定する
+///
+/// フレームのメタデータだけを読み進め、LZW 展開とフレームバッファの確保は行わない
+/// デコーダの確保量は `DECODE_ALLOC_MARGIN_BYTES` までに制限する
+///
+/// # Arguments
+/// * `reader` - GIF を読み取るリーダー
+///
+/// # Returns
+/// * `bool` - 2 フレーム以上を含む場合は `true`。読み取りに失敗した場合は `false`
+fn gif_has_extra_frames(reader: impl Read) -> bool {
+    let mut options = DecodeOptions::new();
+    if let Some(limit) = NonZeroU64::new(DECODE_ALLOC_MARGIN_BYTES) {
+        options.set_memory_limit(MemoryLimit::Bytes(limit));
+    }
+    let Ok(mut decoder) = options.read_info(reader) else {
+        return false;
+    };
+    // 2 枚目のメタデータまで読めれば複数フレームと分かる
+    matches!(decoder.next_frame_info(), Ok(Some(_)))
+        && matches!(decoder.next_frame_info(), Ok(Some(_)))
 }
 
 /// クリップボード由来の RGBA 画像寸法を検証する
@@ -430,7 +450,10 @@ fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, LoadError> {
 }
 
 /// バイト数を `B` / `KB` / `MB` 単位の表示用文字列にする
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "表示用の概算値で、精度の損失は問題にならない"
+)]
 pub(crate) fn format_bytes(n: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * 1024;
@@ -443,7 +466,10 @@ pub(crate) fn format_bytes(n: u64) -> String {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "表示用の概算値で、精度の損失は問題にならない"
+)]
 fn format_megapixels(pixels: u64) -> String {
     if pixels >= 1_000_000 {
         format!("{:.1} MP", pixels as f64 / 1_000_000.0)
@@ -757,6 +783,19 @@ mod tests {
 
         assert!(open_image_with_icc(&gif).unwrap().has_extra_frames);
         assert!(open_image_with_icc(&tiff).unwrap().has_extra_frames);
+    }
+
+    /// 壊れた GIF や 1 枚目の途中で途切れた GIF は追加フレームなしと判定すること
+    #[test]
+    fn gif_has_extra_frames_returns_false_for_broken_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anim.gif");
+        write_gif(&path, 2);
+        let bytes = fs::read(&path).unwrap();
+
+        assert!(gif_has_extra_frames(bytes.as_slice()));
+        assert!(!gif_has_extra_frames(&bytes[..bytes.len() / 4]));
+        assert!(!gif_has_extra_frames(&b"GIF89a"[..]));
     }
 
     /// 1 フレームの GIF・1 ページの TIFF・PNG は追加フレームなしと判定すること

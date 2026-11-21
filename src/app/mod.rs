@@ -61,6 +61,7 @@ pub fn run() -> eframe::Result {
             theme::install(&cc.egui_ctx);
 
             let mut app = state::App::new(cc.storage);
+            app.set_dialog_parent(cc);
             if !font_registered {
                 app.status = FONT_MISSING_MESSAGE.into();
             }

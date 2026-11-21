@@ -143,6 +143,10 @@ pub(in crate::app) struct IoState {
     pub auto_save_status: Option<(String, String)>,
     /// ファイルダイアログを表示中かどうか。同時に 1 つだけ開く
     pub dialog_open: bool,
+    /// ファイルダイアログの雛形。親ウィンドウを設定しておき、各ダイアログはこれを複製して使う
+    ///
+    /// 親を指定するとダイアログがモーダルになり、メインウィンドウの裏に隠れない
+    pub dialog_template: rfd::FileDialog,
 }
 
 /// 自動保存の内容を識別するキー
@@ -175,6 +179,7 @@ impl Default for IoState {
             last_auto_save: None,
             auto_save_status: None,
             dialog_open: false,
+            dialog_template: rfd::FileDialog::new(),
         }
     }
 }

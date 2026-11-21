@@ -267,7 +267,11 @@ impl App {
 /// * `painter` - 描画先
 /// * `rect` - 市松模様を敷く領域
 /// * `cell` - 1 マスの一辺の長さ
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "可視範囲の開始位置は 0 以上で、マス数は usize に収まる"
+)]
 fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
     let visible = rect.intersect(painter.clip_rect());
     if !visible.is_positive() {
@@ -279,11 +283,17 @@ fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
     let light = egui::Color32::from_gray(210);
     let dark = egui::Color32::from_gray(170);
     let mut row = first_row;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "描画座標の算出で、マス数は f32 の精度内に収まる"
+    )]
     let mut y = rect.min.y + row as f32 * cell;
     while y < visible.max.y {
         let mut col = first_col;
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "描画座標の算出で、マス数は f32 の精度内に収まる"
+        )]
         let mut x = rect.min.x + col as f32 * cell;
         while x < visible.max.x {
             let tile = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell, cell));
@@ -308,7 +318,10 @@ const FULL_UV: egui::Rect = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos
 ///
 /// プレビューテクスチャは縮小されている場合があるため、ピクセルではなく比率で表す
 /// 範囲外へ拡張する余白も含めるため、0 未満や 1 を超える座標になりうる
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "画像寸法は f32 の精度内で比率にするだけで足りる"
+)]
 fn trim_uv_rect(info: &TrimInfo) -> egui::Rect {
     if info.orig_w == 0 || info.orig_h == 0 {
         return FULL_UV;
@@ -441,7 +454,10 @@ fn show_pane_contents(
         _ => (FULL_UV, None),
     };
     let [sw, sh] = source_size.unwrap_or_else(|| tex_size_px(t.size_vec2()));
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "画像寸法は f32 の精度内で表示倍率の算出に使うだけ"
+    )]
     let src = egui::vec2(sw as f32, sh as f32) * uv.size();
     let fit = fit_scale(src, viewport.size());
 
@@ -511,7 +527,11 @@ fn show_pane_contents(
 }
 
 /// テクスチャの寸法を整数のピクセル数へ変換する
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "テクスチャの寸法は非負で u32 に収まる"
+)]
 fn tex_size_px(size: egui::Vec2) -> [u32; 2] {
     [size.x as u32, size.y as u32]
 }
@@ -525,10 +545,11 @@ fn tex_size_px(size: egui::Vec2) -> [u32; 2] {
 ///
 /// # Returns
 /// * `(u32, u32)` - 画像内へクランプしたピクセル座標
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "画像内へクランプした非負の座標で、画像寸法の範囲に収まる"
 )]
 fn pixel_at(rel: egui::Vec2, disp: egui::Vec2, source: [u32; 2]) -> (u32, u32) {
     let [sw, sh] = source;

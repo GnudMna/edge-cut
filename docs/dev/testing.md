@@ -22,7 +22,7 @@ cargo test <テスト名>                      # 単一テスト
 | `windows/clippy.ps1` | Clippy による静的解析 |
 | `windows/format.ps1` | コードフォーマット |
 
-- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)
+- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする
 - rustfmt の `max_width` は 100
 
 ## テスト構成

@@ -168,7 +168,11 @@ pub const MAX_ICC_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
 // テスト
 // ======================================================================
 #[cfg(test)]
-#[allow(clippy::assertions_on_constants, clippy::float_cmp)]
+#[expect(
+    clippy::assertions_on_constants,
+    clippy::float_cmp,
+    reason = "定数の値そのものを検証するテストのため"
+)]
 mod tests {
     use super::*;
 

@@ -950,11 +950,12 @@ dependencies = [
 
 [[package]]
 name = "edge-cut"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "arboard",
  "clipboard-win",
  "eframe",
+ "gif",
  "image",
  "known-folders",
  "minisign",

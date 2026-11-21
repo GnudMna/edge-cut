@@ -8,7 +8,7 @@
 
 | 用途 | 必要なもの |
 | :--- | :--- |
-| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.96 以上 (`rust-toolchain.toml` で固定)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード) |
+| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.96 (`rust-toolchain.toml` で固定し、rustup が自動で導入する)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード) |
 | 品質チェック | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) |
 | MSI 作成 | [cargo-about](https://github.com/EmbarkStudios/cargo-about)、[mdBook](https://rust-lang.github.io/mdBook/) ([利用者向けドキュメントの同梱](#利用者向けドキュメントの同梱) の固定版)、[cargo-wix](https://github.com/volks73/cargo-wix)、[WiX Toolset v3.14.1](https://github.com/wixtoolset/wix3/releases) 以上 |
 
@@ -29,6 +29,8 @@ cargo build --release     # リリースビルド
 ```
 
 ビルド成果物は `target/release/EdgeCut.exe`。
+
+デバッグビルドでも依存クレートだけは最適化する (`Cargo.toml` の `[profile.dev.package."*"]`)。画像のデコード・エンコードが遅くなるのを避けるための設定で、自作コードは最適化しない。初回のビルドは依存の再コンパイルで時間がかかる。
 
 ## スクリプト
 

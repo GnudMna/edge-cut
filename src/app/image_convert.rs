@@ -15,7 +15,7 @@ use crate::consts::{PREVIEW_MAX_DIMENSION, TRIM_PARALLEL_MIN_PIXELS};
 ///
 /// 長辺が [`PREVIEW_MAX_DIMENSION`] を超える画像は縮小してから変換し、
 /// GPU テクスチャ用のメモリ使用量を抑える。
-/// RGB の ICC プロファイルがあれば sRGB へ変換し、広色域の画像の色を実際の見え方に近づける
+/// RGB / GRAY の ICC プロファイルがあれば sRGB へ変換し、広色域の画像の色を実際の見え方に近づける
 ///
 /// # Arguments
 /// * `img` - 変換元の画像
@@ -39,7 +39,7 @@ pub(super) fn to_preview_color_image(img: &DynamicImage, icc_profile: Option<&[u
 
 /// RGBA8 画像を ICC プロファイルの色空間から sRGB へ変換する
 ///
-/// RGB 以外のプロファイルや壊れたプロファイル、変換の失敗時は画像を変更しない
+/// RGB と GRAY 以外のプロファイルや壊れたプロファイル、変換の失敗時は画像を変更しない
 ///
 /// # Arguments
 /// * `rgba` - 変換する画像 (その場で書き換える)
@@ -48,9 +48,19 @@ fn convert_to_srgb(rgba: &mut RgbaImage, icc: &[u8]) {
     let Ok(src) = ColorProfile::new_from_slice(icc) else {
         return;
     };
-    if src.color_space != DataColorSpace::Rgb {
-        return;
+    match src.color_space {
+        DataColorSpace::Rgb => convert_rgb_to_srgb(rgba, &src),
+        DataColorSpace::Gray => convert_gray_to_srgb(rgba, &src),
+        _ => {}
     }
+}
+
+/// RGBA8 画像を RGB プロファイルの色空間から sRGB へ変換する
+///
+/// # Arguments
+/// * `rgba` - 変換する画像 (その場で書き換える)
+/// * `src` - 元画像の RGB プロファイル
+fn convert_rgb_to_srgb(rgba: &mut RgbaImage, src: &ColorProfile) {
     let Ok(transform) = src.create_transform_8bit(
         Layout::Rgba,
         &ColorProfile::new_srgb(),
@@ -62,6 +72,33 @@ fn convert_to_srgb(rgba: &mut RgbaImage, icc: &[u8]) {
     let mut converted = vec![0u8; rgba.as_raw().len()];
     if transform.transform(rgba.as_raw(), &mut converted).is_ok() {
         rgba.copy_from_slice(&converted);
+    }
+}
+
+/// RGBA8 画像を GRAY プロファイルのガンマから sRGB へ変換する
+///
+/// グレースケール画像は読み込み時に R = G = B へ展開されているため、R チャンネルを輝度として変換する。
+/// アルファは変換の対象外とし、元の値を保つ
+///
+/// # Arguments
+/// * `rgba` - 変換する画像 (その場で書き換える)
+/// * `src` - 元画像の GRAY プロファイル
+fn convert_gray_to_srgb(rgba: &mut RgbaImage, src: &ColorProfile) {
+    let Ok(transform) = src.create_transform_8bit(
+        Layout::Gray,
+        &ColorProfile::new_srgb(),
+        Layout::Rgba,
+        TransformOptions::default(),
+    ) else {
+        return;
+    };
+    let gray: Vec<u8> = rgba.as_raw().chunks_exact(4).map(|px| px[0]).collect();
+    let mut converted = vec![0u8; rgba.as_raw().len()];
+    if transform.transform(&gray, &mut converted).is_err() {
+        return;
+    }
+    for (dst, src) in rgba.chunks_exact_mut(4).zip(converted.chunks_exact(4)) {
+        dst[..3].copy_from_slice(&src[..3]);
     }
 }
 
@@ -145,6 +182,24 @@ mod tests {
         let converted = to_preview_color_image(&img, Some(&icc));
         assert_ne!(converted.pixels[0], plain.pixels[0]);
         assert_eq!(converted.pixels[0].a(), plain.pixels[0].a());
+    }
+
+    /// リニアな GRAY プロファイルを指定すると sRGB へ変換され、明るくなること
+    ///
+    /// アルファは保たれ、R = G = B のグレーのままであること
+    #[test]
+    fn linear_gray_profile_is_converted_to_srgb() {
+        let icc = ColorProfile::new_gray_with_gamma(1.0).encode().unwrap();
+        let opaque = solid_rgba(2, 2, [128, 128, 128, 255]);
+        let px = to_preview_color_image(&opaque, Some(&icc)).pixels[0];
+        // リニア 0.5 は sRGB で約 188 になる
+        assert!(px.r() > 128 + 40, "r = {}", px.r());
+        assert_eq!((px.r(), px.r()), (px.g(), px.b()));
+
+        // 半透明でもアルファは変わらない
+        let translucent = solid_rgba(2, 2, [128, 128, 128, 200]);
+        let px = to_preview_color_image(&translucent, Some(&icc)).pixels[0];
+        assert_eq!(px.a(), 200);
     }
 
     /// 壊れた ICC プロファイルでは色を変換しないこと

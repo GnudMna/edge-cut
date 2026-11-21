@@ -15,7 +15,7 @@ use crate::consts::{BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK
 use crate::image_load::{LoadedImage, open_image_with_icc_reserving};
 use crate::image_output::save_trimmed_output_with;
 use crate::panic_message::catch_panic;
-use crate::trim::trim_with_options;
+use crate::trim::{apply_trim, detect_trim_with_options};
 
 // ======================================================================
 // 一括処理
@@ -232,6 +232,7 @@ fn process_guarded(
 /// 1 ファイル分の読み込み・トリム・保存
 ///
 /// ヘッダから見積もったピークメモリを `budget` から確保し、保存し終えるまで保持する
+/// 余白の追加で出力が元画像より大きくなる場合は、出力サイズが分かった時点で確保量を増やす
 fn process_one(
     path: &Path,
     out_dir: &Path,
@@ -243,15 +244,22 @@ fn process_one(
         LoadedImage {
             image, icc_profile, ..
         },
-        _permit,
+        mut permit,
     ) = open_image_with_icc_reserving(path, |decoded_bytes| {
         budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR))
     })?;
-    let trimmed = trim_with_options(&image, &params.trim);
+    let bounds = detect_trim_with_options(&image, &params.trim);
+    let bytes_per_pixel = u64::from(image.color().bytes_per_pixel());
+    let decoded_bytes = u64::from(image.width()) * u64::from(image.height()) * bytes_per_pixel;
+    let output_bytes =
+        u64::from(bounds.info.trim_w) * u64::from(bounds.info.trim_h) * bytes_per_pixel;
+    // 出力キャンバスはデコード後の画像より大きくなりうるため、切り出し前に不足分を確保する
+    permit.grow_to(estimate_peak_bytes(decoded_bytes, output_bytes));
+    let trimmed = apply_trim(&image, &bounds.info);
     // エンコード中のピークを見積もり内に収めるため、元画像は切り出し後すぐに解放する
     drop(image);
     let (_, file_renamed) = save_trimmed_output_with(
-        &trimmed.image,
+        &trimmed,
         icc_profile.as_deref(),
         path,
         out_dir,
@@ -259,4 +267,25 @@ fn process_one(
         params.save_options,
     )?;
     Ok(file_renamed)
+}
+
+/// 1 ファイルのピークメモリを見積もる
+///
+/// 次の最大値とする
+/// * 保存時: 出力画像・エンコード向けの色変換・エンコード結果で出力の `BATCH_PEAK_MEMORY_FACTOR` 倍
+/// * 切り出し時: 元画像・切り出した画像 (元画像以下)・出力キャンバスの合計
+///
+/// # Arguments
+/// * `decoded_bytes` - デコード後の画像のバイト数
+/// * `output_bytes` - 余白の追加を含む出力画像のバイト数
+///
+/// # Returns
+/// * `u64` - 見積もったピークメモリ (バイト)
+pub(super) fn estimate_peak_bytes(decoded_bytes: u64, output_bytes: u64) -> u64 {
+    let save = output_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR);
+    let crop = decoded_bytes.saturating_mul(2).saturating_add(output_bytes);
+    decoded_bytes
+        .saturating_mul(BATCH_PEAK_MEMORY_FACTOR)
+        .max(save)
+        .max(crop)
 }
