@@ -51,22 +51,22 @@ cargo build --release     # リリースビルド
 各プラットフォーム向けのラッパースクリプトを `scripts/` 以下に置く。
 
 | プラットフォーム | ディレクトリ | 備考 |
-| :--------------: | ------------ | ---- |
+| :--- | :--- | :--- |
 | Windows | `scripts/windows/` | PowerShell 7 向け (エクスプローラーからのダブルクリック実行にも対応) |
 | Linux | `scripts/linux/` | Bash 向け |
 | macOS | `scripts/macos/` | Bash 向け |
 
-共通のスクリプト (`build.*` / `test.*` / `clippy.*` / `format.*` / `check.*`) は [テストと品質チェック](testing.md) を参照。
+品質チェック用のスクリプト (`check.*` / `test.*` / `clippy.*` / `format.*`) は [テストと品質チェック](testing.md#品質チェック) を参照。それ以外は次のとおり。
 
 | スクリプト | 説明 |
-| ---------- | ---- |
+| :--- | :--- |
 | `windows/build.ps1`, `{linux,macos}/build.sh` | デバッグ / リリースビルド (`--release`。sh は `-r` も可) |
 | `windows/build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可) |
 | `windows/generate-wix-assets.ps1` | MSI 用のバナー・ダイアログ画像 (`wix/*.bmp`) と使用許諾 (`wix/Eula.rtf`) を再生成 |
 | `windows/release.ps1` | リリース一括実行 ([リリース](release.md)) |
 | `linux/build-package.sh` | 配布用 tar.gz 作成 (`--skip-build` でビルド省略可) |
 | `macos/build-app.sh` | `.app` バンドル作成 (`--skip-build` でビルド省略可) |
-| `macos/build-dmg.sh` | DMG 配布イメージ作成 (`--skip-app` で `.app` 生成を省略可) |
+| `macos/build-dmg.sh` | DMG 配布イメージ作成 (`--skip-app` で `.app` 生成を省略可。`--skip-build` は `build-app.sh` へ渡す) |
 
 ## 配布パッケージ
 
@@ -104,6 +104,9 @@ cargo build --release     # リリースビルド
 | リンク検証 | 出力 HTML の相対リンクについて、リンク先ファイルとアンカーが存在しなければ失敗する |
 | MSI への収録 | ファイル名が版で変わるため、出力から WiX 断片 `target/wix/user-docs.wxs` (ComponentGroup `UserDocs`) を生成し、`cargo wix -I` で `wix/main.wxs` に加えて渡す。per-user 構成のため、ディレクトリごとに HKCU の値を KeyPath とする Component を作る |
 
+- 執筆中のプレビューは `mdbook serve docs/user --open` で行える。このとき変更履歴ページは `CHANGELOG.md` をそのまま取り込むため、ページ内の相対リンクは辿れない (配布物では書き換わる)
+- Windows と Linux / macOS の生成スクリプトは同じ規則で同じ出力になるよう揃えてある。変換規則やリンク検証を変える場合は両方を直す
+
 ### 同梱する第三者素材とライセンス
 
 mdBook の出力には mdBook 自身と他のプロジェクトの素材が含まれる。cargo-about は Rust の依存だけを扱うため、これらの表示は [`scripts/templates/user-docs-notices.txt`](../../scripts/templates/user-docs-notices.txt) に書き、`generate-third-party-notices.*` が `THIRD_PARTY_NOTICES` の末尾に追記する。
@@ -118,6 +121,3 @@ mdBook の出力には mdBook 自身と他のプロジェクトの素材が含�
 
 - **MPL-2.0 の扱い:** `deny.toml` の方針では MPL を許可しないが、これは Rust の依存クレートに対するもの。mdBook のテーマはリンクしない別ファイルで、改変せずにソースのまま配るため、ファイル単位の義務 (ライセンス全文とソースの入手先の表示) を満たせば本体のライセンスに影響しない。この例外は `deny.toml` の冒頭にも記す。テーマのファイルを改変 (`docs/user/theme/` で上書き) する場合は、改変したファイルも MPL-2.0 で提供する必要があるため、フォントの無効化 (空の `fonts.css`) 以外の上書きは避ける
 - **検証:** 生成スクリプトは、出力にフォントが含まれないこと、出力に含まれる mdBook・highlight.js・clipboard.js・Font Awesome の版が `user-docs-notices.txt` に書かれていることを確かめ、合わなければ失敗する。mdBook の版を上げたら、同梱素材とライセンスを確認して `user-docs-notices.txt` を更新する
-
-- 執筆中のプレビューは `mdbook serve docs/user --open` で行える。このとき変更履歴ページは `CHANGELOG.md` をそのまま取り込むため、ページ内の相対リンクは辿れない (配布物では書き換わる)
-- Windows と Linux / macOS の生成スクリプトは同じ規則で同じ出力になるよう揃えてある。変換規則やリンク検証を変える場合は両方を直す

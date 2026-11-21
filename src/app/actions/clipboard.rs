@@ -1,9 +1,9 @@
 //! クリップボードへのコピー・貼り付け
 
+use eframe::egui;
+
 use crate::app::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
 use crate::app::state::App;
-
-use eframe::egui;
 
 // ======================================================================
 // クリップボード
@@ -69,13 +69,13 @@ impl App {
 // ======================================================================
 #[cfg(test)]
 mod tests {
+    use eframe::egui;
+
     use crate::app::actions::test_helpers::{poll_io_until, trimmed_image_state};
     use crate::app::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
     use crate::app::state::App;
 
-    use eframe::egui;
-
-    /// 再計算のデバウンス待ち中は前回の矩形でコピーしないことを確認する
+    /// 再計算のデバウンス待ち中は前回の矩形でコピーしないこと
     #[test]
     fn copy_is_ignored_while_trim_is_pending() {
         let ctx = egui::Context::default();
@@ -98,7 +98,7 @@ mod tests {
         assert!(app.clipboard.is_none());
     }
 
-    /// クリップボードのワーカーが終了していた場合、起動し直して再送することを確認する
+    /// クリップボードのワーカーが終了していた場合、起動し直して再送すること
     #[test]
     fn submit_clipboard_job_restarts_terminated_worker() {
         let ctx = egui::Context::default();

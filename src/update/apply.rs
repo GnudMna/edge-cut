@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use known_folders::{KnownFolder, get_known_folder_path};
+
 use super::error::UpdateError;
 use super::signature::{
     download_signature, embedded_signing_keys, signature_asset_name, verify_file_signature,
@@ -8,8 +10,6 @@ use super::signature::{
 use super::types::{AvailableUpdate, UpdateApplyOutcome};
 use super::verify::{download_and_verify_with_key, validate_asset_name};
 use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, bridge_download_key};
-
-use known_folders::{KnownFolder, get_known_folder_path};
 
 // ======================================================================
 // パブリック関数
@@ -25,6 +25,13 @@ use known_folders::{KnownFolder, get_known_folder_path};
 /// * `UpdateApplyOutcome` - 適用結果
 pub(crate) fn apply_update(update: &AvailableUpdate) -> UpdateApplyOutcome {
     apply_update_at(update, BRIDGE_BASE_URL, true, embedded_signing_keys())
+}
+
+/// 過去の更新で残った作業フォルダのうち、現在のバージョン以外を削除する
+///
+/// 起動時に呼ぶ。削除に失敗したフォルダ (使用中など) は次回起動時に再試行する
+pub(crate) fn cleanup_stale_update_dirs() {
+    remove_stale_work_dirs(&update_work_root(), super::current_app_version());
 }
 
 /// 指定した bridge ベース URL で更新アセットをダウンロードして適用する
@@ -131,11 +138,36 @@ fn asset_download_url(base_url: &str, tag: &str, asset_name: &str) -> String {
 // ======================================================================
 // プライベート関数
 // ======================================================================
+/// 更新作業用ディレクトリの親 (バージョンごとのフォルダを置く場所) を返す
+fn update_work_root() -> PathBuf {
+    std::env::temp_dir().join("edge-cut-update")
+}
+
 /// 更新作業用ディレクトリを用意する
 fn update_work_dir(version: &str) -> Result<PathBuf, UpdateError> {
-    let base = std::env::temp_dir().join("edge-cut-update").join(version);
+    let base = update_work_root().join(version);
     fs::create_dir_all(&base).map_err(|_| UpdateError::WorkDirCreate)?;
     Ok(base)
+}
+
+/// `root` 直下のバージョンフォルダのうち、`keep_version` 以外を削除する
+///
+/// フォルダ以外とシンボリックリンクは対象外。個々の削除失敗は無視する
+///
+/// # Arguments
+/// * `root` - バージョンごとのフォルダを置く親ディレクトリ
+/// * `keep_version` - 残すバージョンのフォルダ名
+fn remove_stale_work_dirs(root: &Path, keep_version: &str) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        // DirEntry::file_type はリンクをたどらないため、リンク先は消さない
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if is_dir && entry.file_name() != keep_version {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// MSI を `msiexec` で起動する
@@ -207,6 +239,37 @@ mod tests {
         let path = system_msiexec_path().expect("msiexec path");
         assert!(path.is_absolute());
         assert!(path.is_file(), "{}", path.display());
+    }
+
+    /// 現在バージョン以外のフォルダだけを削除すること
+    ///
+    /// 現在バージョンのフォルダとフォルダ以外のファイルは残す
+    #[test]
+    fn remove_stale_work_dirs_keeps_only_current_version() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for version in ["0.4.0", "0.3.0", "0.2.0"] {
+            let dir = root.path().join(version);
+            fs::create_dir_all(&dir).expect("create dir");
+            fs::write(dir.join("edge-cut.msi"), b"msi").expect("write msi");
+        }
+        fs::write(root.path().join("note.txt"), b"x").expect("write file");
+
+        remove_stale_work_dirs(root.path(), "0.4.0");
+
+        // 現在バージョンのフォルダと中身は残る
+        assert!(root.path().join("0.4.0").join("edge-cut.msi").is_file());
+        // それ以外のバージョンのフォルダは消える
+        assert!(!root.path().join("0.3.0").exists());
+        assert!(!root.path().join("0.2.0").exists());
+        // フォルダ以外は対象外
+        assert!(root.path().join("note.txt").is_file());
+    }
+
+    /// 親ディレクトリが存在しなくても何もせず終わること
+    #[test]
+    fn remove_stale_work_dirs_ignores_missing_root() {
+        let root = tempfile::tempdir().expect("tempdir");
+        remove_stale_work_dirs(&root.path().join("missing"), "0.4.0");
     }
 
     /// 不正なアセット名ではダウンロードせずに失敗すること

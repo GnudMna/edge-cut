@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
+use eframe::egui;
+
 use crate::app::shortcuts::Shortcut;
 use crate::app::state::App;
-
-use eframe::egui;
 
 // ======================================================================
 // キーボードショートカット

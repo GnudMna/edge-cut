@@ -1,6 +1,16 @@
-# CLAUDE.md
+# EdgeCut
 
-画像の背景余白を自動検出・トリミングする Rust 製デスクトップ GUI ツール (EdgeCut)。eframe / egui ベースで Windows / Linux / macOS に対応する。
+画像の背景余白を自動検出・トリミングする Rust 製デスクトップ GUI ツール。eframe / egui ベースで Windows / Linux / macOS に対応する。開発者向けドキュメントは [docs/dev/](docs/dev/) (環境構築・テスト・アーキテクチャ・リリース・開発規約)、利用者向けは [docs/user/](docs/user/) にある。どの文書に何を書くかは [docs/dev/contributing.md のドキュメントの配置](docs/dev/contributing.md#ドキュメントの配置) に従う。
+
+## 構成
+
+lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/main.rs`) の二層構成。`main.rs` は `edge_cut::app::run()` を呼ぶだけ。モジュールごとの責務は [docs/dev/architecture.md](docs/dev/architecture.md) を参照する。
+
+- `src/trim.rs` / `image_load.rs` / `image_output.rs` / `batch_trim.rs` — コアロジック (背景色検出・読み込み・保存・一括処理)。egui に依存させない
+- `src/app/` — egui GUI (`state` / `view/` / `actions/` / 各ワーカースレッド)。egui 依存はここに閉じ込める
+- `src/update/` — 更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定
+- `tests/` — 公開 API の統合テスト。画像生成ヘルパーは `tests/common/` に置き、`src/test_helpers.rs` が `include!` してユニットテストと共有する
+- `scripts/windows/` / `scripts/linux/` / `scripts/macos/` — OS ごとのエントリポイント。共通処理は `scripts/common/` に置く
 
 ## コマンド
 
@@ -13,51 +23,39 @@ cargo test --all-targets                  # ユニット・統合テスト
 cargo test --doc                          # doctest
 cargo test <テスト名>                      # 単一テスト
 cargo deny check                          # 依存の脆弱性・ライセンス監査
-```
 
-一括チェックは `scripts/windows/check.ps1` (Linux / macOS は `scripts/{linux,macos}/check.sh`)。変更後はこれと同等の fmt / clippy / test が通ることを確認する。
+# 完了前の品質チェック一式 (fmt / clippy / deny / test / doctest)
+./scripts/windows/check.ps1               # Linux / macOS は scripts/{linux,macos}/check.sh
+```
 
 - ツールチェーンは `rust-toolchain.toml` で 1.96 固定、edition 2024
 - `clippy::pedantic` を warn で有効化し、`unsafe_code` は forbid
 - rustfmt の `max_width` は 100
 
-## アーキテクチャ
+## 実装時の注意
 
-lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/main.rs`) の二層構成。`main.rs` はエントリポイントのみで、`edge_cut::app::run()` を呼ぶだけ。
-
-| パス | 責務 |
-| ---- | ---- |
-| `src/trim.rs` | 背景色検出 (四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA)・余白除去のコアロジック |
-| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation を反映、ICC プロファイルを取得) |
-| `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルを再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
-| `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
-| `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱うため) |
-| `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
-| `src/app/` | egui GUI。`state` (状態)、`view/` (描画。`toolbar` / `settings` / `preview` / `input` / `update_dialog` に分割)、`actions/` (操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割)、`trim_worker` (プレビュー用ワーカースレッド)、`clipboard_worker` (コピー・貼り付け用ワーカースレッド)、`load_worker` (画像読み込み用ワーカースレッド)、`shortcuts` (キーボードショートカットの判定)、`image_convert` (プレビュー用テクスチャ変換)、`fonts` / `icon` |
-| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定 |
-| `src/test_helpers.rs` | `#[cfg(test)]` 限定。`tests/common/images.rs` を `include!` してユニットテストと画像生成ヘルパーを共有 |
-| `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
-| `docs/user/` | 利用者向けドキュメント (mdBook の原稿)。`scripts/common/build-user-docs.{ps1,sh}` が HTML 化して配布物の `docs/` に同梱する |
-| `docs/dev/` | 開発者向けドキュメント (環境構築・テスト・アーキテクチャ・リリース・開発規約) |
-
-- コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
-- 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す
+- 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す。ワーカーの panic は `catch_panic` で捕捉して失敗として通知する
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する
 - Windows 専用依存 (`ureq`, `sha2` など) は `cfg(windows)` の中でのみ使う
-- `build.rs` は Windows のアイコン・バージョン情報を埋め込む。更新ダウンロードキーはビルド時環境変数 `EDGE_CUT_KEY` から埋め込む
-- 更新署名の公開鍵 (minisign) は `keys/update-signing/*.pub` を `build.rs` が埋め込む。`src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える
-- リリースは `scripts/windows/release.ps1` で行う (バージョン更新・CHANGELOG・チェック・コミット・MSI 作成・署名)
+- 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える
+- `build.rs` は Windows のアイコン・バージョン情報、ビルド時環境変数 `EDGE_CUT_KEY` (更新ダウンロードキー)、`keys/update-signing/*.pub` (minisign 公開鍵) を埋め込む
+- `src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える
+- リリースは `scripts/windows/release.ps1` で行う ([docs/dev/release.md](docs/dev/release.md))。指示がない限り実行しない
+
+## ドキュメント同期
+
+- 利用者に影響する変更は `CHANGELOG.md` の `[Unreleased]` に同じ変更で追記する (スキル `/changelog`)
+- 操作・表示が変わる変更では `docs/user/` の該当ページも更新する
+- モジュールを追加・移動・分割したら `docs/dev/architecture.md` と上の「構成」を更新する
+
+## Git
+
+ブランチ・コミットメッセージ・CHANGELOG の規約は [docs/dev/contributing.md の Git 運用](docs/dev/contributing.md#git-運用) に従う。ここには作業時に間違えやすい点だけを置く。
+
+- ブランチは `develop` を checkout / pull せず、`git fetch origin develop` のうえ `origin/develop` から切る (`git switch -c <prefix>/<kebab-case> origin/develop`)
+- worktree の自動命名ブランチは、最初のコミットの前に `git branch -m` で規約の名前へ改める。新機能の prefix は `feat` ではなく `feature`
+- コミットメッセージの種別は先頭大文字 (`Feat:` / `Fix:` / `Docs:` など)
 
 ## コーディング規約
 
-- コメント: [.claude/rules/comments.md](.claude/rules/comments.md)
-- use 文: [.claude/rules/imports.md](.claude/rules/imports.md)
-
-依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認する。`about.toml` の許可リストも同じ内容に揃える。
-
-## Git 運用
-
-- git-flow 形式。`develop` から `feature/*` `fix/*` `docs/*` などを切り、`main` へは `release/vX.Y.Z` 経由でマージする
-- コミットメッセージは `<種別>: <日本語の要約>`。種別は `Feat` / `Update` / `Fix` / `Refactor` / `Perf` / `Test` / `Docs` / `Style` / `Chore` / `Release` / `Add`
-- 利用者に影響する変更は `CHANGELOG.md` の `[Unreleased]` に追記する。書き方は `CHANGELOG.md` 冒頭の規約に従う (1 項目 1 文・体言止め・補足は入れ子。利用者に見えない変更は書かない)
-- 操作・表示が変わる変更では `docs/user/` の該当ページも更新する。ドキュメントの置き場所は [docs/dev/contributing.md](docs/dev/contributing.md#ドキュメントの配置) に従い、同じ説明は 1 か所にだけ書く
+規約は `.claude/rules/` (`comments.md` / `imports.md` / `docs.md`) に置き、対象ファイルを扱うときに自動で読み込まれる。品質チェックと CHANGELOG 追記はスキル `/check`・`/changelog` (`.claude/skills/`) で行う。共有の権限設定は `.claude/settings.json`、個人用の上書きは `.claude/settings.local.json` (Git 管理外) に置く。

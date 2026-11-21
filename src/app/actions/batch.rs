@@ -7,11 +7,11 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
+use eframe::egui;
+
 use crate::app::state::{App, DialogResult};
 use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
 use crate::consts::SUPPORTED_IMAGE_EXTENSIONS;
-
-use eframe::egui;
 
 // ======================================================================
 // 一括トリミング
@@ -94,6 +94,7 @@ impl App {
         let total = paths.len();
 
         self.batch.last_error_details.clear();
+        self.batch.errors_open = false;
         self.batch.skipped_inputs = skipped;
         self.batch.cancel.store(false, Ordering::Relaxed);
         let cancel_flag = Arc::clone(&self.batch.cancel);
@@ -148,7 +149,7 @@ impl App {
     /// バックグラウンドの一括トリミング処理が完了していればステータスを更新する
     ///
     /// 毎フレーム呼び出すことで結果をポーリングする
-    /// 進捗はステータスバーに表示し、エラー詳細は `batch.last_error_details` に保持する
+    /// 進捗はステータスバーに表示し、エラー詳細は `batch.last_error_details` に保持して一覧ウィンドウで表示する
     /// 完了通知の前に送信側が切断された場合 (処理スレッドの panic など) は失敗として終了する
     pub(in crate::app) fn poll_batch_result(&mut self) {
         if !self.batch.running {
@@ -161,6 +162,8 @@ impl App {
                     let note = skipped_note(self.batch.skipped_inputs);
                     self.status = format!("{}{note}", result.summary());
                     self.batch.last_error_details = result.errors;
+                    // 件数が多いとステータスバーでは読めないため、失敗があれば一覧を自動で開く
+                    self.batch.errors_open = !self.batch.last_error_details.is_empty();
                     done = true;
                     break;
                 }
@@ -171,6 +174,7 @@ impl App {
                 Err(TryRecvError::Disconnected) => {
                     self.status = "一括トリミングが異常終了しました".into();
                     self.batch.last_error_details.clear();
+                    self.batch.errors_open = false;
                     done = true;
                     break;
                 }
@@ -205,20 +209,21 @@ pub(super) fn skipped_note(skipped: usize) -> String {
 // ======================================================================
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::mpsc;
 
     use super::skipped_note;
     use crate::app::state::App;
-    use crate::batch_trim::BatchProgress;
+    use crate::batch_trim::{BatchProgress, BatchTrimResult};
 
-    /// 除外件数が 0 のときのみ補足文が空になることを確認する
+    /// 除外件数が 0 のときのみ補足文が空になること
     #[test]
     fn skipped_note_is_empty_only_for_zero() {
         assert!(skipped_note(0).is_empty());
         assert!(skipped_note(3).contains("3 件"));
     }
 
-    /// 完了通知の前に送信側が切断されると、一括トリミングを失敗として終了することを確認する
+    /// 完了通知の前に送信側が切断されると、一括トリミングを失敗として終了すること
     #[test]
     fn poll_batch_result_finishes_when_sender_disconnected() {
         let mut app = App::default();
@@ -243,7 +248,29 @@ mod tests {
         assert_eq!(app.status, "一括トリミングが異常終了しました");
     }
 
-    /// 送信側が生きている間は、通知がなくても実行中のまま待つことを確認する
+    /// 失敗したファイルがあるときのみ、完了時にエラー一覧を開くこと
+    #[test]
+    fn poll_batch_result_opens_error_list_only_when_errors_exist() {
+        for (errors, expect_open) in [(vec!["a.png: 失敗".to_string()], true), (Vec::new(), false)]
+        {
+            let mut app = App::default();
+            let (tx, rx) = mpsc::channel();
+            app.batch.rx = Some(rx);
+            app.batch.running = true;
+            let mut result = BatchTrimResult::fatal(PathBuf::from("out"), "");
+            result.fatal_error = None;
+            result.errors = errors.clone();
+            tx.send(BatchProgress::Finished(result)).unwrap();
+
+            app.poll_batch_result();
+
+            assert!(!app.batch.running);
+            assert_eq!(app.batch.last_error_details, errors);
+            assert_eq!(app.batch.errors_open, expect_open);
+        }
+    }
+
+    /// 送信側が生きている間は、通知がなくても実行中のまま待つこと
     #[test]
     fn poll_batch_result_keeps_running_while_sender_alive() {
         let mut app = App::default();

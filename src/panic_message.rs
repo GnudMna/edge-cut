@@ -44,7 +44,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 mod tests {
     use super::*;
 
-    /// `&str`・`String`・その他のペイロードをそれぞれ文字列化できることを確認する
+    /// `&str`・`String`・その他のペイロードをそれぞれ文字列化できること
     #[test]
     fn extracts_message_from_payload() {
         // リテラルの panic は `&str`
@@ -61,7 +61,7 @@ mod tests {
         assert_eq!(panic_message(payload.as_ref()), "不明なエラー");
     }
 
-    /// 正常時は戻り値を、panic 時はメッセージを返すことを確認する
+    /// 正常時は戻り値を、panic 時はメッセージを返すこと
     #[test]
     fn catch_panic_converts_panic_to_error() {
         // 正常時は戻り値をそのまま返す

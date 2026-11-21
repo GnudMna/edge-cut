@@ -1,11 +1,11 @@
 //! egui 描画用の画像変換
 
-use crate::consts::{PREVIEW_MAX_DIMENSION, TRIM_PARALLEL_MIN_PIXELS};
-
 use eframe::egui;
 use egui::{Color32, ColorImage};
 use image::{DynamicImage, RgbaImage};
 use rayon::prelude::*;
+
+use crate::consts::{PREVIEW_MAX_DIMENSION, TRIM_PARALLEL_MIN_PIXELS};
 
 // ======================================================================
 // 画像変換
@@ -64,10 +64,9 @@ fn rgba8_to_color_image(rgba: &RgbaImage) -> ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::test_helpers::solid_rgba;
 
-    /// サイズが元画像と一致することを確認する
+    /// サイズが元画像と一致すること
     #[test]
     fn color_image_size_matches_source() {
         let img = solid_rgba(4, 3, [255, 0, 0, 255]);
@@ -75,7 +74,7 @@ mod tests {
         assert_eq!(ci.size, [4, 3]);
     }
 
-    /// ピクセル数が幅×高さと一致することを確認する
+    /// ピクセル数が幅×高さと一致すること
     #[test]
     fn color_image_pixel_count_equals_width_times_height() {
         let img = solid_rgba(5, 7, [0, 0, 0, 255]);
@@ -83,7 +82,7 @@ mod tests {
         assert_eq!(ci.pixels.len(), 5 * 7);
     }
 
-    /// RGBA 値が正しく変換されていることを確認する
+    /// RGBA 値が正しく変換されていること
     #[test]
     fn color_image_pixel_values_match_source() {
         let img = solid_rgba(2, 2, [100, 150, 200, 255]);
@@ -92,7 +91,7 @@ mod tests {
         assert!(ci.pixels.iter().all(|&p| p == expected));
     }
 
-    /// 完全に透明なピクセルが正しく変換されていることを確認する
+    /// 完全に透明なピクセルが正しく変換されていること
     #[test]
     fn color_image_transparent_pixel_preserved() {
         let img = solid_rgba(1, 1, [0, 0, 0, 0]);
@@ -103,7 +102,7 @@ mod tests {
         );
     }
 
-    /// 長辺上限を超える画像はプレビュー用に縮小されることを確認する
+    /// 長辺上限を超える画像はプレビュー用に縮小されること
     #[test]
     fn preview_downscales_oversized_image() {
         let img = solid_rgba(PREVIEW_MAX_DIMENSION + 100, 100, [255, 0, 0, 255]);

@@ -3,10 +3,10 @@
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
+use eframe::egui;
+
 use crate::app::state::{App, UpdateUiPhase, UpdateWorkerMsg};
 use crate::update::{UpdateApplyOutcome, UpdateCheckOutcome, apply_update, check_for_update};
-
-use eframe::egui;
 
 // ======================================================================
 // アプリ更新
@@ -141,11 +141,11 @@ impl App {
 mod tests {
     use std::sync::mpsc;
 
-    use crate::app::state::{App, UpdateUiPhase};
-
     use eframe::egui;
 
-    /// 結果の前に送信側が切断されると、更新処理を失敗として扱い再試行できることを確認する
+    use crate::app::state::{App, UpdateUiPhase};
+
+    /// 結果の前に送信側が切断されると、更新処理を失敗として扱い再試行できること
     #[test]
     fn poll_update_fails_when_sender_disconnected() {
         let ctx = egui::Context::default();

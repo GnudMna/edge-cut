@@ -13,13 +13,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
+use eframe::egui;
+use image::DynamicImage;
+
 use super::image_convert::to_preview_color_image;
 use super::state::{TrimPreview, TrimWorkerResult};
 use crate::panic_message::catch_panic;
 use crate::trim::detect_trim;
-
-use eframe::egui;
-use image::DynamicImage;
 
 /// ワーカーへ送るトリミング要求
 pub(super) struct TrimJob {
@@ -119,9 +119,9 @@ fn take_latest(mut job: TrimJob, job_rx: &Receiver<TrimJob>) -> TrimJob {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::*;
-
     use image::RgbaImage;
+
+    use super::*;
 
     fn solid_image() -> Arc<DynamicImage> {
         // 逐次/並列切替の閾値付近のサイズにし、連続 submit 時に coalesce しやすくする
@@ -131,7 +131,7 @@ mod tests {
         ))
     }
 
-    /// 連続送信されたジョブのうち、最新の `request_id` の結果だけが返ることを確認する
+    /// 連続送信されたジョブのうち、最新の `request_id` の結果だけが返ること
     #[test]
     fn coalesces_pending_jobs_to_latest() {
         let (result_tx, result_rx) = mpsc::channel();
@@ -170,7 +170,7 @@ mod tests {
         }
     }
 
-    /// ジョブ本体が panic しても、失敗結果として同じ `request_id` で返ることを確認する
+    /// ジョブ本体が panic しても、失敗結果として同じ `request_id` で返ること
     #[test]
     fn run_guarded_converts_panic_to_error() {
         let job = TrimJob {
@@ -194,7 +194,7 @@ mod tests {
         assert!(result.outcome.is_ok());
     }
 
-    /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれることを確認する
+    /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれること
     #[test]
     fn take_latest_carries_over_refresh_orig_tex() {
         let ctx = egui::Context::default();

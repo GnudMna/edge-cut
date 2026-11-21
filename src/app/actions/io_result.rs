@@ -4,10 +4,10 @@ use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::app::state::{App, IoMsg, SaveKind};
-
 use eframe::egui;
 use image::DynamicImage;
+
+use crate::app::state::{App, IoMsg, SaveKind};
 
 // ======================================================================
 // 定数
@@ -116,6 +116,14 @@ impl App {
                         Err(msg) => self.status = msg,
                     }
                 }
+                IoMsg::PastedFiles { request_id, paths } => {
+                    // 後続の読み込み・貼り付け・クリアで無効化された結果は捨てる
+                    if request_id != self.io.load_request_id {
+                        continue;
+                    }
+                    // ドロップと同じく、1 件ならプレビュー、複数またはフォルダなら一括トリミング
+                    self.handle_dropped_paths(ctx, paths);
+                }
                 IoMsg::DialogClosed(result) => self.handle_dialog_result(ctx, result),
             }
         }
@@ -130,16 +138,16 @@ impl App {
 mod tests {
     use std::path::Path;
 
-    use super::CLIPBOARD_SOURCE_NAME;
-    use crate::app::actions::test_helpers::make_test_image;
-    use crate::app::state::{App, IoMsg};
-
     use eframe::egui;
+
+    use super::CLIPBOARD_SOURCE_NAME;
+    use crate::app::actions::test_helpers::{make_test_image, poll_io_until};
+    use crate::app::state::{App, IoMsg};
 
     // ======================================================================
     // クリップボード結果の受信
     // ======================================================================
-    /// 有効な貼り付け結果を受信すると元画像として設定することを確認する
+    /// 有効な貼り付け結果を受信すると元画像として設定すること
     #[test]
     fn poll_io_applies_pasted_image() {
         let ctx = egui::Context::default();
@@ -166,7 +174,77 @@ mod tests {
         );
     }
 
-    /// 貼り付け後に `clear_image()` した場合、遅れて届いた貼り付け結果を無視することを確認する
+    /// コピーされた画像ファイル 1 件を受信すると、ファイルとして読み込むこと
+    #[test]
+    fn poll_io_loads_single_pasted_file() {
+        let ctx = egui::Context::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("input.png");
+        make_test_image().save(&path).unwrap();
+
+        let mut app = App::default();
+        let request_id = app.io.load_request_id;
+        app.io
+            .tx
+            .send(IoMsg::PastedFiles {
+                request_id,
+                paths: vec![path],
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
+        assert!(done, "元画像が設定されなかった: {}", app.status);
+        // 元ファイル名を保持し、クリップボード画像の名前にはならない
+        assert_eq!(
+            app.image.source_name.as_deref(),
+            Some(Path::new("input.png"))
+        );
+    }
+
+    /// 対応画像でないファイルを受信した場合は読み込まず、ステータスで通知すること
+    #[test]
+    fn poll_io_reports_unsupported_pasted_file() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let request_id = app.io.load_request_id;
+        app.io
+            .tx
+            .send(IoMsg::PastedFiles {
+                request_id,
+                paths: vec!["note.txt".into()],
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert!(app.image.original.is_none());
+        assert!(
+            app.status.contains("対応していない"),
+            "status = {}",
+            app.status
+        );
+    }
+
+    /// 貼り付け後に `clear_image()` した場合、遅れて届いたファイルの貼り付け結果を無視すること
+    #[test]
+    fn clear_image_discards_pending_pasted_files() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        let request_id = app.io.load_request_id;
+        app.clear_image();
+        app.io
+            .tx
+            .send(IoMsg::PastedFiles {
+                request_id,
+                paths: vec!["a.png".into()],
+            })
+            .unwrap();
+        app.poll_io(&ctx);
+
+        assert!(app.status.contains("画像を開く"), "status = {}", app.status);
+    }
+
+    /// 貼り付け後に `clear_image()` した場合、遅れて届いた貼り付け結果を無視すること
     #[test]
     fn clear_image_discards_pending_paste_result() {
         let ctx = egui::Context::default();
@@ -186,7 +264,7 @@ mod tests {
         assert!(app.status.contains("画像を開く"), "status = {}", app.status);
     }
 
-    /// コピー結果に応じてステータスを更新することを確認する
+    /// コピー結果に応じてステータスを更新すること
     #[test]
     fn poll_io_reports_copy_result() {
         let ctx = egui::Context::default();

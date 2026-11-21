@@ -1,11 +1,11 @@
 //! フォント設定を提供
 
-use super::loader;
-
 use eframe::egui::{
     Context, FontData, FontFamily,
     epaint::text::{FontInsert, FontPriority, InsertFontFamily},
 };
+
+use super::loader;
 
 // ======================================================================
 // フォント登録

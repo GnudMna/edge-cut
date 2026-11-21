@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
+use eframe::egui;
+use image::DynamicImage;
+
 use crate::app::state::App;
 use crate::app::trim_worker::TrimJob;
 use crate::consts::TRIM_DEBOUNCE_MS;
 use crate::trim::TrimInfo;
-
-use eframe::egui;
-use image::DynamicImage;
 
 // ======================================================================
 // トリミング
@@ -233,18 +233,18 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use eframe::egui;
+
     use crate::app::actions::test_helpers::{
         make_test_image, poll_trim_until_idle, trimmed_image_state,
     };
     use crate::app::state::{App, ImageState, TrimWorkerResult};
 
-    use eframe::egui;
-
     // ======================================================================
     // schedule_trim() / poll_trim_work()
     // ======================================================================
 
-    /// `schedule_trim()` がバックグラウンドでトリミング結果を UI へ反映することを確認する
+    /// `schedule_trim()` がバックグラウンドでトリミング結果を UI へ反映すること
     #[test]
     fn schedule_trim_applies_result_in_background() {
         let ctx = eframe::egui::Context::default();
@@ -273,7 +273,7 @@ mod tests {
         assert!(!app.trim_worker.in_flight);
     }
 
-    /// 読み込み直後のトリミング中にパラメータを変えても元画像テクスチャが失われないことを確認する
+    /// 読み込み直後のトリミング中にパラメータを変えても元画像テクスチャが失われないこと
     #[test]
     fn schedule_trim_keeps_orig_tex_refresh_when_superseded() {
         let ctx = eframe::egui::Context::default();
@@ -303,7 +303,7 @@ mod tests {
         assert!(!app.trim_worker.refresh_orig_tex);
     }
 
-    /// 処理中のジョブと異なる値へ戻した場合、完了済みの結果と一致してもスキップせず再計算することを確認する
+    /// 処理中のジョブと異なる値へ戻した場合、完了済みの結果と一致してもスキップせず再計算すること
     #[test]
     fn schedule_trim_reruns_when_reverted_during_in_flight_job() {
         let ctx = egui::Context::default();
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(app.image.cache_key, Some((0, 0, None)));
     }
 
-    /// `cache_key` に受信時点の UI の値ではなく、ジョブで使った値を記録することを確認する
+    /// `cache_key` に受信時点の UI の値ではなく、ジョブで使った値を記録すること
     #[test]
     fn poll_trim_work_records_job_params_as_cache_key() {
         let ctx = egui::Context::default();
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(app.image.cache_key, Some((1, 0, None)));
     }
 
-    /// ジョブの panic による失敗結果を受け取ると、処理中を解除して古い結果を破棄することを確認する
+    /// ジョブの panic による失敗結果を受け取ると、処理中を解除して古い結果を破棄すること
     #[test]
     fn poll_trim_work_recovers_from_failed_job() {
         let ctx = egui::Context::default();
@@ -381,7 +381,7 @@ mod tests {
         assert!(app.status.contains("boom"), "status: {}", app.status);
     }
 
-    /// ワーカーが終了して結果チャネルが切断されると、処理中を解除してワーカーを再起動することを確認する
+    /// ワーカーが終了して結果チャネルが切断されると、処理中を解除してワーカーを再起動すること
     #[test]
     fn poll_trim_work_restarts_disconnected_worker() {
         let ctx = egui::Context::default();

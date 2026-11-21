@@ -5,14 +5,15 @@ mod fonts;
 mod icon;
 mod image_convert;
 mod load_worker;
+mod save_dir;
 mod shortcuts;
 mod state;
 mod trim_worker;
 mod view;
 
-use crate::consts;
-
 use eframe::egui;
+
+use crate::consts;
 
 // ======================================================================
 // アプリケーション起動
@@ -25,6 +26,10 @@ use eframe::egui;
 /// # Errors
 /// ネイティブウィンドウの初期化またはイベントループの実行に失敗した場合
 pub fn run() -> eframe::Result {
+    // 過去の更新で残った MSI は、起動を遅らせないようバックグラウンドで削除する
+    #[cfg(windows)]
+    std::thread::spawn(crate::update::cleanup_stale_update_dirs);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(consts::APP_NAME)

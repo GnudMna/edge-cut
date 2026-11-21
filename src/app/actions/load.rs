@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
+use eframe::egui;
+
 use crate::app::load_worker::{LoadJob, LoadWorkerHandle};
 use crate::app::state::{App, DialogResult};
 use crate::consts::SUPPORTED_IMAGE_EXTENSIONS;
-
-use eframe::egui;
 
 // ======================================================================
 // 画像読み込み
@@ -86,15 +86,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use eframe::egui;
+
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until, trimmed_image_state};
     use crate::app::state::{App, ImageState};
-
-    use eframe::egui;
 
     // ======================================================================
     // clear_image()
     // ======================================================================
-    /// `clear_image()` が元画像を None に設定することを確認する
+    /// `clear_image()` が元画像を None に設定すること
     #[test]
     fn clear_image_sets_original_to_none() {
         let mut app = App {
@@ -108,7 +108,7 @@ mod tests {
         assert!(app.image.original.is_none());
     }
 
-    /// `clear_image()` 後は保存・コピー対象がなくなることを確認する
+    /// `clear_image()` 後は保存・コピー対象がなくなること
     #[test]
     fn clear_image_clears_trim_target() {
         let mut app = App {
@@ -120,7 +120,7 @@ mod tests {
         assert!(app.image.trim_target().is_none());
     }
 
-    /// `clear_image()` がテクスチャを None に設定することを確認する
+    /// `clear_image()` がテクスチャを None に設定すること
     #[test]
     fn clear_image_sets_info_to_none() {
         let mut app = App {
@@ -146,7 +146,7 @@ mod tests {
         assert!(app.image.info.is_none());
     }
 
-    /// `clear_image()` がステータスメッセージを初期状態にリセットすることを確認する
+    /// `clear_image()` がステータスメッセージを初期状態にリセットすること
     #[test]
     fn clear_image_resets_status_message() {
         let mut app = App {
@@ -159,7 +159,7 @@ mod tests {
         assert!(app.status.contains("画像を開く"));
     }
 
-    /// `clear_image()` が画像がない状態でもパニックせずに動作することを確認する
+    /// `clear_image()` が画像がない状態でもパニックせずに動作すること
     #[test]
     fn clear_image_from_initial_state_does_not_panic() {
         let mut app = App::default();
@@ -172,7 +172,7 @@ mod tests {
     // ======================================================================
     // load_image_from_path() / poll_io()
     // ======================================================================
-    /// `load_image_from_path()` が存在しないファイルを指定した場合にエラーステータスを設定することを確認する
+    /// `load_image_from_path()` が存在しないファイルを指定した場合にエラーステータスを設定すること
     #[test]
     fn load_image_from_path_sets_error_status_for_missing_file() {
         let ctx = egui::Context::default();
@@ -183,7 +183,7 @@ mod tests {
         assert!(done, "status = {}", app.status);
     }
 
-    /// `load_image_from_path()` がエラー時に元画像を設定しないことを確認する
+    /// `load_image_from_path()` がエラー時に元画像を設定しないこと
     #[test]
     fn load_image_from_path_does_not_set_original_on_error() {
         let ctx = egui::Context::default();
@@ -194,7 +194,7 @@ mod tests {
         assert!(app.image.original.is_none());
     }
 
-    /// `load_image_from_path()` がバックグラウンドで読み込んだ画像を元画像に設定することを確認する
+    /// `load_image_from_path()` がバックグラウンドで読み込んだ画像を元画像に設定すること
     #[test]
     fn load_image_from_path_sets_original_in_background() {
         let ctx = egui::Context::default();
@@ -217,7 +217,7 @@ mod tests {
         );
     }
 
-    /// 読み込み中に `clear_image()` した場合、遅れて届いた読み込み結果を無視することを確認する
+    /// 読み込み中に `clear_image()` した場合、遅れて届いた読み込み結果を無視すること
     #[test]
     fn clear_image_discards_pending_load_result() {
         let ctx = egui::Context::default();

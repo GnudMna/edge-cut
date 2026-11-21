@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
@@ -9,6 +10,12 @@
       "Bash(cargo doc:*)",
       "Bash(cargo deny check:*)",
       "Bash(cargo tree:*)",
+      "Bash(pwsh ./scripts/windows/check.ps1:*)",
+      "Bash(pwsh ./scripts/windows/clippy.ps1:*)",
+      "Bash(pwsh ./scripts/windows/format.ps1:*)",
+      "Bash(pwsh ./scripts/windows/test.ps1:*)",
+      "Bash(./scripts/linux/check.sh:*)",
+      "Bash(./scripts/macos/check.sh:*)",
       "PowerShell(cargo build:*)",
       "PowerShell(cargo check:*)",
       "PowerShell(cargo clippy:*)",
@@ -16,13 +23,46 @@
       "PowerShell(cargo test:*)",
       "PowerShell(cargo doc:*)",
       "PowerShell(cargo deny check:*)",
-      "PowerShell(cargo tree:*)"
+      "PowerShell(cargo tree:*)",
+      "PowerShell(./scripts/windows/check.ps1:*)",
+      "PowerShell(./scripts/windows/clippy.ps1:*)",
+      "PowerShell(./scripts/windows/format.ps1:*)",
+      "PowerShell(./scripts/windows/test.ps1:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git fetch:*)",
+      "Bash(git worktree list)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -vv)",
+      "PowerShell(git status:*)",
+      "PowerShell(git diff:*)",
+      "PowerShell(git log:*)",
+      "PowerShell(git show:*)",
+      "PowerShell(git fetch:*)",
+      "PowerShell(git worktree list)",
+      "PowerShell(git branch --show-current)",
+      "PowerShell(git branch -vv)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "PowerShell(git push:*)",
+      "Bash(pwsh ./scripts/windows/release.ps1:*)",
+      "PowerShell(./scripts/windows/release.ps1:*)"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Edit(./.env)",
-      "Edit(./.env.*)"
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Bash(cat .env*)",
+      "PowerShell(Get-Content .env*)",
+      "Read(**/*.key)",
+      "Edit(./keys/**)",
+      "Write(./keys/**)"
     ]
   }
 }

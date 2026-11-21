@@ -11,12 +11,15 @@
 
 ## コーディング規約
 
-Rust ソースの規約は `.claude/rules/` に置く (Claude Code では対象ファイルを扱うときに自動で読み込まれる)。
+規約は `.claude/rules/` に置く (Claude Code では対象ファイルを扱うときに自動で読み込まれる)。
 
-| ファイル | 内容 |
-| :------- | :--- |
-| `comments.md` | コメントの文体 (常体・句点・半角括弧)、セクション区切り、`///` の構成、テストの記述 |
-| `imports.md` | `use` 文のグループ順 (`std` → `super` / `crate` → 外部クレート)・空行・アルファベット順 |
+| ファイル | 対象 | 内容 |
+| :--- | :--- | :--- |
+| `comments.md` | `*.rs` | コメントの文体 (常体・句点・半角括弧)、セクション区切り、`///` の構成 (`pub fn` は必須)、テストの記述 (`〜すること`) |
+| `imports.md` | `*.rs` | `use` 文のグループ順 (`std` → 外部クレート → `super` / `crate`)・空行・アルファベット順 |
+| `docs.md` | ドキュメント (`docs/`・`README.md`・`CHANGELOG.md` など) | 文体・文書ごとの書き分け |
+
+Claude Code 向けには、品質チェック (`/check`) と CHANGELOG 追記 (`/changelog`) のスキルを `.claude/skills/` に、共有の権限設定を `.claude/settings.json` に置く。個人用の上書きは `.claude/settings.local.json` (Git 管理外) に置く。
 
 ## ドキュメントの配置
 
@@ -32,7 +35,7 @@ Rust ソースの規約は `.claude/rules/` に置く (Claude Code では対象�
 | `docs/user/troubleshooting.md` | 利用者 | 症状別の確認事項 |
 | `docs/dev/` | 開発者 | 環境構築・テスト・アーキテクチャ・リリース・開発規約 |
 | `CHANGELOG.md` | 利用者・開発者 | バージョンごとの変更 (`release.ps1` が `[Unreleased]` 節を読むため移動しない) |
-| `CLAUDE.md` | Claude Code | コマンド・アーキテクチャ要約・規約への参照 |
+| `CLAUDE.md` | Claude Code | コマンド・構成の要約・間違えやすい点・規約への参照 |
 
 - 操作・表示が変わる変更では、該当する `docs/user/` のページも同じ変更で更新する
 - `docs/user/` は配布物に HTML で同梱するため、開発者向けの記述 (内部名・実装詳細・ビルド手順) を書かない。相対リンクは `docs/user/` 内のページに限る (外を指す相対リンクはリンク検証で失敗する)

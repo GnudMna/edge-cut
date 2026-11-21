@@ -6,11 +6,11 @@ use std::fs;
 use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
-
 use image::error::LimitErrorKind;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
+
+use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
 
 /// デコーダ内部の作業領域として、画像バッファとは別に確保を許す量
 const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
@@ -153,6 +153,12 @@ impl Error for LoadError {
 /// EXIF の Orientation があれば回転・反転を適用し、表示上の向きで返す
 /// ICC プロファイルも必要な場合は `open_image_with_icc` を使う
 ///
+/// # Arguments
+/// * `path` - 読み込む画像ファイルのパス
+///
+/// # Returns
+/// * `Result<DynamicImage, LoadError>` - 向きを補正した画像
+///
 /// # Errors
 /// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
 pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
@@ -163,6 +169,12 @@ pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
 ///
 /// 検証と向きの補正は `open_image` と同じ
 /// ICC プロファイルは保存時に再埋め込みし、色の見え方を元画像と揃えるために使う
+///
+/// # Arguments
+/// * `path` - 読み込む画像ファイルのパス
+///
+/// # Returns
+/// * `Result<LoadedImage, LoadError>` - 向きを補正した画像と ICC プロファイル (埋め込みがなければ `None`)
 ///
 /// # Errors
 /// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
@@ -205,6 +217,14 @@ pub fn open_image_with_icc(path: &Path) -> Result<LoadedImage, LoadError> {
 
 /// クリップボード由来の RGBA 画像寸法を検証する
 ///
+/// # Arguments
+/// * `width` - 画像の幅 (px)
+/// * `height` - 画像の高さ (px)
+/// * `byte_len` - RGBA バイト列の長さ
+///
+/// # Returns
+/// * `Result<(), LoadError>` - 寸法とバイト列長が妥当なら `Ok(())`
+///
 /// # Errors
 /// 寸法が上限を超える、またはバイト列長が RGBA として不正な場合
 pub fn validate_clipboard_rgba(width: u32, height: u32, byte_len: usize) -> Result<(), LoadError> {
@@ -222,6 +242,12 @@ pub fn validate_clipboard_rgba(width: u32, height: u32, byte_len: usize) -> Resu
 
 /// ファイルサイズが上限内か検証する
 ///
+/// # Arguments
+/// * `size` - ファイルサイズ (バイト)
+///
+/// # Returns
+/// * `Result<(), LoadError>` - 上限内なら `Ok(())`
+///
 /// # Errors
 /// ファイルサイズが上限を超えている場合
 pub fn check_file_size(size: u64) -> Result<(), LoadError> {
@@ -235,6 +261,13 @@ pub fn check_file_size(size: u64) -> Result<(), LoadError> {
 }
 
 /// 画像の幅・高さ・ピクセル数が上限内か検証する
+///
+/// # Arguments
+/// * `width` - 画像の幅 (px)
+/// * `height` - 画像の高さ (px)
+///
+/// # Returns
+/// * `Result<(), LoadError>` - すべて上限内なら `Ok(())`
 ///
 /// # Errors
 /// 幅・高さ・ピクセル数のいずれかが上限を超えている場合
@@ -337,11 +370,11 @@ fn format_dimensions(width: u32, height: u32) -> String {
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use image::codecs::gif::GifEncoder;
     use image::codecs::png::PngEncoder;
     use image::{DynamicImage, ExtendedColorType, Frame, ImageEncoder, Rgba, RgbaImage};
+
+    use super::*;
 
     const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
 
@@ -388,13 +421,13 @@ mod tests {
     // ======================================================================
     // check_dimensions
     // ======================================================================
-    /// 上限内の寸法が受理されることを確認する
+    /// 上限内の寸法が受理されること
     #[test]
     fn check_dimensions_accepts_within_limits() {
         assert!(check_dimensions(4000, 3000).is_ok());
     }
 
-    /// 幅が上限を超えると `DimensionLimitKind::Width` で拒否されることを確認する
+    /// 幅が上限を超えると `DimensionLimitKind::Width` で拒否されること
     #[test]
     fn check_dimensions_rejects_excessive_width() {
         let err = check_dimensions(MAX_IMAGE_WIDTH + 1, 100).unwrap_err();
@@ -407,7 +440,7 @@ mod tests {
         ));
     }
 
-    /// 高さが上限を超えると `DimensionLimitKind::Height` で拒否されることを確認する
+    /// 高さが上限を超えると `DimensionLimitKind::Height` で拒否されること
     #[test]
     fn check_dimensions_rejects_excessive_height() {
         let err = check_dimensions(100, MAX_IMAGE_HEIGHT + 1).unwrap_err();
@@ -420,7 +453,7 @@ mod tests {
         ));
     }
 
-    /// ピクセル数が上限を超えると `DimensionLimitKind::Pixels` で拒否されることを確認する
+    /// ピクセル数が上限を超えると `DimensionLimitKind::Pixels` で拒否されること
     #[test]
     fn check_dimensions_rejects_excessive_pixels() {
         let w = 10_000;
@@ -438,14 +471,14 @@ mod tests {
     // ======================================================================
     // validate_clipboard_rgba
     // ======================================================================
-    /// RGBA バッファ長が不一致のとき `ClipboardSizeMismatch` を返すことを確認する
+    /// RGBA バッファ長が不一致のとき `ClipboardSizeMismatch` を返すこと
     #[test]
     fn validate_clipboard_rgba_rejects_size_mismatch() {
         let err = validate_clipboard_rgba(10, 10, 100).unwrap_err();
         assert!(matches!(err, LoadError::ClipboardSizeMismatch { .. }));
     }
 
-    /// 期待バイト数と一致する RGBA バッファが受理されることを確認する
+    /// 期待バイト数と一致する RGBA バッファが受理されること
     #[test]
     fn validate_clipboard_rgba_accepts_valid_buffer() {
         assert!(validate_clipboard_rgba(2, 2, 16).is_ok());
@@ -454,14 +487,14 @@ mod tests {
     // ======================================================================
     // check_file_size
     // ======================================================================
-    /// ファイルサイズが上限超過のとき `FileTooLarge` を返すことを確認する
+    /// ファイルサイズが上限超過のとき `FileTooLarge` を返すこと
     #[test]
     fn check_file_size_rejects_oversized() {
         let err = check_file_size(MAX_IMAGE_FILE_BYTES + 1).unwrap_err();
         assert!(matches!(err, LoadError::FileTooLarge { .. }));
     }
 
-    /// 上限ちょうどのファイルサイズが受理されることを確認する
+    /// 上限ちょうどのファイルサイズが受理されること
     #[test]
     fn check_file_size_accepts_within_limit() {
         assert!(check_file_size(MAX_IMAGE_FILE_BYTES).is_ok());
@@ -470,7 +503,7 @@ mod tests {
     // ======================================================================
     // open_image
     // ======================================================================
-    /// 存在しないファイルを開くと I/O またはデコードエラーになることを確認する
+    /// 存在しないファイルを開くと I/O またはデコードエラーになること
     #[test]
     fn open_image_rejects_missing_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -479,7 +512,7 @@ mod tests {
         assert!(matches!(err, LoadError::Io(_) | LoadError::Decode(_)));
     }
 
-    /// 小さな PNG ファイルが正常に読み込めることを確認する
+    /// 小さな PNG ファイルが正常に読み込めること
     #[test]
     fn open_image_loads_small_png() {
         let dir = tempfile::tempdir().unwrap();
@@ -490,7 +523,7 @@ mod tests {
         assert_eq!(img.height(), 8);
     }
 
-    /// EXIF Orientation が 6 (時計回り 90°) のとき回転して読み込まれることを確認する
+    /// EXIF Orientation が 6 (時計回り 90°) のとき回転して読み込まれること
     #[test]
     fn open_image_applies_exif_rotate90() {
         let dir = tempfile::tempdir().unwrap();
@@ -504,7 +537,7 @@ mod tests {
         assert_ne!(*img.get_pixel(0, 0), RED);
     }
 
-    /// EXIF Orientation が 2 (左右反転) のとき反転して読み込まれることを確認する
+    /// EXIF Orientation が 2 (左右反転) のとき反転して読み込まれること
     #[test]
     fn open_image_applies_exif_flip_horizontal() {
         let dir = tempfile::tempdir().unwrap();
@@ -518,7 +551,7 @@ mod tests {
         assert_ne!(*img.get_pixel(0, 0), RED);
     }
 
-    /// EXIF Orientation が 1 (無変換) のとき元の向きのまま読み込まれることを確認する
+    /// EXIF Orientation が 1 (無変換) のとき元の向きのまま読み込まれること
     #[test]
     fn open_image_keeps_orientation_when_no_transform() {
         let dir = tempfile::tempdir().unwrap();
@@ -530,7 +563,7 @@ mod tests {
         assert_eq!(*img.get_pixel(0, 0), RED);
     }
 
-    /// 16bit 画像を開けることを確認する
+    /// 16bit 画像を開けること
     #[test]
     fn open_image_loads_16bit_png() {
         let dir = tempfile::tempdir().unwrap();
@@ -544,7 +577,7 @@ mod tests {
         assert_eq!((img.width(), img.height()), (8, 8));
     }
 
-    /// アニメーション GIF は先頭フレームだけが読み込まれることを確認する
+    /// アニメーション GIF は先頭フレームだけが読み込まれること
     #[test]
     fn open_image_reads_only_first_frame_of_animated_gif() {
         let dir = tempfile::tempdir().unwrap();
@@ -566,7 +599,7 @@ mod tests {
     // ======================================================================
     // decode_alloc_budget
     // ======================================================================
-    /// 寸法上限ちょうどの 16bit・32bit float RGBA 画像でもデコード先バッファを確保できることを確認する
+    /// 寸法上限ちょうどの 16bit・32bit float RGBA 画像でもデコード先バッファを確保できること
     #[test]
     fn decode_alloc_budget_covers_high_bit_depth_at_pixel_limit() {
         for bytes_per_pixel in [8, 16] {
@@ -577,7 +610,7 @@ mod tests {
         }
     }
 
-    /// 小さな画像でも RGBA8 最大寸法分の上限を下回らないことを確認する
+    /// 小さな画像でも RGBA8 最大寸法分の上限を下回らないこと
     #[test]
     fn decode_alloc_budget_keeps_rgba8_baseline() {
         let baseline = MAX_IMAGE_PIXELS * 4 + DECODE_ALLOC_MARGIN_BYTES;
@@ -588,7 +621,7 @@ mod tests {
     // ======================================================================
     // LoadError 表示
     // ======================================================================
-    /// メモリ上限による `Limits` エラーが寸法上限ではなくメモリ不足として表示されることを確認する
+    /// メモリ上限による `Limits` エラーが寸法上限ではなくメモリ不足として表示されること
     #[test]
     fn display_distinguishes_memory_limit_from_dimension_limit() {
         use image::error::LimitError;
@@ -607,7 +640,7 @@ mod tests {
         assert!(dimension.contains("16384"));
     }
 
-    /// `FileTooLarge` の表示文字列に上限情報が含まれることを確認する
+    /// `FileTooLarge` の表示文字列に上限情報が含まれること
     #[test]
     fn display_includes_limit_for_oversized_file() {
         let err = LoadError::FileTooLarge {
@@ -619,7 +652,7 @@ mod tests {
         assert!(msg.contains("上限"));
     }
 
-    /// `Io` バリアントが元エラーを `source()` で返すことを確認する
+    /// `Io` バリアントが元エラーを `source()` で返すこと
     #[test]
     fn error_source_returns_io_inner() {
         let inner = io::Error::new(io::ErrorKind::NotFound, "missing");
@@ -628,7 +661,7 @@ mod tests {
         assert!(source.to_string().contains("missing"));
     }
 
-    /// `Decode` バリアントが元エラーを `source()` で返すことを確認する
+    /// `Decode` バリアントが元エラーを `source()` で返すこと
     #[test]
     fn error_source_returns_decode_inner() {
         use image::error::{ParameterError, ParameterErrorKind};

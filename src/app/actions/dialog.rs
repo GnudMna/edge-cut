@@ -2,10 +2,10 @@
 
 use std::thread;
 
+use eframe::egui;
+
 use crate::app::state::{App, DialogResult, IoMsg};
 use crate::panic_message::catch_panic;
-
-use eframe::egui;
 
 // ======================================================================
 // ファイルダイアログ
@@ -95,10 +95,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use eframe::egui;
+
     use crate::app::actions::test_helpers::{poll_io_until, trimmed_image_state};
     use crate::app::state::{App, DialogResult, IoMsg, SaveRequest};
-
-    use eframe::egui;
 
     // ======================================================================
     // ファイルダイアログ結果の受信
@@ -110,7 +110,7 @@ mod tests {
         app.poll_io(ctx);
     }
 
-    /// 自動保存先フォルダの選択結果を設定へ反映し、キャンセル時は変更しないことを確認する
+    /// 自動保存先フォルダの選択結果を設定へ反映し、キャンセル時は変更しないこと
     #[test]
     fn dialog_result_updates_auto_save_dir() {
         let ctx = egui::Context::default();
@@ -133,7 +133,7 @@ mod tests {
         assert!(!app.io.dialog_open);
     }
 
-    /// 画像選択のキャンセルでは何も読み込まず、表示中の状態を解除することを確認する
+    /// 画像選択のキャンセルでは何も読み込まず、表示中の状態を解除すること
     #[test]
     fn dialog_result_open_image_cancel_does_nothing() {
         let ctx = egui::Context::default();
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(app.io.load_request_id, request_id);
     }
 
-    /// ダイアログ処理の失敗をステータスへ表示し、表示中の状態を解除することを確認する
+    /// ダイアログ処理の失敗をステータスへ表示し、表示中の状態を解除すること
     #[test]
     fn dialog_result_failed_reports_status() {
         let ctx = egui::Context::default();
@@ -164,7 +164,7 @@ mod tests {
         assert!(!app.io.dialog_open);
     }
 
-    /// 保存先が選ばれると、ダイアログを開いた時点の内容で保存し、拡張子なしなら補うことを確認する
+    /// 保存先が選ばれると、ダイアログを開いた時点の内容で保存し、拡張子なしなら補うこと
     #[test]
     fn dialog_result_save_image_writes_file() {
         let ctx = egui::Context::default();
@@ -194,7 +194,7 @@ mod tests {
         assert!(tmp.path().join("out.png").is_file());
     }
 
-    /// 保存先のキャンセルでは保存を開始しないことを確認する
+    /// 保存先のキャンセルでは保存を開始しないこと
     #[test]
     fn dialog_result_save_image_cancel_does_not_save() {
         let ctx = egui::Context::default();
@@ -220,7 +220,7 @@ mod tests {
         assert!(!app.io.dialog_open);
     }
 
-    /// ダイアログ表示中は新しいダイアログを開かないことを確認する
+    /// ダイアログ表示中は新しいダイアログを開かないこと
     #[test]
     fn dialog_is_not_opened_twice() {
         let ctx = egui::Context::default();

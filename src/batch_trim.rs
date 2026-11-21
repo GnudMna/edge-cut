@@ -112,7 +112,14 @@ pub struct BatchTrimResult {
 }
 
 impl BatchTrimResult {
-    /// 出力フォルダ作成失敗など、処理開始前の致命的エラー
+    /// 出力フォルダ作成失敗など、処理開始前の致命的エラーの結果を生成する
+    ///
+    /// # Arguments
+    /// * `out_dir` - 出力先ディレクトリ
+    /// * `message` - ステータスバーに表示する失敗メッセージ
+    ///
+    /// # Returns
+    /// * `Self` - 処理件数が 0 で `fatal_error` を設定した結果
     #[must_use]
     pub fn fatal(out_dir: PathBuf, message: impl Into<String>) -> Self {
         Self {
@@ -126,7 +133,13 @@ impl BatchTrimResult {
         }
     }
 
-    /// ステータスバー向けの要約メッセージ (1 行)
+    /// ステータスバー向けの要約メッセージ (1 行) を生成する
+    ///
+    /// # Arguments
+    /// * `self` - 一括処理の結果
+    ///
+    /// # Returns
+    /// * `String` - 致命的エラーがあればそのメッセージ、なければ件数と出力先の要約
     #[must_use]
     pub fn summary(&self) -> String {
         if let Some(msg) = &self.fatal_error {
@@ -196,6 +209,9 @@ impl BatchTrimResult {
 /// * `params`       - トリム設定
 /// * `cancel`       - `true` になると未着手のファイルを処理せずに打ち切る
 /// * `on_progress`  - 各ファイル完了後に `(処理済み数, 総数)` で呼ばれる (呼び出し元スレッドで実行)
+///
+/// # Returns
+/// * `BatchTrimResult` - 保存件数・連番回避件数・失敗一覧・キャンセル有無
 #[must_use]
 pub fn run_batch_trim(
     paths: &[PathBuf],
@@ -419,7 +435,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
-
     use crate::test_helpers::bordered_rgba;
 
     // ======================================================================
@@ -456,7 +471,7 @@ mod tests {
     // ======================================================================
     // run_batch_trim
     // ======================================================================
-    /// 複数ファイルが既定の出力名で保存されることを確認する
+    /// 複数ファイルが既定の出力名で保存されること
     #[test]
     fn batch_saves_all_files() {
         let ws = TempDir::new();
@@ -489,7 +504,7 @@ mod tests {
         assert!(out.join("b_trimmed.png").is_file());
     }
 
-    /// 元画像の ICC プロファイルが一括出力へ引き継がれることを確認する
+    /// 元画像の ICC プロファイルが一括出力へ引き継がれること
     #[test]
     fn batch_preserves_icc_profile() {
         let ws = TempDir::new();
@@ -522,7 +537,7 @@ mod tests {
         assert_eq!(loaded.icc_profile, Some(icc));
     }
 
-    /// 出力形式を指定すると元の形式に関係なくその形式で保存することを確認する
+    /// 出力形式を指定すると元の形式に関係なくその形式で保存すること
     #[test]
     fn batch_saves_in_specified_format() {
         let ws = TempDir::new();
@@ -556,7 +571,7 @@ mod tests {
         );
     }
 
-    /// 既存出力があるとき連番サフィックスで回避することを確認する
+    /// 既存出力があるとき連番サフィックスで回避すること
     #[test]
     fn batch_avoids_overwriting_existing_output() {
         let ws = TempDir::new();
@@ -589,7 +604,7 @@ mod tests {
         assert_eq!(existing, b"existing");
     }
 
-    /// キャンセル後は未処理ファイルを処理しないことを確認する
+    /// キャンセル後は未処理ファイルを処理しないこと
     ///
     /// 完了時点で着手済みのファイルを確定させるため、並列数 1 で検証する
     #[test]
@@ -622,7 +637,7 @@ mod tests {
         assert!(!out.join("c_trimmed.png").exists());
     }
 
-    /// 存在しない入力はエラーとして集計し、他ファイルは継続することを確認する
+    /// 存在しない入力はエラーとして集計し、他ファイルは継続すること
     #[test]
     fn batch_collects_per_file_errors_and_continues() {
         let ws = TempDir::new();
@@ -653,7 +668,7 @@ mod tests {
         assert!(out.join("good_trimmed.png").is_file());
     }
 
-    /// 並列処理でも全ファイルを保存し、進捗が 1 件ずつ単調に増えることを確認する
+    /// 並列処理でも全ファイルを保存し、進捗が 1 件ずつ単調に増えること
     #[test]
     fn batch_parallel_saves_all_files_and_reports_progress() {
         let ws = TempDir::new();
@@ -686,7 +701,7 @@ mod tests {
         assert_eq!(reported, expected);
     }
 
-    /// 並列処理でも同名出力は連番で衝突回避し、上書きしないことを確認する
+    /// 並列処理でも同名出力は連番で衝突回避し、上書きしないこと
     #[test]
     fn batch_parallel_avoids_collisions_between_workers() {
         let ws = TempDir::new();
@@ -715,7 +730,7 @@ mod tests {
         }
     }
 
-    /// 開始前にキャンセル済みなら 1 件も処理せず、キャンセル扱いになることを確認する
+    /// 開始前にキャンセル済みなら 1 件も処理せず、キャンセル扱いになること
     #[test]
     fn batch_parallel_cancelled_before_start_processes_nothing() {
         let ws = TempDir::new();
@@ -735,7 +750,7 @@ mod tests {
         assert_eq!(fs::read_dir(&out).expect("read out").count(), 0);
     }
 
-    /// 並列処理でもエラーは完了順ではなく入力順に並ぶことを確認する
+    /// 並列処理でもエラーは完了順ではなく入力順に並ぶこと
     #[test]
     fn batch_parallel_orders_errors_by_input() {
         let ws = TempDir::new();
@@ -763,7 +778,7 @@ mod tests {
         assert_eq!(names, ["missing1.png", "missing2.png", "missing3.png"]);
     }
 
-    /// 1 ファイルの処理が panic しても、そのファイルをエラーとして数えて残りを続けることを確認する
+    /// 1 ファイルの処理が panic しても、そのファイルをエラーとして数えて残りを続けること
     #[test]
     fn batch_counts_panicked_file_as_error_and_continues() {
         let inputs: Vec<PathBuf> = ["a.png", "boom.png", "c.png", "d.png"]
@@ -798,7 +813,7 @@ mod tests {
         }
     }
 
-    /// 空の入力では何もせず正常終了することを確認する
+    /// 空の入力では何もせず正常終了すること
     #[test]
     fn batch_empty_input_finishes_immediately() {
         let ws = TempDir::new();
@@ -810,7 +825,7 @@ mod tests {
         assert!(!result.cancelled);
     }
 
-    /// `BatchFileError` が内包する読み込みエラーを `source()` で返すことを確認する
+    /// `BatchFileError` が内包する読み込みエラーを `source()` で返すこと
     #[test]
     fn batch_file_error_source_chains_load_error() {
         use std::error::Error;
@@ -823,7 +838,7 @@ mod tests {
         assert!(Error::source(&err).is_some());
     }
 
-    /// `summary()` がエラー件数を 1 行に要約することを確認する
+    /// `summary()` がエラー件数を 1 行に要約すること
     #[test]
     fn summary_omits_full_error_list() {
         let result = BatchTrimResult {

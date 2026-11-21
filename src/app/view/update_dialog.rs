@@ -1,10 +1,10 @@
 //! 更新ダイアログの描画 (Windows)
 
+use eframe::egui;
+
 use super::ERROR_COLOR;
 use crate::app::state::{App, UpdateUiPhase};
 use crate::image_load::format_bytes;
-
-use eframe::egui;
 
 /// 更新ダイアログの幅
 const UPDATE_DIALOG_WIDTH: f32 = 320.0;

@@ -73,13 +73,13 @@ mod tests {
 
     use super::*;
 
-    /// `load_japanese_font()` がパニックせずに呼び出せることを確認する
+    /// `load_japanese_font()` がパニックせずに呼び出せること
     #[test]
     fn load_japanese_font_does_not_panic() {
         let _ = load_japanese_font();
     }
 
-    /// システムフォントが存在する環境では Some を返す
+    /// システムフォントが存在する環境では `Some` を返すこと
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     #[test]
     fn load_japanese_font_returns_some_when_system_fonts_available() {
@@ -95,7 +95,7 @@ mod tests {
         }
     }
 
-    /// 未対応プラットフォームでは常に None を返す
+    /// 未対応プラットフォームでは常に `None` を返すこと
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     #[test]
     fn load_japanese_font_returns_none_on_unsupported_platform() {

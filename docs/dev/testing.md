@@ -16,7 +16,7 @@ cargo test <テスト名>                      # 単一テスト
 ```
 
 | スクリプト | 説明 |
-| ---------- | ---- |
+| :--- | :--- |
 | `check.*` | 一括チェック (fmt / clippy / deny / test / doc) |
 | `test.*` | テスト実行 |
 | `clippy.*` | Clippy による静的解析 |

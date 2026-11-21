@@ -6,7 +6,7 @@
 
 ```powershell
 git checkout -b release/v0.3.0
-./scripts/windows/release.ps1 -Version 0.3.0   # または -Bump Patch。-DryRun で変更内容のみ表示
+./scripts/windows/release.ps1 -Version 0.3.0   # または -Bump Patch。-DryRun で変更内容のみ表示、-Date でリリース日を指定 (既定は当日)
 ```
 
 1. `Cargo.toml` / `Cargo.lock` のバージョンを更新し、`CHANGELOG.md` の `[Unreleased]` 節をリリース見出しへ移す (空だと失敗する)

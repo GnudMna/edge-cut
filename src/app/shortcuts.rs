@@ -137,9 +137,9 @@ pub(super) fn with_shortcut(ctx: &egui::Context, text: &str, shortcut: KeyboardS
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use super::{Shortcut, ShortcutTracker};
-
     use eframe::egui::{self, Event, Key, Modifiers};
+
+    use super::{Shortcut, ShortcutTracker};
 
     // ======================================================================
     // テスト用のヘルパー関数
@@ -182,7 +182,7 @@ mod tests {
     // ======================================================================
     // 通常のキー
     // ======================================================================
-    /// Ctrl+O で開く、Ctrl+Shift+O で一括トリミングと判定することを確認する
+    /// Ctrl+O で開く、Ctrl+Shift+O で一括トリミングと判定すること
     #[test]
     fn detects_open_and_batch_trim() {
         let ctx = egui::Context::default();
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(r, Some(Shortcut::BatchTrim));
     }
 
-    /// Ctrl+S・Delete・Escape をそれぞれ判定することを確認する
+    /// Ctrl+S・Delete・Escape をそれぞれ判定すること
     #[test]
     fn detects_save_clear_cancel() {
         let ctx = egui::Context::default();
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(r, Some(Shortcut::Cancel));
     }
 
-    /// 修飾キーなしの O・S は操作として判定しないことを確認する
+    /// 修飾キーなしの O・S は操作として判定しないこと
     #[test]
     fn ignores_keys_without_command() {
         let ctx = egui::Context::default();
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(run_frame(&ctx, &mut tracker, none, events, true), None);
     }
 
-    /// `Event::Copy` をコピーと判定することを確認する
+    /// `Event::Copy` をコピーと判定すること
     #[test]
     fn detects_copy_event() {
         let ctx = egui::Context::default();
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(r, Some(Shortcut::Copy));
     }
 
-    /// 無効時は操作を返さないことを確認する
+    /// 無効時は操作を返さないこと
     #[test]
     fn returns_none_when_disabled() {
         let ctx = egui::Context::default();
@@ -268,7 +268,7 @@ mod tests {
     // ======================================================================
     // 貼り付け
     // ======================================================================
-    /// 押下が記録されないまま Ctrl 押下中に V が離されると貼り付けと判定することを確認する
+    /// 押下が記録されないまま Ctrl 押下中に V が離されると貼り付けと判定すること
     #[test]
     fn detects_paste_from_swallowed_press() {
         let ctx = egui::Context::default();
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(r, Some(Shortcut::Paste));
     }
 
-    /// Ctrl を先に離してから V を離しても貼り付けと判定することを確認する
+    /// Ctrl を先に離してから V を離しても貼り付けと判定すること
     #[test]
     fn detects_paste_when_command_released_first() {
         let ctx = egui::Context::default();
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(r, Some(Shortcut::Paste));
     }
 
-    /// 通常の V の押下・解放は貼り付けと判定しないことを確認する
+    /// 通常の V の押下・解放は貼り付けと判定しないこと
     #[test]
     fn ignores_plain_v() {
         let ctx = egui::Context::default();
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(run_frame(&ctx, &mut tracker, none, events, true), None);
     }
 
-    /// Ctrl が押されていなければ、押下の記録がない V の解放も貼り付けと判定しないことを確認する
+    /// Ctrl が押されていなければ、押下の記録がない V の解放も貼り付けと判定しないこと
     #[test]
     fn ignores_release_without_command() {
         let ctx = egui::Context::default();
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(r, None);
     }
 
-    /// 貼り付けの判定後は Ctrl の押下履歴をリセットすることを確認する
+    /// 貼り付けの判定後は Ctrl の押下履歴をリセットすること
     #[test]
     fn resets_command_history_after_paste() {
         let ctx = egui::Context::default();
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(r, None);
     }
 
-    /// 無効時も V の状態を追跡し、有効に戻った後の誤判定を防ぐことを確認する
+    /// 無効時も V の状態を追跡し、有効に戻った後の誤判定を防ぐこと
     #[test]
     fn tracks_state_while_disabled() {
         let ctx = egui::Context::default();

@@ -16,7 +16,7 @@ mod signature;
 mod types;
 mod verify;
 
-pub(crate) use apply::apply_update;
+pub(crate) use apply::{apply_update, cleanup_stale_update_dirs};
 pub(crate) use check::check_for_update;
 pub(crate) use types::{AvailableUpdate, UpdateApplyOutcome, UpdateCheckOutcome};
 

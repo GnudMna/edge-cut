@@ -4,13 +4,13 @@
 
 use std::path::Path;
 
+use semver::Version;
+
 use super::error::UpdateError;
 use super::http;
 use super::types::{AvailableUpdate, UpdateCheckOutcome, VersionApiAsset, VersionApiResponse};
 use super::verify::{parse_asset_digest, validate_asset_name, validate_declared_download_size};
 use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, current_app_version};
-
-use semver::Version;
 
 // ======================================================================
 // パブリック関数

@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::app::state::{App, ImageState};
-
 use eframe::egui;
 use image::{DynamicImage, RgbaImage};
+
+use crate::app::state::{App, ImageState};
 
 // ======================================================================
 // テスト用のヘルパー関数

@@ -5,12 +5,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::thread;
 
+use eframe::egui;
+
 use crate::app::state::{App, AutoSaveKey, DialogResult, IoMsg, SaveKind, SaveRequest};
 use crate::image_output::{self, OutputFormat, SaveOptions};
 use crate::panic_message::catch_panic;
 use crate::trim::apply_trim;
-
-use eframe::egui;
 
 // ======================================================================
 // 保存
@@ -209,19 +209,19 @@ fn save_dialog_formats(first: Option<OutputFormat>) -> Vec<OutputFormat> {
 mod tests {
     use std::fs;
 
+    use eframe::egui;
+
+    use super::save_dialog_formats;
     use crate::app::actions::test_helpers::{
         poll_io_until, poll_trim_until_idle, trimmed_image_state,
     };
     use crate::app::state::{App, ImageState, SaveKind, Settings};
     use crate::image_output::OutputFormat;
 
-    use super::save_dialog_formats;
-    use eframe::egui;
-
     // ======================================================================
     // auto_save_if_enabled()
     // ======================================================================
-    /// `auto_save_if_enabled()` が自動保存が無効な場合に何もしないことを確認する
+    /// `auto_save_if_enabled()` が自動保存が無効な場合に何もしないこと
     #[test]
     fn auto_save_skips_when_disabled() {
         let ctx = egui::Context::default();
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(app.status, status_before);
     }
 
-    /// `auto_save_if_enabled()` がトリミング後の画像がない場合に何もしないことを確認する
+    /// `auto_save_if_enabled()` がトリミング後の画像がない場合に何もしないこと
     #[test]
     fn auto_save_skips_when_no_trimmed_image() {
         let ctx = egui::Context::default();
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(app.status, status_before);
     }
 
-    /// `auto_save_if_enabled()` が自動保存が有効でトリミング後の画像がある場合に PNG ファイルを保存することを確認する
+    /// `auto_save_if_enabled()` が自動保存が有効でトリミング後の画像がある場合に PNG ファイルを保存すること
     #[test]
     fn auto_save_writes_png_file_to_dir() {
         let ctx = egui::Context::default();
@@ -287,7 +287,7 @@ mod tests {
         );
     }
 
-    /// 自動保存が元画像名でファイルを作成し、2 回目は上書きせず連番を付けることを確認する
+    /// 自動保存が元画像名でファイルを作成し、2 回目は上書きせず連番を付けること
     #[test]
     fn auto_save_uses_source_name_and_avoids_overwrite() {
         let ctx = egui::Context::default();
@@ -318,7 +318,7 @@ mod tests {
         assert!(first.is_file());
     }
 
-    /// 自動保存が出力形式の設定に従い、`Original` では元画像の形式を維持することを確認する
+    /// 自動保存が出力形式の設定に従い、`Original` では元画像の形式を維持すること
     #[test]
     fn auto_save_follows_output_format() {
         let ctx = egui::Context::default();
@@ -348,7 +348,7 @@ mod tests {
         assert!(poll_io_until(&mut app, &ctx, |_| webp.is_file()));
     }
 
-    /// `auto_save_if_enabled()` がディレクトリ作成に失敗した場合にエラーステータスを設定することを確認する
+    /// `auto_save_if_enabled()` がディレクトリ作成に失敗した場合にエラーステータスを設定すること
     #[test]
     fn auto_save_error_status_when_dir_creation_fails() {
         let ctx = egui::Context::default();
@@ -374,7 +374,7 @@ mod tests {
         assert!(done, "エラーメッセージを期待したが: {}", app.status);
     }
 
-    /// `spawn_save()` が保存処理の panic を失敗として通知することを確認する
+    /// `spawn_save()` が保存処理の panic を失敗として通知すること
     #[test]
     fn spawn_save_reports_panic_as_failure() {
         let ctx = egui::Context::default();
@@ -391,7 +391,7 @@ mod tests {
         assert!(app.status.contains("テスト用の panic"), "{}", app.status);
     }
 
-    /// 再計算の待ち中に自動保存を有効にした場合、完了後の結果で保存することを確認する
+    /// 再計算の待ち中に自動保存を有効にした場合、完了後の結果で保存すること
     #[test]
     fn request_auto_save_waits_for_pending_trim() {
         let ctx = egui::Context::default();
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
-    /// 同じ結果で自動保存を繰り返し要求しても、連番ファイルを増やさないことを確認する
+    /// 同じ結果で自動保存を繰り返し要求しても、連番ファイルを増やさないこと
     #[test]
     fn auto_save_skips_same_result() {
         let ctx = egui::Context::default();
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
-    /// 自動保存を繰り返しても、ステータスへの追記が重ならないことを確認する
+    /// 自動保存を繰り返しても、ステータスへの追記が重ならないこと
     #[test]
     fn auto_save_status_does_not_accumulate() {
         let ctx = egui::Context::default();
@@ -499,7 +499,7 @@ mod tests {
         );
     }
 
-    /// 保存ダイアログのフィルタが指定形式を先頭に、`Original` を除く全形式を並べることを確認する
+    /// 保存ダイアログのフィルタが指定形式を先頭に、`Original` を除く全形式を並べること
     #[test]
     fn save_dialog_formats_puts_selected_first() {
         let formats = save_dialog_formats(Some(OutputFormat::Webp));

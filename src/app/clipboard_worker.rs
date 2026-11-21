@@ -6,17 +6,18 @@
 //!
 //! ジョブ内の panic は捕捉して失敗結果として返し、ワーカースレッド自体は動かし続ける
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
+
+use eframe::egui;
+use image::DynamicImage;
 
 use super::state::IoMsg;
 use crate::image_load::validate_clipboard_rgba;
 use crate::panic_message::catch_panic;
 use crate::trim::{TrimInfo, apply_trim};
-
-use eframe::egui;
-use image::DynamicImage;
 
 // ======================================================================
 // ジョブ定義
@@ -32,6 +33,9 @@ pub(super) enum ClipboardJob {
         ctx: egui::Context,
     },
     /// クリップボードの画像を取得し、完了を `IoMsg::Pasted` で通知する
+    ///
+    /// 画像がなくファイル (エクスプローラーでコピーしたもの) があれば、
+    /// そのパスを `IoMsg::PastedFiles` で通知する
     Paste {
         /// 読み込み要求 ID。古い結果を無視するために使用する
         request_id: u64,
@@ -73,14 +77,22 @@ impl ClipboardWorkerHandle {
                     }
                     ClipboardJob::Paste { request_id, ctx } => {
                         let result = run_guarded("貼り付け", &mut clipboard, |clipboard| {
-                            get_clipboard(clipboard).and_then(|cb| {
-                                let data = cb
-                                    .get_image()
-                                    .map_err(|_| "クリップボードに画像がありません".to_string())?;
-                                from_clipboard_data(data)
-                            })
+                            get_clipboard(clipboard).and_then(read_paste_content)
                         });
-                        let _ = result_tx.send(IoMsg::Pasted { request_id, result });
+                        let msg = match result {
+                            Ok(PasteContent::Image(image)) => IoMsg::Pasted {
+                                request_id,
+                                result: Ok(image),
+                            },
+                            Ok(PasteContent::Files(paths)) => {
+                                IoMsg::PastedFiles { request_id, paths }
+                            }
+                            Err(msg) => IoMsg::Pasted {
+                                request_id,
+                                result: Err(msg),
+                            },
+                        };
+                        let _ = result_tx.send(msg);
                         ctx.request_repaint();
                     }
                 }
@@ -153,6 +165,34 @@ fn get_clipboard(
 }
 
 // ======================================================================
+// 貼り付け内容の取得
+// ======================================================================
+/// クリップボードから取得した貼り付け内容
+enum PasteContent {
+    /// 画像データ
+    Image(DynamicImage),
+    /// ファイルのパス (エクスプローラーなどでコピーしたファイル)
+    Files(Vec<PathBuf>),
+}
+
+/// クリップボードの画像、なければファイルのパスを取得する
+///
+/// # Arguments
+/// * `cb` - クリップボードアクセス用インスタンス
+///
+/// # Returns
+/// * `Result<PasteContent, String>` - 取得した内容、または失敗時のステータスメッセージ
+fn read_paste_content(cb: &mut arboard::Clipboard) -> Result<PasteContent, String> {
+    if let Ok(data) = cb.get_image() {
+        return from_clipboard_data(data).map(PasteContent::Image);
+    }
+    match cb.get().file_list() {
+        Ok(paths) if !paths.is_empty() => Ok(PasteContent::Files(paths)),
+        _ => Err("クリップボードに画像またはファイルがありません".to_string()),
+    }
+}
+
+// ======================================================================
 // 画像変換
 // ======================================================================
 /// 画像をクリップボード転送用の RGBA データへ変換する
@@ -197,11 +237,11 @@ fn from_clipboard_data(data: arboard::ImageData<'_>) -> Result<DynamicImage, Str
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use image::RgbaImage;
 
-    /// ジョブが panic しても失敗結果として返り、クリップボードが破棄されることを確認する
+    use super::*;
+
+    /// ジョブが panic しても失敗結果として返り、クリップボードが破棄されること
     #[test]
     fn run_guarded_converts_panic_to_error() {
         let mut clipboard = None;
@@ -219,7 +259,7 @@ mod tests {
         assert_eq!(result, Ok(1));
     }
 
-    /// 終了済みのワーカーへ送ると、ジョブが返ることを確認する
+    /// 終了済みのワーカーへ送ると、ジョブが返ること
     #[test]
     fn submit_returns_job_when_worker_terminated() {
         let handle = ClipboardWorkerHandle::terminated();
@@ -233,7 +273,7 @@ mod tests {
         }
     }
 
-    /// RGBA へ変換したデータを戻すと元の画素と一致することを確認する
+    /// RGBA へ変換したデータを戻すと元の画素と一致すること
     #[test]
     fn clipboard_data_round_trip_preserves_pixels() {
         let buf: Vec<u8> = (0u8..2 * 3 * 4).collect();
@@ -246,7 +286,7 @@ mod tests {
         assert_eq!(restored.to_rgba8(), original.to_rgba8());
     }
 
-    /// RGBA 以外の画像も RGBA8 に変換してコピーすることを確認する
+    /// RGBA 以外の画像も RGBA8 に変換してコピーすること
     #[test]
     fn to_clipboard_data_converts_rgb_to_rgba() {
         let rgb = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])));
@@ -255,7 +295,7 @@ mod tests {
         assert_eq!(&data.bytes[..4], &[1, 2, 3, 255]);
     }
 
-    /// バッファ長が寸法と一致しないデータを拒否することを確認する
+    /// バッファ長が寸法と一致しないデータを拒否すること
     #[test]
     fn from_clipboard_data_rejects_size_mismatch() {
         let data = arboard::ImageData {

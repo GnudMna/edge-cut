@@ -28,7 +28,7 @@ pub fn load_icon() -> IconData {
 mod tests {
     use super::*;
 
-    /// `load_icon()` が有効なアイコンデータを返すことを確認する
+    /// `load_icon()` が有効なアイコンデータを返すこと
     #[test]
     fn load_icon_has_nonzero_dimensions() {
         let icon = load_icon();
@@ -36,7 +36,7 @@ mod tests {
         assert!(icon.height > 0);
     }
 
-    /// `load_icon()` が RGBA データの長さが幅と高さに基づいて正しいことを確認する
+    /// `load_icon()` が RGBA データの長さが幅と高さに基づいて正しいこと
     #[test]
     fn load_icon_rgba_length_matches_dimensions() {
         let icon = load_icon();
@@ -44,7 +44,7 @@ mod tests {
         assert_eq!(icon.rgba.len(), expected);
     }
 
-    /// `load_icon()` がパニックせずに呼び出せることを確認する
+    /// `load_icon()` がパニックせずに呼び出せること
     #[test]
     fn load_icon_does_not_panic() {
         // include_bytes! で埋め込んだバイト列が有効な PNG であること

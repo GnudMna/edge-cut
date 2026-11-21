@@ -99,7 +99,13 @@ pub const JPEG_FLATTEN_BACKGROUND: [u8; 3] = [255, 255, 255];
 /// 出力ファイル名の衝突時に付ける連番サフィックスの上限 (`_2` 〜 `_{N}`)
 pub const OUTPUT_SUFFIX_MAX: u32 = 10_000;
 
-/// 拡張子文字列が対応形式かどうか (`ext` は小文字想定)
+/// 拡張子文字列が対応形式かどうかを判定する
+///
+/// # Arguments
+/// * `ext` - ドットを含まない拡張子 (小文字想定)
+///
+/// # Returns
+/// * `bool` - 対応形式なら `true`
 #[must_use]
 pub fn is_supported_image_extension(ext: &str) -> bool {
     SUPPORTED_IMAGE_EXTENSIONS.contains(&ext)
@@ -128,59 +134,59 @@ pub const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 mod tests {
     use super::*;
 
-    /// アプリケーション名が空でないことを確認する
+    /// アプリケーション名が空でないこと
     #[test]
     fn app_name_is_not_empty() {
         assert!(!APP_NAME.is_empty());
     }
 
-    /// デフォルトのウインドウサイズが最小サイズより大きいことを確認する
+    /// デフォルトのウインドウサイズが最小サイズより大きいこと
     #[test]
     fn default_window_size_larger_than_minimum() {
         assert!(DEFAULT_WINDOW_WIDTH > MIN_WINDOW_WIDTH);
         assert!(DEFAULT_WINDOW_HEIGHT > MIN_WINDOW_HEIGHT);
     }
 
-    /// 最小ウインドウサイズが正の値であることを確認する
+    /// 最小ウインドウサイズが正の値であること
     #[test]
     fn minimum_window_size_is_positive() {
         assert!(MIN_WINDOW_WIDTH > 0.0);
         assert!(MIN_WINDOW_HEIGHT > 0.0);
     }
 
-    /// デフォルトのウインドウサイズ配列が個別のコンポーネントと一致することを確認する
+    /// デフォルトのウインドウサイズ配列が個別のコンポーネントと一致すること
     #[test]
     fn default_window_size_array_matches_components() {
         assert_eq!(DEFAULT_WINDOW_SIZE[0], DEFAULT_WINDOW_WIDTH);
         assert_eq!(DEFAULT_WINDOW_SIZE[1], DEFAULT_WINDOW_HEIGHT);
     }
 
-    /// 最小ウインドウサイズ配列が個別のコンポーネントと一致することを確認する
+    /// 最小ウインドウサイズ配列が個別のコンポーネントと一致すること
     #[test]
     fn min_window_size_array_matches_components() {
         assert_eq!(MIN_WINDOW_SIZE[0], MIN_WINDOW_WIDTH);
         assert_eq!(MIN_WINDOW_SIZE[1], MIN_WINDOW_HEIGHT);
     }
 
-    /// 許容度の範囲が正しいことを確認する
+    /// 許容度の範囲が正しいこと
     #[test]
     fn tolerance_range_is_valid() {
         assert!(TOL_MIN < TOL_MAX);
     }
 
-    /// 余白ピクセル数の範囲が正しいことを確認する
+    /// 余白ピクセル数の範囲が正しいこと
     #[test]
     fn padding_range_is_valid() {
         assert!(PADDING_MIN < PADDING_MAX);
     }
 
-    /// `MAX_RGB_SQ_DIST` が 255^2 * 3 であることを確認する
+    /// `MAX_RGB_SQ_DIST` が 255^2 * 3 であること
     #[test]
     fn max_rgb_sq_dist_is_correct() {
         assert_eq!(MAX_RGB_SQ_DIST, 255u64 * 255 * 3);
     }
 
-    /// JPEG 品質の既定値がエンコーダの有効範囲 (1–100) 内であることを確認する
+    /// JPEG 品質の既定値がエンコーダの有効範囲 (1–100) 内であること
     #[test]
     fn jpeg_quality_is_in_valid_range() {
         assert!(JPEG_QUALITY_MIN >= 1);
@@ -188,7 +194,7 @@ mod tests {
         assert!((JPEG_QUALITY_MIN..=JPEG_QUALITY_MAX).contains(&JPEG_QUALITY_DEFAULT));
     }
 
-    /// 画像読み込み上限が正の値であることを確認する
+    /// 画像読み込み上限が正の値であること
     #[test]
     fn image_load_limits_are_positive() {
         assert!(MAX_IMAGE_FILE_BYTES > 0);
@@ -197,14 +203,14 @@ mod tests {
         assert!(MAX_IMAGE_PIXELS > 0);
     }
 
-    /// 最大ピクセル数が幅・高さの積上限内に収まることを確認する
+    /// 最大ピクセル数が幅・高さの積上限内に収まること
     #[test]
     fn max_pixels_fits_within_dimension_box() {
         let box_pixels = u64::from(MAX_IMAGE_WIDTH) * u64::from(MAX_IMAGE_HEIGHT);
         assert!(MAX_IMAGE_PIXELS <= box_pixels);
     }
 
-    /// 対応拡張子リストが空でなく、代表形式を含むことを確認する
+    /// 対応拡張子リストが空でなく、代表形式を含むこと
     #[test]
     fn supported_image_extensions_include_common_formats() {
         assert!(!SUPPORTED_IMAGE_EXTENSIONS.is_empty());

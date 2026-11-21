@@ -1,9 +1,9 @@
 //! 元画像・トリミング後画像のプレビュー描画
 
+use eframe::egui;
+
 use crate::app::state::App;
 use crate::trim::TrimInfo;
-
-use eframe::egui;
 
 /// 元画像プレビューで削られる領域に重ねる暗幕の色
 const TRIM_SHADE_COLOR: egui::Color32 = egui::Color32::from_black_alpha(140);
@@ -139,7 +139,7 @@ impl App {
 /// * `rect` - 市松模様を敷く領域
 /// * `cell` - 1 マスの一辺の長さ
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub(super) fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
+fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
     let visible = rect.intersect(painter.clip_rect());
     if !visible.is_positive() {
         return;

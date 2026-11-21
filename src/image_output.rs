@@ -14,11 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::consts::{
-    DEFAULT_IMAGE_EXTENSION, JPEG_FLATTEN_BACKGROUND, JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX,
-    JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX, is_supported_image_extension,
-};
-
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::tiff::TiffEncoder;
@@ -28,6 +23,11 @@ use image::{
     RgbImage,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::consts::{
+    DEFAULT_IMAGE_EXTENSION, JPEG_FLATTEN_BACKGROUND, JPEG_QUALITY_DEFAULT, JPEG_QUALITY_MAX,
+    JPEG_QUALITY_MIN, OUTPUT_SUFFIX_MAX, is_supported_image_extension,
+};
 
 /// 保存用の一時ファイル名が衝突した場合に試す回数
 const TEMP_FILE_ATTEMPTS: u32 = 100;
@@ -114,7 +114,13 @@ impl OutputFormat {
         Self::Gif,
     ];
 
-    /// 表示名
+    /// UI に表示する形式名を返す
+    ///
+    /// # Arguments
+    /// * `self` - 出力形式
+    ///
+    /// # Returns
+    /// * `&'static str` - 表示名 (例: `PNG`)
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -128,9 +134,15 @@ impl OutputFormat {
         }
     }
 
-    /// 形式に対応する拡張子 (小文字、ドットなし)。先頭が出力時の拡張子
+    /// 形式に対応する拡張子を返す
     ///
     /// `Original` は固有の拡張子を持たないため空を返す
+    ///
+    /// # Arguments
+    /// * `self` - 出力形式
+    ///
+    /// # Returns
+    /// * `&'static [&'static str]` - 拡張子 (小文字、ドットなし) の一覧。先頭が出力時の拡張子
     #[must_use]
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
@@ -146,6 +158,9 @@ impl OutputFormat {
 
     /// 拡張子から形式を判定する (大文字小文字は区別しない)
     ///
+    /// # Arguments
+    /// * `ext` - ドットを含まない拡張子
+    ///
     /// # Returns
     /// * `Option<Self>` - 対応形式なら `Some`。`Original` を返すことはない
     #[must_use]
@@ -156,10 +171,17 @@ impl OutputFormat {
             .find(|f| f.extensions().contains(&ext.as_str()))
     }
 
-    /// 元画像 `source` をこの形式で出力するときの拡張子
+    /// 元画像をこの形式で出力するときの拡張子を返す
     ///
     /// `Original` は元の拡張子を小文字にして維持し、拡張子がない・未対応の場合は
     /// `DEFAULT_IMAGE_EXTENSION` とする
+    ///
+    /// # Arguments
+    /// * `self` - 出力形式
+    /// * `source` - 元画像ファイルのパス
+    ///
+    /// # Returns
+    /// * `String` - 出力ファイルの拡張子 (小文字、ドットなし)
     #[must_use]
     pub fn output_extension(self, source: &Path) -> String {
         if let Some(ext) = self.extensions().first() {
@@ -671,6 +693,9 @@ impl Drop for TempFile {
 /// # Arguments
 /// * `source` - 元画像ファイルのパス
 /// * `format` - 出力形式
+///
+/// # Returns
+/// * `String` - 出力ファイル名 (ディレクトリを含まない)
 #[must_use]
 pub fn trimmed_file_name(source: &Path, format: OutputFormat) -> String {
     format!(
@@ -688,6 +713,9 @@ pub fn trimmed_file_name(source: &Path, format: OutputFormat) -> String {
 /// * `source`  - 元画像ファイルのパス
 /// * `out_dir` - 出力先ディレクトリ
 /// * `format`  - 出力形式
+///
+/// # Returns
+/// * `PathBuf` - 出力ファイルのパス (衝突の回避はしない)
 #[must_use]
 pub fn trimmed_output_path(source: &Path, out_dir: &Path, format: OutputFormat) -> PathBuf {
     out_dir.join(trimmed_file_name(source, format))
@@ -708,10 +736,10 @@ fn trimmed_file_stem(source: &Path) -> String {
 mod tests {
     use std::path::Path;
 
+    use image::{LumaA, Rgba, RgbaImage};
+
     use super::*;
     use crate::image_load::open_image_with_icc;
-
-    use image::{LumaA, Rgba, RgbaImage};
 
     /// 左半分が完全透明、右半分が不透明な赤の RGBA 画像
     fn half_transparent_image() -> DynamicImage {
@@ -738,7 +766,7 @@ mod tests {
     // ======================================================================
     // パス生成
     // ======================================================================
-    /// PNG 拡張子が維持されることを確認する
+    /// PNG 拡張子が維持されること
     #[test]
     fn preserves_png_extension() {
         let path = trimmed_output_path(
@@ -749,7 +777,7 @@ mod tests {
         assert_eq!(path, Path::new("/out/photo_trimmed.png"));
     }
 
-    /// JPEG 拡張子が維持されることを確認する
+    /// JPEG 拡張子が維持されること
     #[test]
     fn preserves_jpeg_extension() {
         let path = trimmed_output_path(
@@ -760,7 +788,7 @@ mod tests {
         assert_eq!(path, Path::new("C:\\out/a_trimmed.jpeg"));
     }
 
-    /// 大文字 `.JPG` が小文字 `.jpg` に正規化されることを確認する
+    /// 大文字 `.JPG` が小文字 `.jpg` に正規化されること
     #[test]
     fn preserves_jpg_extension() {
         let path = trimmed_output_path(
@@ -771,7 +799,7 @@ mod tests {
         assert_eq!(path, Path::new("/out/a_trimmed.jpg"));
     }
 
-    /// `.tif` 拡張子が維持されることを確認する
+    /// `.tif` 拡張子が維持されること
     #[test]
     fn preserves_tif_extension() {
         let path = trimmed_output_path(
@@ -782,7 +810,7 @@ mod tests {
         assert_eq!(path, Path::new("/out/scan_trimmed.tif"));
     }
 
-    /// WebP と BMP 拡張子がそれぞれ維持されることを確認する
+    /// WebP と BMP 拡張子がそれぞれ維持されること
     #[test]
     fn preserves_webp_and_bmp() {
         assert_eq!(
@@ -795,7 +823,7 @@ mod tests {
         );
     }
 
-    /// 未対応拡張子のとき PNG にフォールバックすることを確認する
+    /// 未対応拡張子のとき PNG にフォールバックすること
     #[test]
     fn unknown_extension_falls_back_to_png() {
         let path = trimmed_output_path(
@@ -806,7 +834,7 @@ mod tests {
         assert_eq!(path, Path::new("/out/doc_trimmed.png"));
     }
 
-    /// 拡張子なしのファイル名でも PNG にフォールバックすることを確認する
+    /// 拡張子なしのファイル名でも PNG にフォールバックすること
     #[test]
     fn missing_extension_falls_back_to_png() {
         let path = trimmed_output_path(
@@ -817,7 +845,7 @@ mod tests {
         assert_eq!(path, Path::new("/out/noext_trimmed.png"));
     }
 
-    /// 形式指定時は元の拡張子に関係なく形式の拡張子になることを確認する
+    /// 形式指定時は元の拡張子に関係なく形式の拡張子になること
     #[test]
     fn explicit_format_overrides_source_extension() {
         let src = Path::new("photo.png");
@@ -840,7 +868,7 @@ mod tests {
         );
     }
 
-    /// 元の名前がない場合は `image_trimmed` を使うことを確認する
+    /// 元の名前がない場合は `image_trimmed` を使うこと
     #[test]
     fn empty_source_uses_fallback_stem() {
         assert_eq!(
@@ -852,7 +880,7 @@ mod tests {
     // ======================================================================
     // 出力形式
     // ======================================================================
-    /// 拡張子から形式を大文字小文字を区別せず判定し、未対応は `None` とすることを確認する
+    /// 拡張子から形式を大文字小文字を区別せず判定し、未対応は `None` とすること
     #[test]
     fn output_format_from_extension() {
         assert_eq!(OutputFormat::from_extension("PNG"), Some(OutputFormat::Png));
@@ -868,7 +896,7 @@ mod tests {
         assert_eq!(OutputFormat::from_extension(""), None);
     }
 
-    /// 全形式の出力拡張子が対応拡張子であり、`from_extension` で同じ形式に戻ることを確認する
+    /// 全形式の出力拡張子が対応拡張子であり、`from_extension` で同じ形式に戻ること
     #[test]
     fn output_format_extensions_round_trip() {
         for format in OutputFormat::ALL {
@@ -881,7 +909,7 @@ mod tests {
         }
     }
 
-    /// 未知の保存値は `Original` として読み込むことを確認する
+    /// 未知の保存値は `Original` として読み込むこと
     #[test]
     fn output_format_unknown_value_deserializes_to_original() {
         let value: OutputFormat =
@@ -895,7 +923,7 @@ mod tests {
     // ======================================================================
     // エラー型
     // ======================================================================
-    /// `SaveError` が元の `ImageError` を `source()` で返すことを確認する
+    /// `SaveError` が元の `ImageError` を `source()` で返すこと
     #[test]
     fn save_error_source_returns_encode_inner() {
         use std::error::Error;
@@ -913,7 +941,7 @@ mod tests {
     // ======================================================================
     // JPEG 変換
     // ======================================================================
-    /// 半透明の黒を白背景へ合成すると中間の灰色になることを確認する
+    /// 半透明の黒を白背景へ合成すると中間の灰色になること
     #[test]
     fn blend_over_mixes_with_background() {
         assert_eq!(blend_over(0, 255, 0), 255);
@@ -921,7 +949,7 @@ mod tests {
         assert_eq!(blend_over(0, 255, 128), 127);
     }
 
-    /// 透過を含む画像を JPEG で保存でき、透明部分が白になることを確認する
+    /// 透過を含む画像を JPEG で保存でき、透明部分が白になること
     #[test]
     fn save_image_flattens_alpha_for_jpeg() {
         let tmp = tempfile::tempdir().unwrap();
@@ -940,7 +968,7 @@ mod tests {
         );
     }
 
-    /// JPEG 品質が出力サイズに反映され、範囲外の値は丸められることを確認する
+    /// JPEG 品質が出力サイズに反映され、範囲外の値は丸められること
     #[test]
     fn save_image_with_applies_jpeg_quality() {
         let tmp = tempfile::tempdir().unwrap();
@@ -976,7 +1004,7 @@ mod tests {
         assert_eq!(size_at(200), size_at(JPEG_QUALITY_MAX));
     }
 
-    /// 既定のオプションが `JPEG_QUALITY_DEFAULT` で、`save_image` と同じ出力になることを確認する
+    /// 既定のオプションが `JPEG_QUALITY_DEFAULT` で、`save_image` と同じ出力になること
     #[test]
     fn save_options_default_matches_save_image() {
         assert_eq!(SaveOptions::default().jpeg_quality, JPEG_QUALITY_DEFAULT);
@@ -990,7 +1018,7 @@ mod tests {
         assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap());
     }
 
-    /// 16bit 画像も JPEG で保存できることを確認する
+    /// 16bit 画像も JPEG で保存できること
     #[test]
     fn save_image_converts_16bit_for_jpeg() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1005,7 +1033,7 @@ mod tests {
         assert!(path.is_file());
     }
 
-    /// 全出力形式で各カラータイプの画像を保存・再読み込みできることを確認する
+    /// 全出力形式で各カラータイプの画像を保存・再読み込みできること
     #[test]
     fn save_image_supports_all_formats_and_color_types() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1042,7 +1070,7 @@ mod tests {
         }
     }
 
-    /// 拡張子から形式を判定できない場合はエラーとなり、既存ファイルを壊さないことを確認する
+    /// 拡張子から形式を判定できない場合はエラーとなり、既存ファイルを壊さないこと
     #[test]
     fn save_image_unknown_extension_keeps_existing_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1055,7 +1083,7 @@ mod tests {
         assert_eq!(fs::read(&path).expect("read"), b"keep");
     }
 
-    /// 既存ファイルを新しい内容で上書きし、一時ファイルを残さないことを確認する
+    /// 既存ファイルを新しい内容で上書きし、一時ファイルを残さないこと
     #[test]
     fn save_image_overwrites_without_leaving_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1069,7 +1097,7 @@ mod tests {
         assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 1);
     }
 
-    /// 置き換えに失敗した場合はエラーとなり、一時ファイルを残さないことを確認する
+    /// 置き換えに失敗した場合はエラーとなり、一時ファイルを残さないこと
     #[test]
     fn save_image_replace_failure_cleans_up_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1087,7 +1115,7 @@ mod tests {
     // ======================================================================
     // ICC プロファイル
     // ======================================================================
-    /// ICC 対応形式で保存すると元のプロファイルがそのまま埋め込まれることを確認する
+    /// ICC 対応形式で保存すると元のプロファイルがそのまま埋め込まれること
     #[test]
     fn save_image_embeds_icc_profile() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1106,7 +1134,7 @@ mod tests {
         }
     }
 
-    /// ICC プロファイル未指定なら埋め込まないことを確認する
+    /// ICC プロファイル未指定なら埋め込まないこと
     #[test]
     fn save_image_without_icc_profile() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1121,7 +1149,7 @@ mod tests {
         );
     }
 
-    /// CMYK プロファイルは RGB 画像に埋め込まないことを確認する
+    /// CMYK プロファイルは RGB 画像に埋め込まないこと
     #[test]
     fn save_image_skips_mismatched_icc_color_space() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1136,7 +1164,7 @@ mod tests {
         );
     }
 
-    /// グレースケールのプロファイルは、JPEG 化で RGB になった画像には埋め込まないことを確認する
+    /// グレースケールのプロファイルは、JPEG 化で RGB になった画像には埋め込まないこと
     #[test]
     fn save_image_skips_gray_icc_after_rgb_conversion() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1151,7 +1179,7 @@ mod tests {
         );
     }
 
-    /// グレースケール画像は JPEG でもグレースケールのまま保存し、GRAY プロファイルを引き継ぐことを確認する
+    /// グレースケール画像は JPEG でもグレースケールのまま保存し、GRAY プロファイルを引き継ぐこと
     #[test]
     fn save_image_keeps_gray_icc_for_grayscale_jpeg() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1179,7 +1207,7 @@ mod tests {
         }
     }
 
-    /// グレースケールの透過画像を JPEG で保存すると、透明部分が背景色に合成されることを確認する
+    /// グレースケールの透過画像を JPEG で保存すると、透明部分が背景色に合成されること
     #[test]
     fn save_image_flattens_gray_alpha_for_jpeg() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1198,7 +1226,7 @@ mod tests {
         assert!(right < 15, "right = {right}");
     }
 
-    /// ICC 非対応形式ではプロファイルを破棄して保存に成功することを確認する
+    /// ICC 非対応形式ではプロファイルを破棄して保存に成功すること
     #[test]
     fn save_image_ignores_icc_for_unsupported_format() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1211,7 +1239,7 @@ mod tests {
     // ======================================================================
     // 連番保存
     // ======================================================================
-    /// 同名ファイルが無いときは指定名のまま保存することを確認する
+    /// 同名ファイルが無いときは指定名のまま保存すること
     #[test]
     fn save_unique_uses_base_name_when_not_exists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1223,7 +1251,7 @@ mod tests {
         assert!(path.is_file());
     }
 
-    /// 既存ファイルを上書きせず連番サフィックスで回避することを確認する
+    /// 既存ファイルを上書きせず連番サフィックスで回避すること
     #[test]
     fn save_unique_appends_suffix_without_overwriting() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1239,7 +1267,7 @@ mod tests {
         assert_eq!(fs::read(&existing).expect("read"), b"x");
     }
 
-    /// 連番で回避した場合も一時ファイルを残さないことを確認する
+    /// 連番で回避した場合も一時ファイルを残さないこと
     #[test]
     fn save_unique_leaves_no_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1256,7 +1284,7 @@ mod tests {
         assert_eq!(names, ["photo.png", "photo_2.png"]);
     }
 
-    /// ハードリンク非対応時の代替経路で、既存ファイルを上書きせずに新規作成できることを確認する
+    /// ハードリンク非対応時の代替経路で、既存ファイルを上書きせずに新規作成できること
     #[test]
     fn temp_file_reserve_and_replace_creates_new_file_only() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1278,7 +1306,7 @@ mod tests {
         assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 2);
     }
 
-    /// 公開せずに破棄した一時ファイルは削除されることを確認する
+    /// 公開せずに破棄した一時ファイルは削除されること
     #[test]
     fn temp_file_removed_on_drop() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1288,7 +1316,7 @@ mod tests {
         assert_eq!(fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
     }
 
-    /// トリミング結果が `{名前}_trimmed.{拡張子}` で保存され、2 回目は連番になることを確認する
+    /// トリミング結果が `{名前}_trimmed.{拡張子}` で保存され、2 回目は連番になること
     #[test]
     fn save_trimmed_output_names_and_suffixes() {
         let tmp = tempfile::tempdir().unwrap();

@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
+use eframe::egui;
+
 use super::state::IoMsg;
 use crate::image_load::{LoadedImage, open_image_with_icc};
 use crate::panic_message::catch_panic;
-
-use eframe::egui;
 
 // ======================================================================
 // ジョブ定義
@@ -124,7 +124,7 @@ mod tests {
         }
     }
 
-    /// キューに溜まったジョブのうち最新のものだけが残ることを確認する
+    /// キューに溜まったジョブのうち最新のものだけが残ること
     #[test]
     fn take_latest_keeps_only_newest_job() {
         let ctx = egui::Context::default();
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(latest.request_id, 4);
     }
 
-    /// 読み込み本体が panic しても、失敗結果として返ることを確認する
+    /// 読み込み本体が panic しても、失敗結果として返ること
     #[test]
     fn load_guarded_converts_panic_to_error() {
         let result = load_guarded(Path::new("dummy.png"), |_| panic!("テスト用の panic"));
@@ -150,7 +150,7 @@ mod tests {
         assert!(msg.contains("テスト用の panic"), "{msg}");
     }
 
-    /// 連続送信したジョブのうち、最新の `request_id` の結果が必ず返り、それより後に古い結果が来ないことを確認する
+    /// 連続送信したジョブのうち、最新の `request_id` の結果が必ず返り、それより後に古い結果が来ないこと
     #[test]
     fn worker_always_returns_latest_result() {
         let (result_tx, result_rx) = mpsc::channel();

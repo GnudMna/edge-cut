@@ -3,11 +3,11 @@
 use std::fs;
 use std::path::PathBuf;
 
+use eframe::egui;
+
 use super::batch::skipped_note;
 use crate::app::state::App;
 use crate::consts::is_supported_image_extension;
-
-use eframe::egui;
 
 // ======================================================================
 // ドラッグ & ドロップ
@@ -52,8 +52,15 @@ impl App {
             }
             _ if self.batch.running => {
                 self.status =
-                    "一括トリミングの実行中は複数ファイル・フォルダのドロップを受け付けません"
+                    "一括トリミングの実行中は複数ファイル・フォルダのドロップ・貼り付けを受け付けません"
                         .into();
+            }
+            _ if self.io.dialog_open => {
+                // 保存先ダイアログを開けないため、ドロップを処理しなかったことを明示する
+                self.status = format!(
+                    "ファイルダイアログを表示中のため、ドロップ・貼り付けした {} 件を処理できませんでした。ダイアログを閉じてからもう一度操作してください",
+                    images.len()
+                );
             }
             _ => self.start_batch_trim(ctx, images, skipped),
         }
@@ -135,16 +142,16 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use eframe::egui;
+
     use super::{expand_dropped_dirs, partition_supported_images};
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until};
     use crate::app::state::App;
 
-    use eframe::egui;
-
     // ======================================================================
     // handle_dropped_paths() / partition_supported_images()
     // ======================================================================
-    /// 対応拡張子のファイルのみを入力順のまま残し、除外件数を返すことを確認する
+    /// 対応拡張子のファイルのみを入力順のまま残し、除外件数を返すこと
     #[test]
     fn partition_supported_images_filters_by_extension() {
         let paths = vec![
@@ -162,7 +169,7 @@ mod tests {
         assert_eq!(skipped, 2);
     }
 
-    /// 画像の拡張子を持つフォルダを除外することを確認する
+    /// 画像の拡張子を持つフォルダを除外すること
     #[test]
     fn partition_supported_images_skips_directories() {
         let tmp = tempfile::Builder::new().suffix(".png").tempdir().unwrap();
@@ -172,7 +179,7 @@ mod tests {
         assert_eq!(skipped, 1);
     }
 
-    /// 対応ファイルがない場合に件数をステータスへ表示し、読み込みを行わないことを確認する
+    /// 対応ファイルがない場合に件数をステータスへ表示し、読み込みを行わないこと
     #[test]
     fn handle_dropped_paths_reports_unsupported_only() {
         let ctx = egui::Context::default();
@@ -187,7 +194,7 @@ mod tests {
         assert!(app.image.original.is_none());
     }
 
-    /// 空のドロップではステータスを変更しないことを確認する
+    /// 空のドロップではステータスを変更しないこと
     #[test]
     fn handle_dropped_paths_ignores_empty() {
         let ctx = egui::Context::default();
@@ -197,7 +204,7 @@ mod tests {
         assert_eq!(app.status, status_before);
     }
 
-    /// 対応画像が 1 件ならプレビューで開き、完了後のステータスにも除外件数を残すことを確認する
+    /// 対応画像が 1 件ならプレビューで開き、完了後のステータスにも除外件数を残すこと
     #[test]
     fn handle_dropped_paths_loads_single_image_with_note() {
         let ctx = egui::Context::default();
@@ -222,7 +229,7 @@ mod tests {
         );
     }
 
-    /// 一括トリミングの実行中は複数ファイルのドロップを受け付けないことを確認する
+    /// 一括トリミングの実行中は複数ファイルのドロップを受け付けないこと
     #[test]
     fn handle_dropped_paths_rejects_batch_while_running() {
         let ctx = egui::Context::default();
@@ -236,10 +243,28 @@ mod tests {
         );
     }
 
+    /// ダイアログ表示中の複数ファイルのドロップは、処理されなかったことをステータスに示すこと
+    #[test]
+    fn handle_dropped_paths_reports_discarded_while_dialog_open() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.io.dialog_open = true;
+        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
+
+        assert!(
+            app.status.contains("2 件") && app.status.contains("処理できませんでした"),
+            "status = {}",
+            app.status
+        );
+        // 追加のダイアログスレッドを起動せず、表示中のままであること
+        assert!(app.io.rx.try_recv().is_err());
+        assert!(app.io.dialog_open);
+    }
+
     // ======================================================================
     // expand_dropped_dirs() / フォルダのドロップ
     // ======================================================================
-    /// フォルダを直下のエントリへ名前順に展開し、ファイルは入力順のまま残すことを確認する
+    /// フォルダを直下のエントリへ名前順に展開し、ファイルは入力順のまま残すこと
     #[test]
     fn expand_dropped_dirs_lists_direct_children_sorted() {
         let ws = tempfile::tempdir().unwrap();
@@ -267,7 +292,7 @@ mod tests {
         assert_eq!(expanded.unreadable_dirs, 0);
     }
 
-    /// フォルダを含まない場合は入力をそのまま返すことを確認する
+    /// フォルダを含まない場合は入力をそのまま返すこと
     #[test]
     fn expand_dropped_dirs_keeps_files_as_is() {
         let paths = vec![PathBuf::from("b.png"), PathBuf::from("a.txt")];
@@ -276,7 +301,7 @@ mod tests {
         assert!(!expanded.has_dir);
     }
 
-    /// 対応画像のないフォルダでは専用のメッセージと除外件数を表示することを確認する
+    /// 対応画像のないフォルダでは専用のメッセージと除外件数を表示すること
     #[test]
     fn handle_dropped_paths_reports_folder_without_images() {
         let ctx = egui::Context::default();
@@ -296,7 +321,7 @@ mod tests {
         assert!(app.image.original.is_none());
     }
 
-    /// 対応画像が 1 件だけのフォルダでもプレビューではなく一括トリミングとして扱うことを確認する
+    /// 対応画像が 1 件だけのフォルダでもプレビューではなく一括トリミングとして扱うこと
     #[test]
     fn handle_dropped_paths_treats_folder_as_batch() {
         let ctx = egui::Context::default();

@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 
+use image::{DynamicImage, GenericImageView, ImageBuffer, Pixel, Rgba, RgbaImage, imageops};
+use rayon::prelude::*;
+
 use crate::consts::{
     ALPHA_TRANSPARENT_THRESHOLD, BG_DETECT_QUANT_SHIFT, MAX_RGB_SQ_DIST, TOL_MAX, TOL_SCALE_DENOM,
     TRIM_PARALLEL_MIN_PIXELS,
 };
-
-use image::{DynamicImage, GenericImageView, ImageBuffer, Pixel, Rgba, RgbaImage, imageops};
-use rayon::prelude::*;
 
 // ======================================================================
 // トリミング結果
@@ -44,7 +44,13 @@ pub struct TrimInfo {
 }
 
 impl TrimInfo {
-    /// 元画像から切り出す幅 (px)。範囲外へ拡張した余白を含まない
+    /// 元画像から切り出す幅を返す
+    ///
+    /// # Arguments
+    /// * `self` - トリミング情報
+    ///
+    /// # Returns
+    /// * `u32` - 切り出す幅 (px)。範囲外へ拡張した余白を含まない
     #[must_use]
     pub fn crop_w(&self) -> u32 {
         self.trim_w
@@ -52,7 +58,13 @@ impl TrimInfo {
             .saturating_sub(self.extend_right)
     }
 
-    /// 元画像から切り出す高さ (px)。範囲外へ拡張した余白を含まない
+    /// 元画像から切り出す高さを返す
+    ///
+    /// # Arguments
+    /// * `self` - トリミング情報
+    ///
+    /// # Returns
+    /// * `u32` - 切り出す高さ (px)。範囲外へ拡張した余白を含まない
     #[must_use]
     pub fn crop_h(&self) -> u32 {
         self.trim_h
@@ -60,7 +72,13 @@ impl TrimInfo {
             .saturating_sub(self.extend_bottom)
     }
 
-    /// 元画像の範囲外へ余白を拡張するかどうか
+    /// 元画像の範囲外へ余白を拡張するかどうかを判定する
+    ///
+    /// # Arguments
+    /// * `self` - トリミング情報
+    ///
+    /// # Returns
+    /// * `bool` - いずれかの辺を範囲外へ拡張する場合は `true`
     #[must_use]
     pub fn is_extended(&self) -> bool {
         self.extend_left > 0
@@ -212,6 +230,14 @@ fn neighborhood_votes(bins: &HashMap<[u8; 4], u32>, bin: [u8; 4]) -> u32 {
 ///
 /// 座標が画像範囲外のときは `None` を返す
 /// RGBA8 以外の画像も全体を変換せず、指定ピクセルのみを RGBA8 に変換する
+///
+/// # Arguments
+/// * `img` - 対象の画像
+/// * `px` - x 座標 (px)
+/// * `py` - y 座標 (px)
+///
+/// # Returns
+/// * `Option<[u8; 4]>` - 指定座標の RGBA 値。範囲外なら `None`
 #[must_use]
 pub fn sample_pixel(img: &DynamicImage, px: u32, py: u32) -> Option<[u8; 4]> {
     if !img.in_bounds(px, py) {
@@ -286,33 +312,51 @@ pub fn detect_trim(
     }
 
     // 画像全体を RGBA8 へ変換すると大きな画像で操作ごとに巨大な確保が走るため、
-    // 8bit 形式は生バッファから直接、それ以外は画素単位で RGBA8 へ変換して判定する
+    // 色形式ごとに生バッファから直接読み、画素単位で RGBA8 へ変換して判定する
+    macro_rules! detect_raw {
+        ($buf:expr, $channels:literal, $to_rgba8:expr) => {{
+            let raw = $buf.as_raw();
+            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
+                $to_rgba8(raw_pixel::<_, $channels>(raw, w, x, y))
+            })
+        }};
+    }
     match img {
-        DynamicImage::ImageRgba8(buf) => {
-            let raw = buf.as_raw();
-            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
-                raw_pixel::<4>(raw, w, x, y)
-            })
-        }
+        DynamicImage::ImageRgba8(buf) => detect_raw!(buf, 4, |p: [u8; 4]| p),
         DynamicImage::ImageRgb8(buf) => {
-            let raw = buf.as_raw();
-            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
-                let [red, green, blue] = raw_pixel::<3>(raw, w, x, y);
-                [red, green, blue, u8::MAX]
-            })
+            detect_raw!(buf, 3, |[r, g, b]: [u8; 3]| [r, g, b, u8::MAX])
         }
-        DynamicImage::ImageLuma8(buf) => {
-            let raw = buf.as_raw();
-            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
-                let [v] = raw_pixel::<1>(raw, w, x, y);
+        DynamicImage::ImageLuma8(buf) => detect_raw!(buf, 1, |[v]: [u8; 1]| [v, v, v, u8::MAX]),
+        DynamicImage::ImageLumaA8(buf) => detect_raw!(buf, 2, |[v, a]: [u8; 2]| [v, v, v, a]),
+        DynamicImage::ImageRgba16(buf) => {
+            detect_raw!(buf, 4, |p: [u16; 4]| p.map(u16_to_u8))
+        }
+        DynamicImage::ImageRgb16(buf) => {
+            detect_raw!(buf, 3, |[r, g, b]: [u16; 3]| [
+                u16_to_u8(r),
+                u16_to_u8(g),
+                u16_to_u8(b),
+                u8::MAX
+            ])
+        }
+        DynamicImage::ImageLuma16(buf) => {
+            detect_raw!(buf, 1, |[v]: [u16; 1]| {
+                let v = u16_to_u8(v);
                 [v, v, v, u8::MAX]
             })
         }
-        DynamicImage::ImageLumaA8(buf) => {
-            let raw = buf.as_raw();
-            detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
-                let [v, a] = raw_pixel::<2>(raw, w, x, y);
-                [v, v, v, a]
+        DynamicImage::ImageLumaA16(buf) => {
+            detect_raw!(buf, 2, |[v, a]: [u16; 2]| {
+                let v = u16_to_u8(v);
+                [v, v, v, u16_to_u8(a)]
+            })
+        }
+        DynamicImage::ImageRgba32F(buf) => {
+            detect_raw!(buf, 4, |p: [f32; 4]| p.map(f32_to_u8))
+        }
+        DynamicImage::ImageRgb32F(buf) => {
+            detect_raw!(buf, 3, |[r, g, b]: [f32; 3]| {
+                [f32_to_u8(r), f32_to_u8(g), f32_to_u8(b), u8::MAX]
             })
         }
         other => detect_trim_with(w, h, tol, padding, bg_override, |x, y| {
@@ -321,12 +365,31 @@ pub fn detect_trim(
     }
 }
 
-/// 8bit 形式の生バッファから `N` チャネルの画素を読み出す
-fn raw_pixel<const N: usize>(raw: &[u8], w: u32, x: u32, y: u32) -> [u8; N] {
+/// 生バッファから `N` チャネルの画素を読み出す
+fn raw_pixel<T: Copy + Default, const N: usize>(raw: &[T], w: u32, x: u32, y: u32) -> [T; N] {
     let start = (y as usize * w as usize + x as usize) * N;
-    let mut pixel = [0; N];
+    let mut pixel = [T::default(); N];
     pixel.copy_from_slice(&raw[start..start + N]);
     pixel
+}
+
+/// 16bit の成分を 8bit へ丸めて変換する
+///
+/// `image` クレートの `DynamicImage::get_pixel` と同じ `round(c * 255 / 65535)` になる
+#[allow(clippy::cast_possible_truncation)]
+fn u16_to_u8(c: u16) -> u8 {
+    // 最大でも (65535 + 128) / 257 = 255 に収まる
+    ((u32::from(c) + 128) / 257) as u8
+}
+
+/// 浮動小数点の成分 (0.0–1.0) を 8bit へ丸めて変換する
+///
+/// 範囲外は 0.0–1.0 に丸め、NaN は白 (1.0) として扱う。`image` クレートの変換に合わせる
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn f32_to_u8(c: f32) -> u8 {
+    let clamped = if c < 1.0 { c.max(0.0) } else { 1.0 };
+    // clamped は 0.0–1.0 なので 0–255 に収まる
+    (clamped * f32::from(u8::MAX)).round() as u8
 }
 
 /// トリミング情報に従って画像を切り出す
@@ -598,16 +661,15 @@ fn detect_trim_with(
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::test_helpers::{bordered_rgba, solid_rgba};
-
     use image::RgbaImage;
+
+    use super::*;
+    use crate::test_helpers::{bordered_rgba, solid_rgba};
 
     // ======================================================================
     // トリム
     // ======================================================================
-    /// トリミング前後で元画像の幅と高さが保持されていることを確認する
+    /// トリミング前後で元画像の幅と高さが保持されていること
     #[test]
     fn trim_info_preserves_original_dimensions() {
         let img = bordered_rgba(20, 16, 3, [255, 255, 255, 255], [0, 0, 0, 255]);
@@ -616,7 +678,7 @@ mod tests {
         assert_eq!(result.info.orig_h, 16);
     }
 
-    /// 縁が正しく削除されることを確認する
+    /// 縁が正しく削除されること
     #[test]
     fn trim_removes_white_border() {
         // 10x10 / 縁 2px 白 / 中央 6x6 赤
@@ -628,7 +690,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 6);
     }
 
-    /// トリミング後の画像サイズが情報と一致することを確認する
+    /// トリミング後の画像サイズが情報と一致すること
     #[test]
     fn trim_result_image_size_matches_info() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -637,7 +699,7 @@ mod tests {
         assert_eq!(trimmed.image.height(), trimmed.info.trim_h);
     }
 
-    /// 全ピクセルが背景色の場合、トリミング後もサイズが変わらないことを確認する
+    /// 全ピクセルが背景色の場合、トリミング後もサイズが変わらないこと
     #[test]
     fn trim_solid_background_returns_original_size() {
         // 全ピクセルが背景色 → トリミング後もサイズ変わらず
@@ -649,7 +711,7 @@ mod tests {
         assert_eq!(trimmed.image.height(), 8);
     }
 
-    /// 1x1 の画像でもパニックしないことを確認する
+    /// 1x1 の画像でもパニックしないこと
     #[test]
     fn trim_1x1_image_does_not_panic() {
         let img = solid_rgba(1, 1, [255, 0, 0, 255]);
@@ -660,7 +722,7 @@ mod tests {
         assert_eq!(trimmed.image.height(), 1);
     }
 
-    /// 非対称画像のトリミング後の寸法が正しいことを確認する
+    /// 非対称画像のトリミング後の寸法が正しいこと
     #[test]
     fn trim_asymmetric_image_correct_dimensions() {
         // 30x20 / 縁 3px 白 / 中央 24x14 黒
@@ -675,7 +737,7 @@ mod tests {
     // ======================================================================
     // トリム - パディング
     // ======================================================================
-    /// padding を指定したとき、トリミング結果が正しく拡張されることを確認する
+    /// padding を指定したとき、トリミング結果が正しく拡張されること
     #[test]
     fn trim_padding_expands_result() {
         // 20x20 / 縁 5px 白 / 中央 10x10 青
@@ -688,7 +750,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 14);
     }
 
-    /// padding が画像端を越える分は範囲外の余白として追加されることを確認する
+    /// padding が画像端を越える分は範囲外の余白として追加されること
     #[test]
     fn trim_padding_extends_beyond_image_boundary() {
         // 10x10 / 縁 1px 白 / 中央 8x8 緑 / padding=10 → 8 + 10*2 = 28
@@ -733,7 +795,7 @@ mod tests {
         );
     }
 
-    /// 内容が画像の片側に寄っている場合、越えた辺だけが拡張されることを確認する
+    /// 内容が画像の片側に寄っている場合、越えた辺だけが拡張されること
     #[test]
     fn trim_padding_extends_only_exceeding_sides() {
         // 20x10 白 / (1,2)-(3,4) に黒 → 左 1px・上 2px しか余白がない
@@ -762,7 +824,7 @@ mod tests {
         assert_eq!((info.trim_w, info.trim_h), (9, 9));
     }
 
-    /// 範囲外の余白が透明な背景色で塗られることを確認する
+    /// 範囲外の余白が透明な背景色で塗られること
     #[test]
     fn trim_padding_extension_uses_transparent_background() {
         let img = bordered_rgba(6, 6, 1, [0, 0, 0, 0], [255, 0, 0, 255]);
@@ -772,7 +834,7 @@ mod tests {
         assert_eq!(sample_pixel(&result.image, 3, 3), Some([255, 0, 0, 255]));
     }
 
-    /// ほぼ透明な背景色が検出されても範囲外の余白は完全透明で塗られることを確認する
+    /// ほぼ透明な背景色が検出されても範囲外の余白は完全透明で塗られること
     #[test]
     fn trim_padding_extension_on_nearly_transparent_background_is_fully_transparent() {
         let img = bordered_rgba(6, 6, 1, [0, 0, 0, 3], [255, 0, 0, 255]);
@@ -784,7 +846,7 @@ mod tests {
         assert_eq!(sample_pixel(&result.image, 3, 3), Some([255, 0, 0, 255]));
     }
 
-    /// 範囲外の余白を追加しても元画像の色形式 (16bit) が保たれることを確認する
+    /// 範囲外の余白を追加しても元画像の色形式 (16bit) が保たれること
     #[test]
     fn trim_padding_extension_preserves_color_type() {
         let mut rgb = image::ImageBuffer::from_pixel(4, 4, image::Rgb([65535u16, 65535, 65535]));
@@ -801,7 +863,7 @@ mod tests {
         assert_eq!(out.get_pixel(2, 2).0, [1000, 2000, 3000]);
     }
 
-    /// 背景しかない画像には padding を指定しても余白を追加しないことを確認する
+    /// 背景しかない画像には padding を指定しても余白を追加しないこと
     #[test]
     fn trim_padding_not_applied_to_solid_background() {
         let img = solid_rgba(8, 8, [255, 255, 255, 255]);
@@ -813,7 +875,7 @@ mod tests {
     // ======================================================================
     // トリム - 許容誤差
     // ======================================================================
-    /// tol=0 のとき、正確なマッチングでトリミングが行われることを確認する
+    /// tol=0 のとき、正確なマッチングでトリミングが行われること
     #[test]
     fn trim_tolerance_zero_performs_exact_match_trim() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -822,7 +884,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 6);
     }
 
-    /// tol=100 のとき、すべての色が背景として扱われることを確認する
+    /// tol=100 のとき、すべての色が背景として扱われること
     #[test]
     fn trim_max_tolerance_treats_all_colors_as_background() {
         // tol=100 のとき背景(白)との RGB 二乗距離 130050 ≤ 195075 となり、
@@ -838,7 +900,7 @@ mod tests {
     // ======================================================================
     // トリム - 透明ピクセル
     // ======================================================================
-    /// 完全に透明なピクセルが背景として扱われることを確認する
+    /// 完全に透明なピクセルが背景として扱われること
     #[test]
     fn trim_fully_transparent_border_treated_as_background() {
         let mut buf = RgbaImage::new(10, 10);
@@ -860,7 +922,8 @@ mod tests {
         assert_eq!(result.info.trim_h, 6);
     }
 
-    /// 四隅がすべて透明 → bg = 透明キャンバス
+    /// 四隅がすべて透明な画像は透明を背景色とし、半透明の内側を保持すること
+    ///
     /// 内側は半透明(alpha=100 >= 16) → 背景とみなされず保持される
     #[test]
     fn trim_transparent_canvas_uses_alpha_only_for_bg_detection() {
@@ -883,7 +946,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 4);
     }
 
-    /// 透明な背景上の半透明な影が許容度に応じて背景とみなされることを確認する
+    /// 透明な背景上の半透明な影が許容度に応じて背景とみなされること
     #[test]
     fn trim_transparent_canvas_tolerance_removes_semi_transparent_shadow() {
         // 10x10 / 縁 1px 透明 / その内側 1px に半透明の影 (alpha=40) / 中央 6x6 不透明赤
@@ -922,7 +985,7 @@ mod tests {
     // ======================================================================
     // detect_bg (private 関数の間接テスト)
     // ======================================================================
-    /// 幅または高さが 0 の画像でも panic せず白を返すことを確認する
+    /// 幅または高さが 0 の画像でも panic せず白を返すこと
     #[test]
     fn detect_bg_empty_image_returns_white() {
         for (w, h) in [(0, 0), (0, 5), (5, 0)] {
@@ -935,14 +998,14 @@ mod tests {
         }
     }
 
-    /// 1x1 画像では唯一のピクセルの色を返すことを確認する
+    /// 1x1 画像では唯一のピクセルの色を返すこと
     #[test]
     fn detect_bg_single_pixel_returns_that_color() {
         let buf = RgbaImage::from_pixel(1, 1, image::Rgba([10, 20, 30, 255]));
         assert_eq!(detect_background_rgba(&buf), [10, 20, 30, 255]);
     }
 
-    /// 四辺のうち 3 辺を白・1 辺を黒にした場合、白が背景色として選ばれることを確認する
+    /// 四辺のうち 3 辺を白・1 辺を黒にした場合、白が背景色として選ばれること
     #[test]
     fn detect_bg_picks_most_frequent_edge_color() {
         // 10x6 の画像。上・左・右辺を白、下辺だけ黒にする
@@ -966,7 +1029,7 @@ mod tests {
         assert_eq!(bg, [255, 255, 255, 255]);
     }
 
-    /// 全辺のピクセルが同じ色の場合、その色が背景色として選ばれることを確認する
+    /// 全辺のピクセルが同じ色の場合、その色が背景色として選ばれること
     #[test]
     fn detect_bg_all_same_edges_returns_that_color() {
         // 5x5 の画像。全辺を赤で埋める
@@ -984,7 +1047,7 @@ mod tests {
         assert_eq!(bg, [200, 50, 50, 255]);
     }
 
-    /// JPEG ノイズで同系色の票が割れても、完全一致の多い別色より同系色クラスタが選ばれることを確認する
+    /// JPEG ノイズで同系色の票が割れても、完全一致の多い別色より同系色クラスタが選ばれること
     #[test]
     fn detect_bg_groups_noisy_near_white_edges() {
         // 辺の約 3 割を完全一致の黒、残りを多数の異なる近似白にする
@@ -1005,7 +1068,7 @@ mod tests {
         assert_eq!(bg[3], 255);
     }
 
-    /// クラスタ内では最も多い実在色がそのまま返ることを確認する
+    /// クラスタ内では最も多い実在色がそのまま返ること
     #[test]
     fn detect_bg_returns_exact_majority_color_within_cluster() {
         // 白が多数、近似色 250 が少数 → 平均ではなく白そのものを返す
@@ -1020,7 +1083,7 @@ mod tests {
         assert_eq!(bg, [255, 255, 255, 255]);
     }
 
-    /// RGB の異なる透明ピクセルが 1 つのクラスタとして集計されることを確認する
+    /// RGB の異なる透明ピクセルが 1 つのクラスタとして集計されること
     #[test]
     fn detect_bg_groups_transparent_pixels_regardless_of_rgb() {
         // 辺の約 1/3 を不透明な赤、残りを RGB の異なる 3 種の透明色にする
@@ -1040,7 +1103,7 @@ mod tests {
     // ======================================================================
     // トリム - 不透明な背景上の半透明ピクセル
     // ======================================================================
-    /// 不透明な背景と同じ RGB の半透明ピクセルが内容として残ることを確認する
+    /// 不透明な背景と同じ RGB の半透明ピクセルが内容として残ること
     #[test]
     fn trim_semi_transparent_content_on_opaque_bg_is_kept() {
         // 10x10 / 縁 2px 不透明白 / 中央 6x6 半透明白 (alpha=100)
@@ -1053,7 +1116,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 6);
     }
 
-    /// 許容度最大ではアルファ差があっても全体を背景とみなすことを確認する
+    /// 許容度最大ではアルファ差があっても全体を背景とみなすこと
     #[test]
     fn trim_max_tolerance_treats_semi_transparent_as_background() {
         // 不透明白の背景と半透明黒の内容は RGBA 距離が RGB 基準の上限を超えるが、
@@ -1064,7 +1127,7 @@ mod tests {
         assert_eq!(result.info.trim_h, 10);
     }
 
-    /// 手動指定の背景色がトリミング結果に反映されることを確認する
+    /// 手動指定の背景色がトリミング結果に反映されること
     #[test]
     fn trim_manual_background_returns_specified_color() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -1073,7 +1136,7 @@ mod tests {
         assert_eq!(result.background, manual);
     }
 
-    /// 手動で白を指定したとき、自動検出と同じトリミング結果になることを確認する
+    /// 手動で白を指定したとき、自動検出と同じトリミング結果になること
     #[test]
     fn trim_manual_white_matches_auto_detection() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -1088,7 +1151,7 @@ mod tests {
     // ======================================================================
     // detect_trim / apply_trim
     // ======================================================================
-    /// `detect_trim` が `trim` と同じ矩形と背景色を返すことを確認する
+    /// `detect_trim` が `trim` と同じ矩形と背景色を返すこと
     #[test]
     fn detect_trim_matches_trim() {
         let img = bordered_rgba(20, 16, 3, [255, 255, 255, 255], [0, 0, 255, 255]);
@@ -1100,7 +1163,7 @@ mod tests {
         }
     }
 
-    /// RGBA8 以外の画像でも `detect_trim` が矩形を求めることを確認する
+    /// RGBA8 以外の画像でも `detect_trim` が矩形を求めること
     #[test]
     fn detect_trim_handles_non_rgba8_image() {
         let mut rgb = image::RgbImage::from_pixel(10, 8, image::Rgb([255, 255, 255]));
@@ -1117,7 +1180,7 @@ mod tests {
         );
     }
 
-    /// 各色形式で RGBA8 へ一括変換した画像と同じ矩形・背景色を返すことを確認する
+    /// 各色形式で RGBA8 へ一括変換した画像と同じ矩形・背景色を返すこと
     #[test]
     fn detect_trim_matches_rgba8_conversion_for_all_color_types() {
         // 半透明の縁と、背景と僅かに異なる色の内容を持つ画像を各色形式へ変換する
@@ -1156,7 +1219,46 @@ mod tests {
         }
     }
 
-    /// `apply_trim` が矩形どおりの位置・サイズで切り出すことを確認する
+    /// 16bit・浮動小数点の成分変換が `image` クレートの RGBA8 変換と一致すること
+    ///
+    /// 16bit は全値、浮動小数点は範囲外・NaN・丸め境界を含めて比較する
+    #[test]
+    fn component_conversions_match_image_crate() {
+        let all_u16: Vec<u16> = (0..=u16::MAX).collect();
+        let luma16 = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(65536, 1, all_u16)
+            .expect("バッファサイズが一致する");
+        let expected = DynamicImage::ImageLuma16(luma16).to_rgba8();
+        for (c, px) in (0..=u16::MAX).zip(expected.pixels()) {
+            assert_eq!(u16_to_u8(c), px[0], "u16={c}");
+        }
+
+        let floats = [
+            -1.0,
+            0.0,
+            0.001,
+            0.5,
+            0.5 / 255.0,
+            1.5 / 255.0,
+            0.999,
+            1.0,
+            2.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        let rgb32 = image::ImageBuffer::<image::Rgb<f32>, _>::from_raw(
+            u32::try_from(floats.len()).expect("要素数は u32 に収まる"),
+            1,
+            floats.iter().flat_map(|&f| [f, f, f]).collect::<Vec<f32>>(),
+        )
+        .expect("バッファサイズが一致する");
+        let expected = DynamicImage::ImageRgb32F(rgb32).to_rgba8();
+        for (f, px) in floats.iter().zip(expected.pixels()) {
+            assert_eq!(f32_to_u8(*f), px[0], "f32={f}");
+        }
+    }
+
+    /// `apply_trim` が矩形どおりの位置・サイズで切り出すこと
     #[test]
     fn apply_trim_crops_to_info() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -1169,7 +1271,7 @@ mod tests {
         assert_eq!(sample_pixel(&cropped, 1, 1), Some([255, 0, 0, 255]));
     }
 
-    /// 画像全体の矩形では内容を変えずに返すことを確認する
+    /// 画像全体の矩形では内容を変えずに返すこと
     #[test]
     fn apply_trim_full_rect_returns_same_image() {
         let img = solid_rgba(6, 4, [10, 20, 30, 255]);
@@ -1177,7 +1279,7 @@ mod tests {
         assert_eq!(apply_trim(&img, &bounds.info), img);
     }
 
-    /// `sample_pixel` が画像内の色を正しく返すことを確認する
+    /// `sample_pixel` が画像内の色を正しく返すこと
     #[test]
     fn sample_pixel_returns_rgba_at_coordinates() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
@@ -1186,7 +1288,7 @@ mod tests {
         assert_eq!(sample_pixel(&img, 10, 0), None);
     }
 
-    /// RGBA8 以外の画像でも `sample_pixel` が RGBA に変換した色を返すことを確認する
+    /// RGBA8 以外の画像でも `sample_pixel` が RGBA に変換した色を返すこと
     #[test]
     fn sample_pixel_converts_non_rgba8_pixel() {
         let mut rgb = image::RgbImage::from_pixel(4, 3, image::Rgb([10, 20, 30]));

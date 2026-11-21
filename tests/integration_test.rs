@@ -8,11 +8,11 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::images::bordered_rgba;
 use edge_cut::trim::{TrimInfo, sample_pixel};
 use edge_cut::{OutputFormat, open_image, save_image, trim, trimmed_output_path};
-
 use image::DynamicImage;
+
+use common::images::bordered_rgba;
 
 // ======================================================================
 // テスト用ヘルパー
@@ -63,7 +63,7 @@ fn trim_save_and_reload(
 // ======================================================================
 // 統合テスト
 // ======================================================================
-/// PNG を経由した読み込み・トリミング・保存・再読み込みの一連処理を検証する
+/// PNG を経由した読み込み・トリミング・保存・再読み込みを一連で行えるようにすること
 #[test]
 fn trim_pipeline_round_trips_through_png_file() {
     let ws = TempWorkspace::new();
@@ -81,7 +81,7 @@ fn trim_pipeline_round_trips_through_png_file() {
     assert_eq!(sample_pixel(&reloaded, 0, 0), Some([255, 0, 0, 255]));
 }
 
-/// padding 付きトリミング結果がファイル保存後も維持されることを検証する
+/// padding 付きトリミング結果がファイル保存後も維持されること
 #[test]
 fn trim_with_padding_persists_after_save() {
     let ws = TempWorkspace::new();
@@ -98,7 +98,7 @@ fn trim_with_padding_persists_after_save() {
     assert_eq!(info.trim_h, 14);
 }
 
-/// 画像端を越える padding の余白が背景色で塗られ、保存後も維持されることを検証する
+/// 画像端を越える padding の余白が背景色で塗られ、保存後も維持されること
 #[test]
 fn trim_with_padding_beyond_image_persists_after_save() {
     let ws = TempWorkspace::new();
@@ -117,7 +117,7 @@ fn trim_with_padding_beyond_image_persists_after_save() {
     assert_eq!(sample_pixel(&reloaded, 17, 17), Some([255, 255, 255, 255]));
 }
 
-/// 手動背景色を白に指定したとき、自動検出と同じ結果でラウンドトリップできることを検証する
+/// 手動背景色を白に指定したとき、自動検出と同じ結果でラウンドトリップできること
 #[test]
 fn trim_with_manual_background_round_trips() {
     let ws = TempWorkspace::new();
@@ -140,7 +140,7 @@ fn trim_with_manual_background_round_trips() {
     assert_eq!(reloaded.height(), manual.info.trim_h);
 }
 
-/// 一括トリミング相当の入出力パスで複数ファイルを処理できることを検証する
+/// 一括トリミング相当の入出力パスで複数ファイルを処理できること
 #[test]
 fn batch_trim_workflow_writes_expected_output_files() {
     let ws = TempWorkspace::new();
@@ -182,7 +182,7 @@ fn batch_trim_workflow_writes_expected_output_files() {
     assert_eq!(saved, sources.len());
 }
 
-/// JPEG 形式でも読み込み・トリミング・保存のラウンドトリップができることを検証する
+/// JPEG 形式でも読み込み・トリミング・保存のラウンドトリップができること
 #[test]
 fn trim_pipeline_round_trips_through_jpeg_file() {
     let ws = TempWorkspace::new();
@@ -214,7 +214,7 @@ fn trim_pipeline_round_trips_through_jpeg_file() {
     assert_eq!(reloaded.height(), info.trim_h);
 }
 
-/// 画像以外のファイルを開くとエラーになることを検証する
+/// 画像以外のファイルを開くとエラーになること
 #[test]
 fn open_image_rejects_non_image_file() {
     let ws = TempWorkspace::new();

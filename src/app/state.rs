@@ -1,14 +1,17 @@
 //! アプリケーションの状態管理
 
-use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use eframe::egui;
+use image::DynamicImage;
+
 use super::clipboard_worker::ClipboardWorkerHandle;
 use super::load_worker::LoadWorkerHandle;
+use super::save_dir::default_auto_save_dir;
 use super::shortcuts::ShortcutTracker;
 use super::trim_worker::TrimWorkerHandle;
 use crate::consts::{
@@ -18,9 +21,6 @@ use crate::consts::{
 use crate::image_load::LoadedImage;
 use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
-
-use eframe::egui;
-use image::DynamicImage;
 
 /// トリミング結果を決めるパラメータ `(tolerance, padding, bg_override)`
 pub(super) type TrimParams = (u32, u32, Option<[u8; 4]>);
@@ -50,7 +50,11 @@ pub(super) const SETTINGS_KEY: &str = "settings";
 /// 永続化対象の UI・トリミング設定
 ///
 /// アプリ状態 (`App::prefs`) としてそのまま保持し、終了時に正規化して保存する
+///
+/// 保存データに無いフィールドは `Default` の値で補う。フィールドの追加・削除・改名があっても
+/// 残りの設定を読み込める
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(super) struct Settings {
     /// 余白検出の許容度 (0–100)
     pub tolerance: u32,
@@ -65,19 +69,11 @@ pub(super) struct Settings {
     /// コンパクト UI モードの有効/無効
     pub compact_mode: bool,
     /// 手動指定の背景色。`None` のとき四辺から自動検出する
-    #[serde(default)]
     pub bg_override: Option<[u8; 4]>,
     /// 保存・自動保存・一括トリミングの出力形式
-    #[serde(default)]
     pub output_format: OutputFormat,
     /// JPEG 保存時のエンコード品質 (1–100)
-    #[serde(default = "default_jpeg_quality")]
     pub jpeg_quality: u8,
-}
-
-/// 永続化データに `jpeg_quality` がない場合の既定値
-fn default_jpeg_quality() -> u8 {
-    JPEG_QUALITY_DEFAULT
 }
 
 impl Default for Settings {
@@ -110,19 +106,6 @@ impl Settings {
         }
         self
     }
-}
-
-/// 自動保存先デフォルトパスを決定する
-fn default_auto_save_dir() -> PathBuf {
-    env::var_os("USERPROFILE")
-        .or_else(|| env::var_os("HOME"))
-        .map(|h| PathBuf::from(h).join("Pictures").join("EdgeCut"))
-        .or_else(|| {
-            env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.join("output")))
-        })
-        .unwrap_or_else(|| PathBuf::from("output"))
 }
 
 // ======================================================================
@@ -302,6 +285,13 @@ pub(super) enum IoMsg {
         /// 取得した画像、または失敗時のステータスメッセージ
         result: Result<DynamicImage, String>,
     },
+    /// クリップボードからファイルのパスを取得した
+    PastedFiles {
+        /// 読み込み要求 ID。古い結果を無視するために使用する
+        request_id: u64,
+        /// コピーされていたファイル・フォルダのパス
+        paths: Vec<PathBuf>,
+    },
     /// ファイルダイアログが閉じられた
     DialogClosed(DialogResult),
 }
@@ -434,8 +424,10 @@ pub(super) struct BatchState {
     pub cancel: Arc<AtomicBool>,
     /// 実行中の一括トリミングスレッド。終了時に完了を待つ
     pub handle: Option<JoinHandle<()>>,
-    /// 直近バッチのエラー詳細 (ステータスバーは要約のみ、ホバーで全文表示)
+    /// 直近バッチのエラー詳細 (ステータスバーは要約のみ、全文はエラー一覧ウィンドウで表示)
     pub last_error_details: Vec<String>,
+    /// エラー一覧ウィンドウを表示中かどうか
+    pub errors_open: bool,
     /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
     pub skipped_inputs: usize,
 }
@@ -448,6 +440,7 @@ impl Default for BatchState {
             cancel: Arc::new(AtomicBool::new(false)),
             handle: None,
             last_error_details: Vec::new(),
+            errors_open: false,
             skipped_inputs: 0,
         }
     }
@@ -559,6 +552,9 @@ pub struct App {
 impl App {
     /// アプリケーションの初期状態を生成する
     ///
+    /// # Arguments
+    /// * `storage` - eframe の永続化ストレージ。保存済みの設定があれば復元する
+    ///
     /// # Returns
     /// * `Self` - 初期化済みの `App`
     pub fn new(storage: Option<&dyn eframe::Storage>) -> Self {
@@ -601,9 +597,11 @@ impl Default for App {
 mod tests {
     use std::collections::HashMap;
 
+    use eframe::Storage;
+
     use super::*;
 
-    /// `App::default()` が画像なしで初期化されることを確認する
+    /// `App::default()` が画像なしで初期化されること
     #[test]
     fn new_has_no_images() {
         let app = App::default();
@@ -613,7 +611,7 @@ mod tests {
         assert!(app.image.trim_target().is_none());
     }
 
-    /// `App::default()` が許容度と余白をゼロで初期化することを確認する
+    /// `App::default()` が許容度と余白をゼロで初期化すること
     #[test]
     fn new_default_tolerance_and_padding_are_zero() {
         let app = App::default();
@@ -621,42 +619,42 @@ mod tests {
         assert_eq!(app.prefs.padding, 0);
     }
 
-    /// `App::default()` がステータスメッセージを適切に初期化することを確認する
+    /// `App::default()` がステータスメッセージを適切に初期化すること
     #[test]
     fn new_dark_mode_enabled_by_default() {
         let app = App::default();
         assert!(app.prefs.dark_mode);
     }
 
-    /// `App::default()` が自動保存モードをデフォルトで無効にすることを確認する
+    /// `App::default()` が自動保存モードをデフォルトで無効にすること
     #[test]
     fn new_auto_save_disabled_by_default() {
         let app = App::default();
         assert!(!app.prefs.auto_save);
     }
 
-    /// `App::default()` がコンパクトモードをデフォルトで無効にすることを確認する
+    /// `App::default()` がコンパクトモードをデフォルトで無効にすること
     #[test]
     fn new_compact_mode_disabled_by_default() {
         let app = App::default();
         assert!(!app.prefs.compact_mode);
     }
 
-    /// `App::default()` がステータスメッセージを適切に初期化することを確認する
+    /// `App::default()` がステータスメッセージを適切に初期化すること
     #[test]
     fn new_status_message_is_not_empty() {
         let app = App::default();
         assert!(!app.status.is_empty());
     }
 
-    /// `App::default()` が自動保存ディレクトリを適切に初期化することを確認する
+    /// `App::default()` が自動保存ディレクトリを適切に初期化すること
     #[test]
     fn new_auto_save_dir_is_non_empty_path() {
         let app = App::default();
         assert!(!app.prefs.auto_save_dir.as_os_str().is_empty());
     }
 
-    /// 範囲外の許容度が読み込み時にクランプされることを確認する
+    /// 範囲外の許容度が読み込み時にクランプされること
     #[test]
     fn settings_normalize_clamps_tolerance() {
         let s = Settings {
@@ -674,7 +672,7 @@ mod tests {
         assert_eq!(s.tolerance, TOL_MAX);
     }
 
-    /// 範囲外の余白が読み込み時にクランプされることを確認する
+    /// 範囲外の余白が読み込み時にクランプされること
     #[test]
     fn settings_normalize_clamps_padding() {
         let s = Settings {
@@ -685,7 +683,7 @@ mod tests {
         assert_eq!(s.padding, PADDING_MAX);
     }
 
-    /// 範囲外の JPEG 品質が読み込み時にクランプされることを確認する
+    /// 範囲外の JPEG 品質が読み込み時にクランプされること
     #[test]
     fn settings_normalize_clamps_jpeg_quality() {
         for (input, expected) in [(0, JPEG_QUALITY_MIN), (200, JPEG_QUALITY_MAX), (80, 80)] {
@@ -698,7 +696,7 @@ mod tests {
         }
     }
 
-    /// 空の自動保存先がデフォルトパスへ置き換わることを確認する
+    /// 空の自動保存先がデフォルトパスへ置き換わること
     #[test]
     fn settings_normalize_empty_auto_save_dir_uses_default() {
         let s = Settings {
@@ -709,7 +707,7 @@ mod tests {
         assert!(!s.auto_save_dir.as_os_str().is_empty());
     }
 
-    /// `save_settings` が範囲外の値を保存前に正規化することを確認する
+    /// `save_settings` が範囲外の値を保存前に正規化すること
     #[test]
     fn save_settings_clamps_out_of_range_values() {
         let app = App {
@@ -725,14 +723,14 @@ mod tests {
         assert_eq!(s.padding, PADDING_MAX);
     }
 
-    /// デフォルト設定で手動背景色が未指定であることを確認する
+    /// デフォルト設定で手動背景色が未指定であること
     #[test]
     fn settings_default_bg_override_is_none() {
         let s = Settings::default();
         assert_eq!(s.bg_override, None);
     }
 
-    /// `save_settings` が手動背景色を保存することを確認する
+    /// `save_settings` が手動背景色を保存すること
     #[test]
     fn save_settings_includes_bg_override() {
         let manual = [10, 20, 30, 255];
@@ -747,7 +745,7 @@ mod tests {
         assert_eq!(s.bg_override, Some(manual));
     }
 
-    /// 起動時に保存済みの手動背景色がアプリ状態へ復元されることを確認する
+    /// 起動時に保存済みの手動背景色がアプリ状態へ復元されること
     #[test]
     fn app_new_restores_bg_override_from_settings() {
         let manual = [40, 50, 60, 200];
@@ -766,10 +764,40 @@ mod tests {
         assert_eq!(app.background.bg_color, Some(manual));
     }
 
+    /// 保存データに一部のフィールドしかなくても、残りを既定値で補って読み込めること
+    #[test]
+    fn app_new_fills_missing_settings_fields_with_defaults() {
+        let mut storage = TestStorage::default();
+        storage.set_string(
+            SETTINGS_KEY,
+            "(tolerance: 42, compact_mode: true)".to_owned(),
+        );
+
+        let app = App::new(Some(&storage));
+        let defaults = Settings::default();
+        // 保存データにあるフィールドは復元される
+        assert_eq!(app.prefs.tolerance, 42);
+        assert!(app.prefs.compact_mode);
+        // 無いフィールドは既定値になる
+        assert_eq!(app.prefs.padding, defaults.padding);
+        assert_eq!(app.prefs.dark_mode, defaults.dark_mode);
+        assert_eq!(app.prefs.jpeg_quality, JPEG_QUALITY_DEFAULT);
+    }
+
+    /// 保存データに未知のフィールドがあっても、他の設定を読み込めること
+    #[test]
+    fn app_new_ignores_unknown_settings_fields() {
+        let mut storage = TestStorage::default();
+        storage.set_string(SETTINGS_KEY, "(tolerance: 7, removed_field: 1)".to_owned());
+
+        let app = App::new(Some(&storage));
+        assert_eq!(app.prefs.tolerance, 7);
+    }
+
     // ======================================================================
     // 一括トリミング
     // ======================================================================
-    /// 破棄時にキャンセルフラグを立て、一括トリミングスレッドの終了を待つことを確認する
+    /// 破棄時にキャンセルフラグを立て、一括トリミングスレッドの終了を待つこと
     #[test]
     fn batch_state_drop_cancels_and_joins_thread() {
         let mut batch = BatchState::default();
