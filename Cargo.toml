@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -20,15 +20,21 @@ culture = "ja-JP"
 linker-args = ["-sice:ICE91"]
 
 [dependencies]
-arboard = "3"
-eframe  = { version = "0.34.1", features = ["persistence"] }
-image   = "0.25"
-rayon   = "1"
+arboard = "3.6.1"
+eframe  = { version = "0.35.0", features = ["persistence"] }
+image   = "0.25.10"
+rayon   = "1.12.0"
 rfd     = "0.17.2"
-serde   = { version = "1", features = ["derive"] }
+serde   = { version = "1.0.229", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+semver = "1.0.28"
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+ureq = { version = "3.3.0", features = ["json"] }
 
 [target.'cfg(windows)'.build-dependencies]
-winres = "0.1"
+winres = "0.1.12"
 
 [lib]
 name = "edge_cut"

@@ -87,6 +87,20 @@ Invoke-ScriptMain {
     $null = Assert-CargoWixInstalled
     $null = Assert-WixToolsetInstalled
 
+    # アプリ更新のダウンロードキー (gh-release-bridge) をリリースビルドへ埋め込む
+    $edgeCutKey = [string]$env:EDGE_CUT_KEY
+    if ([string]::IsNullOrWhiteSpace($edgeCutKey)) {
+        throw @"
+エラー: 環境変数 EDGE_CUT_KEY が未設定です。
+
+アプリ更新のアセットダウンロードに必要な共有キーです。
+gh-release-bridge の Worker Secret EDGE_CUT_KEY と同値を設定してから再実行してください。
+
+  `$env:EDGE_CUT_KEY = '<key>'
+  ./scripts/windows/build-msi.ps1
+"@
+    }
+
     # WiX UI 用ブランド画像 (未生成時やデザイン更新時に再作成)
     $GenerateAssetsScript = Join-Path $PSScriptRoot 'generate-wix-assets.ps1'
     & $GenerateAssetsScript

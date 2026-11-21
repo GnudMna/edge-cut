@@ -25,6 +25,7 @@
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
 //! | [`app`] | egui ベースの GUI (`app::run`) |
+//! | `update` | gh-release-bridge 経由の更新確認・MSI 適用 (Windows) |
 
 pub mod batch_trim;
 pub mod consts;
@@ -33,6 +34,9 @@ pub mod image_output;
 pub mod trim;
 
 pub mod app;
+
+#[cfg(windows)]
+mod update;
 
 #[cfg(test)]
 pub mod test_helpers;

@@ -3,6 +3,9 @@ const LEGAL_COPYRIGHT: &str = "Copyright (c) 2026 Yuto Hirata";
 const APP_NAME: &str = "EdgeCut";
 
 fn main() {
+    // 更新ダウンロードキー (gh-release-bridge) の埋め込み対象
+    println!("cargo:rerun-if-env-changed=EDGE_CUT_KEY");
+
     // Windows の場合は exe にリソース情報を埋め込む
     #[cfg(windows)]
     {

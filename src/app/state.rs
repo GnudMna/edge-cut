@@ -289,6 +289,69 @@ impl Default for BatchState {
 }
 
 // ======================================================================
+// 更新確認 (Windows)
+// ======================================================================
+/// 更新 UI の状態
+#[cfg(windows)]
+#[derive(Debug, Clone, Default)]
+pub(super) enum UpdateUiPhase {
+    /// 未確認
+    #[default]
+    Idle,
+    /// version API 照会中
+    Checking,
+    /// 最新版
+    UpToDate {
+        /// 現在バージョン
+        current_version: String,
+    },
+    /// 更新あり
+    Available(crate::update::AvailableUpdate),
+    /// MSI ダウンロード・検証中
+    Downloading {
+        /// 確認済みの更新情報
+        update: crate::update::AvailableUpdate,
+    },
+    /// 失敗
+    Error {
+        /// ユーザー向けメッセージ
+        message: String,
+    },
+    /// MSI を起動済み (アプリ終了待ち)
+    MsiStarted,
+}
+
+/// バックグラウンド更新処理の結果
+#[cfg(windows)]
+pub(super) enum UpdateWorkerMsg {
+    /// 更新確認の結果
+    Check(crate::update::UpdateCheckOutcome),
+    /// 更新適用の結果
+    Apply(crate::update::UpdateApplyOutcome),
+}
+
+/// アプリ更新の UI / ワーカー状態
+#[cfg(windows)]
+#[derive(Default)]
+pub(super) struct UpdateState {
+    /// 現在の UI フェーズ
+    pub phase: UpdateUiPhase,
+    /// バックグラウンドからの結果受信
+    pub rx: Option<mpsc::Receiver<UpdateWorkerMsg>>,
+}
+
+#[cfg(windows)]
+impl UpdateState {
+    /// 確認または適用が進行中か
+    pub(super) fn is_busy(&self) -> bool {
+        matches!(
+            self.phase,
+            UpdateUiPhase::Checking | UpdateUiPhase::Downloading { .. }
+        )
+    }
+}
+
+// ======================================================================
 // アプリケーション状態
 // ======================================================================
 /// アプリケーションの状態
@@ -302,6 +365,9 @@ pub struct App {
     pub(super) clipboard: Option<arboard::Clipboard>,
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
+    /// アプリ更新 (Windows のみ)
+    #[cfg(windows)]
+    pub(super) update: UpdateState,
 }
 
 // ======================================================================
@@ -325,6 +391,8 @@ impl App {
             clipboard: None,
             batch: BatchState::default(),
             trim_worker: TrimWorkerState::new(),
+            #[cfg(windows)]
+            update: UpdateState::default(),
         }
     }
 

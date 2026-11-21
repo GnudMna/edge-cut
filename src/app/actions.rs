@@ -478,6 +478,112 @@ impl App {
 }
 
 // ======================================================================
+// アプリ更新 (Windows)
+// ======================================================================
+#[cfg(windows)]
+impl App {
+    /// 更新確認をバックグラウンドで開始する
+    ///
+    /// # Arguments
+    /// * `ctx` - 完了時の再描画に使う egui コンテキスト
+    pub(super) fn start_update_check(&mut self, ctx: &egui::Context) {
+        if self.update.is_busy() {
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.update.rx = Some(rx);
+        self.update.phase = super::state::UpdateUiPhase::Checking;
+        self.status = "更新を確認しています…".into();
+
+        let ctx_clone = ctx.clone();
+        thread::spawn(move || {
+            let outcome = crate::update::check_for_update();
+            let _ = tx.send(super::state::UpdateWorkerMsg::Check(outcome));
+            ctx_clone.request_repaint();
+        });
+    }
+
+    /// 確認済みの更新をダウンロードして MSI を起動する
+    ///
+    /// # Arguments
+    /// * `ctx` - 完了時の再描画に使う egui コンテキスト
+    pub(super) fn start_update_apply(&mut self, ctx: &egui::Context) {
+        if self.update.is_busy() {
+            return;
+        }
+
+        let update = match &self.update.phase {
+            super::state::UpdateUiPhase::Available(u) => u.clone(),
+            _ => return,
+        };
+
+        let (tx, rx) = mpsc::channel();
+        self.update.rx = Some(rx);
+        self.update.phase = super::state::UpdateUiPhase::Downloading {
+            update: update.clone(),
+        };
+        self.status = format!("更新をダウンロードしています… (v{})", update.latest_version);
+
+        let ctx_clone = ctx.clone();
+        thread::spawn(move || {
+            let outcome = crate::update::apply_update(&update);
+            let _ = tx.send(super::state::UpdateWorkerMsg::Apply(outcome));
+            ctx_clone.request_repaint();
+        });
+    }
+
+    /// バックグラウンドの更新処理結果をポーリングする
+    ///
+    /// # Arguments
+    /// * `ctx` - MSI 起動後のウィンドウ終了に使う
+    pub(super) fn poll_update(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.update.rx.as_ref() else {
+            return;
+        };
+        let Ok(msg) = rx.try_recv() else {
+            return;
+        };
+        self.update.rx = None;
+
+        match msg {
+            super::state::UpdateWorkerMsg::Check(outcome) => match outcome {
+                crate::update::UpdateCheckOutcome::UpToDate {
+                    current_version,
+                    latest_version,
+                } => {
+                    self.status =
+                        format!("最新版です (v{current_version}、リモート v{latest_version})");
+                    self.update.phase = super::state::UpdateUiPhase::UpToDate { current_version };
+                }
+                crate::update::UpdateCheckOutcome::Available(update) => {
+                    self.status = format!(
+                        "更新があります: v{} → v{}",
+                        update.current_version, update.latest_version
+                    );
+                    self.update.phase = super::state::UpdateUiPhase::Available(update);
+                }
+                crate::update::UpdateCheckOutcome::Error { message } => {
+                    self.status = format!("更新確認に失敗: {message}");
+                    self.update.phase = super::state::UpdateUiPhase::Error { message };
+                }
+            },
+            super::state::UpdateWorkerMsg::Apply(outcome) => match outcome {
+                crate::update::UpdateApplyOutcome::MsiStarted => {
+                    self.status = "インストーラーを起動しました。アプリを終了します".into();
+                    self.update.phase = super::state::UpdateUiPhase::MsiStarted;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                crate::update::UpdateApplyOutcome::Error { message } => {
+                    self.status = format!("更新の適用に失敗: {message}");
+                    self.update.phase = super::state::UpdateUiPhase::Error { message };
+                }
+            },
+        }
+    }
+}
+
+// ======================================================================
 // テスト
 // ======================================================================
 #[cfg(test)]

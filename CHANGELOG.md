@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-01
+
+### Added
+
+- アプリ更新: ヘルプメニュー (⋯) から [gh-release-bridge](https://gh-release-bridge.gnudlemna-4656.workers.dev) 経由で最新リリースを確認し、MSI をダウンロードして `msiexec` で適用する (Windows)。digest (`sha256:<hex>`) 検証とビルド時埋め込みキー (`EDGE_CUT_KEY`) による認証付きダウンロードに対応
+
 ## [0.1.1] - 2026-07-04
 
 ### Added
@@ -89,8 +95,3 @@
 - アンダーフローによるパニックが発生しうる不具合
 - 既存フォントを上書きしてしまう問題
 - ツールチップに使用できないショートカットキーが記載されていた問題
-
-[Unreleased]: https://github.com/GnudMna/edge-cut/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/GnudMna/edge-cut/compare/v0.0.2...v0.1.0
-[0.0.2]: https://github.com/GnudMna/edge-cut/compare/v0.0.1...v0.0.2
-[0.0.1]: https://github.com/GnudMna/edge-cut/releases/tag/v0.0.1

@@ -19,6 +19,8 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.poll_batch_result();
         self.poll_trim_work(&ctx);
+        #[cfg(windows)]
+        self.poll_update(&ctx);
         apply_theme(&ctx, self.prefs.dark_mode);
         handle_file_drop(self, &ctx);
 
@@ -31,7 +33,7 @@ impl eframe::App for App {
 
 impl App {
     fn render_bottom_panel(&self, ui: &mut egui::Ui, sp: f32) {
-        egui::Panel::bottom("bottom").show_inside(ui, |ui| {
+        egui::Panel::bottom("bottom").show(ui, |ui| {
             ui.add_space(sp);
             ui.horizontal(|ui| {
                 let status = if self.trim_worker.is_busy() {
@@ -71,7 +73,7 @@ impl App {
     }
 
     fn render_top_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Panel::top("top").show_inside(ui, |ui| {
+        egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(if self.prefs.compact_mode { 2.0 } else { 6.0 });
             self.render_action_buttons(ui, ctx);
 
@@ -185,8 +187,74 @@ impl App {
                 {
                     self.prefs.compact_mode = !self.prefs.compact_mode;
                 }
+                #[cfg(windows)]
+                self.render_help_menu(ui, ctx);
             });
         });
+    }
+
+    /// ヘルプメニュー (バージョン・更新確認)
+    #[cfg(windows)]
+    fn render_help_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use super::state::UpdateUiPhase;
+
+        let busy = self.update.is_busy();
+        let mut check_clicked = false;
+        let mut apply_clicked = false;
+
+        ui.menu_button("⋯", |ui| {
+            ui.label(format!("EdgeCut v{}", env!("CARGO_PKG_VERSION")));
+            ui.separator();
+
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui.button("更新を確認").clicked() {
+                    check_clicked = true;
+                    ui.close();
+                }
+            });
+
+            match &self.update.phase {
+                UpdateUiPhase::Idle => {}
+                UpdateUiPhase::Checking => {
+                    ui.label("確認中…");
+                }
+                UpdateUiPhase::UpToDate { current_version } => {
+                    ui.label(format!("最新版です (v{current_version})"));
+                }
+                UpdateUiPhase::Available(update) => {
+                    ui.label(format!(
+                        "v{} → v{} ({})",
+                        update.current_version,
+                        update.latest_version,
+                        format_bytes(update.size)
+                    ));
+                    ui.add_enabled_ui(!busy, |ui| {
+                        if ui.button("更新をインストール…").clicked() {
+                            apply_clicked = true;
+                            ui.close();
+                        }
+                    });
+                }
+                UpdateUiPhase::Downloading { update } => {
+                    ui.label(format!("ダウンロード中… (v{})", update.latest_version));
+                }
+                UpdateUiPhase::Error { message } => {
+                    ui.label(
+                        egui::RichText::new(message).color(egui::Color32::from_rgb(200, 80, 80)),
+                    );
+                }
+                UpdateUiPhase::MsiStarted => {
+                    ui.label("インストーラー起動済み");
+                }
+            }
+        });
+
+        if check_clicked {
+            self.start_update_check(ctx);
+        }
+        if apply_clicked {
+            self.start_update_apply(ctx);
+        }
     }
 
     fn render_trim_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -316,7 +384,7 @@ impl App {
     }
 
     fn render_central_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.image.original.is_none() {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
@@ -403,6 +471,21 @@ impl App {
 // ======================================================================
 // UI ヘルパー
 // ======================================================================
+/// 更新アセットサイズの表示用文字列
+#[cfg(windows)]
+#[allow(clippy::cast_precision_loss)]
+fn format_bytes(n: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    if n >= MIB {
+        format!("{:.1} MB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{:.1} KB", n as f64 / KIB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
 fn apply_theme(ctx: &egui::Context, dark_mode: bool) {
     if dark_mode {
         ctx.set_visuals(egui::Visuals::dark());
