@@ -2,7 +2,6 @@
 
 use eframe::egui;
 
-use super::ERROR_COLOR;
 use crate::app::state::App;
 
 /// エラー一覧ウィンドウの既定の幅
@@ -44,7 +43,7 @@ impl App {
                 ui.label(
                     egui::RichText::new(format!("{} 件のファイルが失敗した", errors.len()))
                         .strong()
-                        .color(ERROR_COLOR),
+                        .color(ui.visuals().error_fg_color),
                 );
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical()

@@ -3,6 +3,7 @@
 //! パネルの組み立てを持ち、各部品の描画をサブモジュールへ分ける
 
 mod batch_errors;
+mod icons;
 mod input;
 mod preview;
 mod settings;
@@ -12,9 +13,7 @@ mod update_dialog;
 use eframe::egui;
 
 use super::state::App;
-
-/// エラー・取り消し系の操作を示す色
-const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 80, 80);
+use super::theme;
 
 // ======================================================================
 // UI 描画
@@ -36,7 +35,7 @@ impl eframe::App for App {
         input::handle_file_drop(self, &ctx);
         self.handle_shortcuts(&ctx);
 
-        let sp = if self.prefs.compact_mode { 1.0 } else { 3.0 };
+        let sp = if self.prefs.compact_mode { 2.0 } else { 5.0 };
         self.render_bottom_panel(ui, sp);
         self.render_top_panel(ui, &ctx);
         self.render_settings_panel(ui, &ctx);
@@ -48,7 +47,8 @@ impl eframe::App for App {
 
 impl App {
     fn render_bottom_panel(&mut self, ui: &mut egui::Ui, sp: f32) {
-        egui::Panel::bottom("bottom").show(ui, |ui| {
+        let frame = panel_frame(ui, 12, 0);
+        egui::Panel::bottom("bottom").frame(frame).show(ui, |ui| {
             ui.add_space(sp);
             ui.horizontal(|ui| {
                 let mut status = self.status.clone();
@@ -58,34 +58,50 @@ impl App {
                 if self.io.is_saving() {
                     status.push_str(" (保存中…)");
                 }
-                ui.label(egui::RichText::new(status).color(ui.visuals().text_color()));
+                ui.label(
+                    egui::RichText::new(status)
+                        .small()
+                        .color(ui.visuals().text_color()),
+                );
                 let error_count = self.batch.last_error_details.len();
                 if error_count > 0
                     && ui
-                        .small_button(format!("エラー一覧 ({error_count})"))
+                        .small_button(
+                            egui::RichText::new(format!("エラー一覧 ({error_count})"))
+                                .color(ui.visuals().error_fg_color),
+                        )
                         .clicked()
                 {
                     self.batch.errors_open = true;
                 }
                 // 手動指定の解除忘れを防ぐため、指定中は常に表示する
                 if let Some(c) = self.prefs.bg_override {
+                    ui.separator();
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                     ui.painter().rect_filled(
                         rect,
-                        2.0,
+                        3.0,
                         egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]),
                     );
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.0,
+                        ui.visuals().widgets.noninteractive.bg_stroke,
+                        egui::StrokeKind::Outside,
+                    );
                     ui.label(
-                        egui::RichText::new("背景色: 手動指定").color(ui.visuals().warn_fg_color),
+                        egui::RichText::new("背景色: 手動指定")
+                            .small()
+                            .color(ui.visuals().warn_fg_color),
                     )
-                    .on_hover_text("設定パネルの「↺ 自動に戻す」で解除できる");
+                    .on_hover_text("設定パネルの「自動に戻す」で解除できる");
                 }
                 if let Some(ref info) = self.image.info {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let detail = if self.prefs.compact_mode {
                             format!(
-                                "{}×{}→{}×{}",
+                                "{}×{} → {}×{}",
                                 info.orig_w, info.orig_h, info.trim_w, info.trim_h,
                             )
                         } else {
@@ -99,7 +115,7 @@ impl App {
                                 info.offset_y,
                             )
                         };
-                        ui.label(egui::RichText::new(detail).weak());
+                        ui.label(egui::RichText::new(detail).small().weak());
                     });
                 }
             });
@@ -108,13 +124,29 @@ impl App {
     }
 
     fn render_top_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let sp = if self.prefs.compact_mode { 2.0 } else { 5.0 };
-        egui::Panel::top("top").show(ui, |ui| {
+        let sp = if self.prefs.compact_mode { 0.0 } else { 3.0 };
+        let frame = panel_frame(ui, 10, 5);
+        egui::Panel::top("top").frame(frame).show(ui, |ui| {
             ui.add_space(sp);
             self.render_toolbar(ui, ctx);
             ui.add_space(sp);
         });
     }
+}
+
+/// ツールバー・ステータスバー・設定パネルの枠
+///
+/// # Arguments
+/// * `ui` - 描画先 (配色の取得に使う)
+/// * `x` - 左右の余白
+/// * `y` - 上下の余白
+///
+/// # Returns
+/// * `egui::Frame` - パネルの枠
+fn panel_frame(ui: &egui::Ui, x: i8, y: i8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::palette_of(ui).panel)
+        .inner_margin(egui::Margin::symmetric(x, y))
 }
 
 // ======================================================================

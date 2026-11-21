@@ -9,6 +9,7 @@ mod load_worker;
 mod save_dir;
 mod shortcuts;
 mod state;
+mod theme;
 mod title_bar;
 mod trim_worker;
 mod view;
@@ -57,6 +58,7 @@ pub fn run() -> eframe::Result {
             // フォントの追加 (読み込みスレッドが panic した場合は全て未発見として扱う)
             let fonts = font_loader.join().unwrap_or_default();
             let font_registered = fonts::register_system_fonts(&cc.egui_ctx, fonts);
+            theme::install(&cc.egui_ctx);
 
             let mut app = state::App::new(cc.storage);
             if !font_registered {

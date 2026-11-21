@@ -61,4 +61,12 @@ impl UpdateState {
             UpdateUiPhase::Checking | UpdateUiPhase::Downloading { .. }
         )
     }
+
+    /// 更新の適用が始まり、アプリの終了へ向かっているか
+    pub(in crate::app) fn is_applying(&self) -> bool {
+        matches!(
+            self.phase,
+            UpdateUiPhase::Downloading { .. } | UpdateUiPhase::MsiStarted
+        )
+    }
 }

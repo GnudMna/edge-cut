@@ -51,3 +51,6 @@ pub(crate) fn bridge_download_key() -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

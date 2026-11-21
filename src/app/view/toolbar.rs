@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use super::ERROR_COLOR;
+use super::icons::{self, Icon};
 use super::settings;
 use crate::app::bundled::Bundled;
 use crate::app::shortcuts;
@@ -48,7 +48,7 @@ impl App {
     /// 画像を取り込む操作 (開く・貼り付け・一括トリミング)
     fn render_input_buttons(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if ui
-            .button(egui::RichText::new("📂 開く").strong())
+            .add(icons::button(Icon::Folder, "開く"))
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
                 "画像ファイルを開く",
@@ -60,7 +60,7 @@ impl App {
         }
 
         if ui
-            .button("📥 貼り付け")
+            .add(icons::button(Icon::Paste, "貼り付け"))
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
                 "クリップボードの画像を使用",
@@ -74,7 +74,10 @@ impl App {
         // 処理中は同じ位置をキャンセルボタンに差し替える
         if self.batch.running {
             if ui
-                .button(egui::RichText::new("⏹ キャンセル").color(ERROR_COLOR))
+                .add(icons::button(
+                    Icon::Stop,
+                    egui::RichText::new("キャンセル").color(ui.visuals().error_fg_color),
+                ))
                 .on_hover_text(shortcuts::with_shortcut(
                     ctx,
                     "一括トリミングを中止",
@@ -85,7 +88,7 @@ impl App {
                 self.cancel_batch();
             }
         } else if ui
-            .button("✂ 一括トリミング…")
+            .add(icons::button(Icon::Batch, "一括トリミング…"))
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
                 "複数の画像をまとめてトリミングして保存 (出力形式の設定に従う)",
@@ -103,7 +106,7 @@ impl App {
         // 再計算の待ち中・処理中は前回の矩形が残っているため無効にする
         let has_trimmed = self.has_current_trim();
         if ui
-            .add_enabled(has_trimmed, egui::Button::new("💾 保存"))
+            .add_enabled(has_trimmed, icons::primary_button(ui, Icon::Save, "保存"))
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
                 "トリミング後の画像を保存",
@@ -115,7 +118,7 @@ impl App {
         }
 
         if ui
-            .add_enabled(has_trimmed, egui::Button::new("📋 コピー"))
+            .add_enabled(has_trimmed, icons::button(Icon::Copy, "コピー"))
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
                 "トリミング後の画像をクリップボードへコピー",
@@ -129,15 +132,10 @@ impl App {
 
     fn render_clear_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let has_original = self.image.original.is_some();
-        let clear_color = if has_original {
-            ERROR_COLOR
-        } else {
-            ui.visuals().weak_text_color()
-        };
         if ui
             .add_enabled(
                 has_original,
-                egui::Button::new(egui::RichText::new("🗑 クリア").color(clear_color)),
+                icons::button(Icon::Trash, "クリア").frame_when_inactive(false),
             )
             .on_hover_text(shortcuts::with_shortcut(
                 ctx,
@@ -156,7 +154,7 @@ impl App {
     fn render_view_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut check_update = false;
         let mut open_bundled = None;
-        ui.menu_button("≡", |ui| {
+        ui.menu_button(Icon::Menu.atom(None), |ui| {
             let theme_label = if self.prefs.dark_mode {
                 "☀ ライトテーマ"
             } else {
@@ -207,7 +205,10 @@ impl App {
 
         let panel_open = settings::is_panel_open(ctx);
         if ui
-            .add(egui::Button::selectable(panel_open, "⚙ 設定"))
+            .add(egui::Button::selectable(
+                panel_open,
+                (Icon::Settings.atom(None), "設定"),
+            ))
             .on_hover_text("トリミング・背景色・出力の設定パネルを開閉する")
             .clicked()
         {

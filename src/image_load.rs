@@ -6,14 +6,25 @@ use std::fs;
 use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
+use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
 use image::error::LimitErrorKind;
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
+use image::{
+    AnimationDecoder, DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits,
+};
 
-use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
+use crate::consts::{
+    MAX_ICC_PROFILE_BYTES, MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS,
+    MAX_IMAGE_WIDTH,
+};
 
 /// デコーダ内部の作業領域として、画像バッファとは別に確保を許す量
 const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
+/// PNG のデコーダ生成時に許す確保量
+///
+/// 圧縮済みの iCCP チャンクと展開結果を同時に保持できるよう、ICC プロファイルの上限の 2 倍に余裕を足す
+const PNG_HEADER_ALLOC_BYTES: u64 = MAX_ICC_PROFILE_BYTES * 2 + 1024 * 1024;
 
 // ======================================================================
 // 読み込み結果
@@ -23,8 +34,12 @@ const DECODE_ALLOC_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
 pub struct LoadedImage {
     /// EXIF Orientation を適用済みの画像
     pub image: DynamicImage,
-    /// 埋め込まれていた ICC プロファイル。無い、または取得に失敗した場合は `None`
+    /// 埋め込まれていた ICC プロファイル。無い、取得に失敗した、または `MAX_ICC_PROFILE_BYTES` を超える場合は `None`
     pub icc_profile: Option<Vec<u8>>,
+    /// 先頭フレーム以外にも画像を含むファイルか (アニメーション GIF / WebP、複数ページ TIFF)
+    ///
+    /// 読み込むのは先頭の 1 フレームだけで、残りは無視される。判定に失敗した場合は `false`
+    pub has_extra_frames: bool,
 }
 
 // ======================================================================
@@ -179,25 +194,45 @@ pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
 /// # Errors
 /// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
 pub fn open_image_with_icc(path: &Path) -> Result<LoadedImage, LoadError> {
+    open_image_with_icc_reserving(path, |_| ()).map(|(loaded, ())| loaded)
+}
+
+/// `open_image_with_icc` と同じ読み込みを、デコード前の確保処理つきで行う
+///
+/// ヘッダの検証後、デコード先バッファのバイト数を `reserve` へ渡してからデコードする
+/// 並列処理でメモリ使用量を見積もって確保するために使う
+/// ファイルは 1 回だけ開き、検証・デコード・フレーム数の判定で同じハンドルを使い回す
+///
+/// # Arguments
+/// * `path` - 読み込む画像ファイルのパス
+/// * `reserve` - デコード先バッファのバイト数 (`ImageDecoder::total_bytes`) を受け取る処理
+///
+/// # Returns
+/// * `Result<(LoadedImage, G), LoadError>` - 読み込んだ画像と、`reserve` が返した値
+///
+/// # Errors
+/// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
+/// いずれも `reserve` を呼ぶ前に検出できるものは `reserve` を呼ばずに返す
+pub(crate) fn open_image_with_icc_reserving<G>(
+    path: &Path,
+    reserve: impl FnOnce(u64) -> G,
+) -> Result<(LoadedImage, G), LoadError> {
     let mut file = fs::File::open(path)?;
-    let file_size = file.metadata()?.len();
-    check_file_size(file_size)?;
+    check_file_size(file.metadata()?.len())?;
 
     let mut limits = decode_limits();
 
-    let mut probe = ImageReader::new(BufReader::new(&file));
-    probe.limits(limits.clone());
-    let (width, height) = probe.with_guessed_format()?.into_dimensions()?;
+    let mut reader = ImageReader::new(BufReader::new(&file)).with_guessed_format()?;
+    let format = reader.format();
+    reader.limits(construction_limits(format));
+    let mut decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
     check_dimensions(width, height)?;
-
-    file.seek(SeekFrom::Start(0))?;
-    let mut reader = ImageReader::new(BufReader::new(&file));
-    reader.limits(limits.clone());
-    let mut decoder = reader.with_guessed_format()?.into_decoder()?;
 
     // 寸法は検証済みのため、16bit・浮動小数点画像でもデコード先バッファが収まるよう上限を広げる
     // その上で `ImageReader::decode()` と同様にデコード先バッファ分を上限から差し引く
     let total_bytes = decoder.total_bytes();
+    let reserved = reserve(total_bytes);
     limits.max_alloc = Some(decode_alloc_budget(total_bytes));
     limits.reserve(total_bytes)?;
     decoder.set_limits(limits)?;
@@ -205,39 +240,50 @@ pub fn open_image_with_icc(path: &Path) -> Result<LoadedImage, LoadError> {
     // 壊れた EXIF で読み込み自体を失敗させないよう、取得できなければ無変換とする
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     // ICC プロファイルも同様に、壊れていれば埋め込みなしとして扱う
+    // 上限を超えるものも保存時に再埋め込みしないよう、埋め込みなしとする
     let icc_profile = decoder
         .icc_profile()
         .ok()
         .flatten()
-        .filter(|icc| !icc.is_empty());
+        .filter(|icc| !icc.is_empty() && icc.len() as u64 <= MAX_ICC_PROFILE_BYTES);
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
-    Ok(LoadedImage { image, icc_profile })
+    let has_extra_frames = format.is_some_and(|format| detect_extra_frames(&mut file, format));
+    let loaded = LoadedImage {
+        image,
+        icc_profile,
+        has_extra_frames,
+    };
+    Ok((loaded, reserved))
 }
 
-/// 画像をデコードせずに、デコード先バッファのバイト数を求める
+/// 先頭フレーム以外にも画像を含むかを開いたままのファイルから判定する
 ///
-/// ファイルサイズと寸法は `open_image_with_icc` と同じ上限で検証する
-/// 並列処理の前にメモリ使用量を見積もるために使う
+/// 読み込み自体は先頭フレームだけで成立するため、判定に失敗した場合は `false` とする
+/// ファイルの読み取り位置は先頭へ戻してから使う
 ///
 /// # Arguments
-/// * `path` - 調べる画像ファイルのパス
+/// * `file` - 読み込みに使った画像ファイル
+/// * `format` - 読み込み時に判定した画像形式
 ///
 /// # Returns
-/// * `Result<u64, LoadError>` - デコード先バッファのバイト数 (`ImageDecoder::total_bytes`)
-///
-/// # Errors
-/// ファイルサイズ・寸法が上限を超える、またはヘッダの読み込みに失敗した場合
-pub(crate) fn probe_decoded_bytes(path: &Path) -> Result<u64, LoadError> {
-    let file = fs::File::open(path)?;
-    check_file_size(file.metadata()?.len())?;
-
-    let mut reader = ImageReader::new(BufReader::new(file));
-    reader.limits(decode_limits());
-    let decoder = reader.with_guessed_format()?.into_decoder()?;
-    let (width, height) = decoder.dimensions();
-    check_dimensions(width, height)?;
-    Ok(decoder.total_bytes())
+/// * `bool` - 2 フレーム (ページ) 以上を含む場合は `true`
+fn detect_extra_frames(file: &mut fs::File, format: ImageFormat) -> bool {
+    if !matches!(
+        format,
+        ImageFormat::Gif | ImageFormat::WebP | ImageFormat::Tiff
+    ) || file.seek(SeekFrom::Start(0)).is_err()
+    {
+        return false;
+    }
+    let reader = BufReader::new(&*file);
+    match format {
+        // 2 枚目まで読めれば複数フレームと分かる
+        ImageFormat::Gif => GifDecoder::new(reader)
+            .is_ok_and(|decoder| decoder.into_frames().take(2).flatten().count() > 1),
+        ImageFormat::WebP => WebPDecoder::new(reader).is_ok_and(|decoder| decoder.has_animation()),
+        _ => tiff::decoder::Decoder::new(reader).is_ok_and(|decoder| decoder.more_images()),
+    }
 }
 
 /// クリップボード由来の RGBA 画像寸法を検証する
@@ -331,6 +377,26 @@ fn decode_limits() -> Limits {
     limits.max_image_width = Some(MAX_IMAGE_WIDTH);
     limits.max_image_height = Some(MAX_IMAGE_HEIGHT);
     limits.max_alloc = Some(decode_alloc_budget(0));
+    limits
+}
+
+/// デコーダ生成時に使うデコード上限を形式に応じて構築する
+///
+/// PNG は生成時にヘッダのチャンクを読み、iCCP を zlib 展開する
+/// 展開サイズの上限は生成時の `max_alloc` で決まり、後から `set_limits` で広げても反映されない
+/// 小さなファイルが巨大な展開を要求できるため、`PNG_HEADER_ALLOC_BYTES` まで絞る
+/// 上限を超えた iCCP はデコーダが読み捨て、プロファイルなしとして扱われる
+///
+/// # Arguments
+/// * `format` - 判定した画像形式
+///
+/// # Returns
+/// * `Limits` - デコーダ生成時に渡す上限
+fn construction_limits(format: Option<ImageFormat>) -> Limits {
+    let mut limits = decode_limits();
+    if format == Some(ImageFormat::Png) {
+        limits.max_alloc = Some(PNG_HEADER_ALLOC_BYTES);
+    }
     limits
 }
 
@@ -603,11 +669,11 @@ mod tests {
     }
 
     // ======================================================================
-    // probe_decoded_bytes
+    // open_image_with_icc_reserving
     // ======================================================================
-    /// デコード先バッファのバイト数を色の型に応じて返すこと
+    /// デコード先バッファのバイト数を色の型に応じて `reserve` へ渡すこと
     #[test]
-    fn probe_decoded_bytes_reflects_color_type() {
+    fn reserving_passes_decoded_bytes_by_color_type() {
         let dir = tempfile::tempdir().unwrap();
         let rgba8 = dir.path().join("rgba8.png");
         write_test_png(&rgba8, 10, 6);
@@ -617,22 +683,24 @@ mod tests {
             .expect("test png write");
 
         // RGBA8 は 1 ピクセル 4 バイト、RGBA16 は 8 バイト
-        assert_eq!(
-            probe_decoded_bytes(&rgba8).expect("probe rgba8"),
-            10 * 6 * 4
-        );
-        assert_eq!(
-            probe_decoded_bytes(&rgba16).expect("probe rgba16"),
-            10 * 6 * 8
-        );
+        let (loaded, bytes) =
+            open_image_with_icc_reserving(&rgba8, |bytes| bytes).expect("open rgba8");
+        assert_eq!(bytes, 10 * 6 * 4);
+        assert_eq!((loaded.image.width(), loaded.image.height()), (10, 6));
+        let (_, bytes) =
+            open_image_with_icc_reserving(&rgba16, |bytes| bytes).expect("open rgba16");
+        assert_eq!(bytes, 10 * 6 * 8);
     }
 
-    /// 存在しないファイルは I/O エラーになること
+    /// 存在しないファイルは `reserve` を呼ばずに I/O エラーになること
     #[test]
-    fn probe_decoded_bytes_rejects_missing_file() {
+    fn reserving_rejects_missing_file_without_calling_reserve() {
         let dir = tempfile::tempdir().unwrap();
-        let err = probe_decoded_bytes(&dir.path().join("missing.png")).unwrap_err();
+        let mut called = false;
+        let err = open_image_with_icc_reserving(&dir.path().join("missing.png"), |_| called = true)
+            .unwrap_err();
         assert!(matches!(err, LoadError::Io(_)));
+        assert!(!called);
     }
 
     /// アニメーション GIF は先頭フレームだけが読み込まれること
@@ -652,6 +720,59 @@ mod tests {
         assert_eq!(img.dimensions(), (4, 3));
         let px = img.get_pixel(0, 0);
         assert!(px[0] > 200 && px[2] < 50, "{px:?}");
+    }
+
+    // ======================================================================
+    // 複数フレームの検出
+    // ======================================================================
+    /// 指定フレーム数の GIF を一時パスへ保存する
+    fn write_gif(path: &Path, frames: usize) {
+        let mut encoder = GifEncoder::new(fs::File::create(path).expect("create gif"));
+        for _ in 0..frames {
+            let frame = Frame::new(RgbaImage::from_pixel(4, 3, RED));
+            encoder.encode_frame(frame).expect("encode frame");
+        }
+    }
+
+    /// 指定ページ数の TIFF を一時パスへ保存する
+    fn write_tiff(path: &Path, pages: usize) {
+        let mut encoder =
+            tiff::encoder::TiffEncoder::new(fs::File::create(path).expect("create tiff"))
+                .expect("tiff encoder");
+        for _ in 0..pages {
+            encoder
+                .write_image::<tiff::encoder::colortype::RGB8>(2, 2, &[255; 12])
+                .expect("write page");
+        }
+    }
+
+    /// アニメーション GIF と複数ページ TIFF は追加フレームありと判定すること
+    #[test]
+    fn open_image_flags_extra_frames_for_animated_gif_and_multipage_tiff() {
+        let dir = tempfile::tempdir().unwrap();
+        let gif = dir.path().join("anim.gif");
+        write_gif(&gif, 2);
+        let tiff = dir.path().join("pages.tiff");
+        write_tiff(&tiff, 2);
+
+        assert!(open_image_with_icc(&gif).unwrap().has_extra_frames);
+        assert!(open_image_with_icc(&tiff).unwrap().has_extra_frames);
+    }
+
+    /// 1 フレームの GIF・1 ページの TIFF・PNG は追加フレームなしと判定すること
+    #[test]
+    fn open_image_does_not_flag_single_frame_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let gif = dir.path().join("still.gif");
+        write_gif(&gif, 1);
+        let tiff = dir.path().join("page.tiff");
+        write_tiff(&tiff, 1);
+        let png = dir.path().join("still.png");
+        write_test_png(&png, 4, 4);
+
+        for path in [gif, tiff, png] {
+            assert!(!open_image_with_icc(&path).unwrap().has_extra_frames);
+        }
     }
 
     // ======================================================================

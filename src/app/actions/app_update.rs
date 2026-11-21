@@ -52,6 +52,21 @@ impl App {
         self.batch.running || self.io.is_saving()
     }
 
+    /// 更新の適用中で、一括トリミングや保存を始められないか
+    ///
+    /// 適用中はインストーラー起動後にアプリが終了するため、新しいファイル書き込みを受け付けない
+    /// 受け付けない場合はステータスで理由を知らせる
+    ///
+    /// # Returns
+    /// * `bool` - 更新の適用中でファイル書き込みを始められなければ `true`
+    pub(in crate::app) fn reject_file_work_while_updating(&mut self) -> bool {
+        if !self.update.is_applying() {
+            return false;
+        }
+        self.status = "更新の適用中は一括トリミングと保存を開始できません".into();
+        true
+    }
+
     /// 確認済みの更新をダウンロードして MSI を起動する
     ///
     /// 一括トリミングまたは保存の実行中は開始せず、ステータスで理由を知らせる
@@ -91,10 +106,20 @@ impl App {
     /// バックグラウンドの更新処理結果をポーリングする
     ///
     /// 結果の前に送信側が切断された場合 (処理スレッドの panic など) は失敗として扱う
+    /// MSI 起動後は、書き込み中の処理が残る間はウィンドウを閉じず、完了を待って閉じる
     ///
     /// # Arguments
     /// * `ctx` - MSI 起動後のウィンドウ終了に使う
     pub(in crate::app) fn poll_update(&mut self, ctx: &egui::Context) {
+        if matches!(self.update.phase, UpdateUiPhase::MsiStarted) {
+            if self.has_file_work() {
+                self.status =
+                    "インストーラーを起動しました。保存の完了後にアプリを終了します".into();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return;
+        }
         let Some(rx) = self.update.rx.as_ref() else {
             return;
         };
@@ -138,7 +163,10 @@ impl App {
                 UpdateApplyOutcome::MsiStarted => {
                     self.status = "インストーラーを起動しました。アプリを終了します".into();
                     self.update.phase = UpdateUiPhase::MsiStarted;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // 書き込み中の処理が残っていれば、次回以降の `poll_update` で完了を待って閉じる
+                    if !self.has_file_work() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
                 UpdateApplyOutcome::Error { message } => {
                     self.status = format!("更新の適用に失敗: {message}");
@@ -216,6 +244,57 @@ mod tests {
 
         // App の破棄で保存スレッドの完了を待つため、先に解放する
         drop(release_tx);
+    }
+
+    /// ダウンロード中は一括トリミングを開始せず、ダイアログも開かないこと
+    #[test]
+    fn batch_trim_is_rejected_while_downloading() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.update.phase = UpdateUiPhase::Downloading {
+            update: sample_update(),
+        };
+
+        app.batch_trim(&ctx);
+
+        assert!(!app.io.dialog_open);
+        assert!(!app.batch.running);
+        assert_eq!(
+            app.status,
+            "更新の適用中は一括トリミングと保存を開始できません"
+        );
+    }
+
+    /// ダイアログを開いたまま適用が始まっても、選択後の一括トリミングを開始しないこと
+    #[test]
+    fn spawn_batch_trim_is_rejected_while_downloading() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.update.phase = UpdateUiPhase::Downloading {
+            update: sample_update(),
+        };
+
+        app.spawn_batch_trim(&ctx, vec!["a.png".into()], 0, "out".into());
+
+        assert!(!app.batch.running);
+        assert!(app.batch.rx.is_none());
+    }
+
+    /// MSI 起動時に書き込み中の処理が残っていれば、ウィンドウを閉じずに待つこと
+    #[test]
+    fn poll_update_waits_for_file_work_after_msi_started() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.update.phase = UpdateUiPhase::MsiStarted;
+        app.batch.running = true;
+
+        app.poll_update(&ctx);
+
+        assert!(matches!(app.update.phase, UpdateUiPhase::MsiStarted));
+        assert_eq!(
+            app.status,
+            "インストーラーを起動しました。保存の完了後にアプリを終了します"
+        );
     }
 
     /// 更新確認で得られる更新情報を模す

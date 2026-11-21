@@ -25,6 +25,8 @@ use crate::trim::{TrimOptions, detect_trim_with_options};
 pub(super) struct TrimJob {
     pub request_id: u64,
     pub original: Arc<DynamicImage>,
+    /// 元画像の ICC プロファイル。プレビューの色を sRGB へ変換するために使う
+    pub icc_profile: Option<Arc<[u8]>>,
     pub options: TrimOptions,
     pub refresh_orig_tex: bool,
     pub ctx: egui::Context,
@@ -79,7 +81,7 @@ fn run_guarded(job: &TrimJob, run: impl FnOnce(&TrimJob) -> TrimPreview) -> Trim
 fn run_job(job: &TrimJob) -> TrimPreview {
     let orig_color = job
         .refresh_orig_tex
-        .then(|| to_preview_color_image(job.original.as_ref()));
+        .then(|| to_preview_color_image(job.original.as_ref(), job.icc_profile.as_deref()));
     let bounds = detect_trim_with_options(job.original.as_ref(), &job.options);
     TrimPreview {
         params: job.options,
@@ -136,6 +138,7 @@ mod tests {
             handle.submit(TrimJob {
                 request_id: id,
                 original: Arc::clone(&original),
+                icc_profile: None,
                 options: TrimOptions::default(),
                 refresh_orig_tex: false,
                 ctx: ctx.clone(),
@@ -167,6 +170,7 @@ mod tests {
         let job = TrimJob {
             request_id: 7,
             original: solid_image(),
+            icc_profile: None,
             options: TrimOptions::default(),
             refresh_orig_tex: false,
             ctx: egui::Context::default(),
@@ -191,6 +195,7 @@ mod tests {
         let job = |request_id, refresh_orig_tex| TrimJob {
             request_id,
             original: Arc::clone(&original),
+            icc_profile: None,
             options: TrimOptions::default(),
             refresh_orig_tex,
             ctx: ctx.clone(),

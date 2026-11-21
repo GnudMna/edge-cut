@@ -2,7 +2,9 @@
 
 use eframe::egui;
 
+use super::icons::{self, Icon};
 use crate::app::state::App;
+use crate::app::theme;
 use crate::consts::{
     ASPECT_PART_MAX, ASPECT_PART_MIN, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN,
     TOL_MAX, TOL_MIN, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
@@ -19,8 +21,14 @@ const PANEL_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 220.0..=420.0;
 /// スライダー右側の数値欄に確保する幅
 const SLIDER_VALUE_WIDTH: f32 = 64.0;
 
-/// セクション間の余白
+/// スライダーの高さ (つまみの大きさが決まる)
+const SLIDER_HEIGHT: f32 = 20.0;
+
+/// セクション (カード) 間の余白
 const SECTION_SPACING: f32 = 10.0;
+
+/// セクションのカードの内側の余白
+const SECTION_MARGIN: i8 = 12;
 
 /// アスペクト比のプリセット (幅, 高さ)
 const ASPECT_PRESETS: [(u32, u32); 7] = [(1, 1), (4, 3), (3, 2), (16, 9), (3, 4), (2, 3), (9, 16)];
@@ -34,7 +42,11 @@ impl App {
     /// ツールバーの「設定」で開閉し、境界のドラッグで幅を変えられる
     pub(super) fn render_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut open = is_panel_open(ctx);
+        let frame = egui::Frame::new()
+            .fill(theme::palette_of(ui).panel)
+            .inner_margin(egui::Margin::same(10));
         egui::Panel::right("settings")
+            .frame(frame)
             .resizable(true)
             .default_size(PANEL_DEFAULT_WIDTH)
             .size_range(PANEL_WIDTH_RANGE)
@@ -42,18 +54,17 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.add_space(6.0);
-                        section_heading(ui, "トリミング");
-                        self.render_trim_settings(ui, ctx);
+                        section(ui, "トリミング", |ui| {
+                            self.render_trim_settings(ui, ctx);
+                        });
                         ui.add_space(SECTION_SPACING);
-                        ui.separator();
-                        section_heading(ui, "背景色");
-                        self.render_bg_color_controls(ui, ctx);
+                        section(ui, "背景色", |ui| {
+                            self.render_bg_color_controls(ui, ctx);
+                        });
                         ui.add_space(SECTION_SPACING);
-                        ui.separator();
-                        section_heading(ui, "出力");
-                        self.render_output_settings(ui, ctx);
-                        ui.add_space(6.0);
+                        section(ui, "出力", |ui| {
+                            self.render_output_settings(ui, ctx);
+                        });
                     });
             });
         // 境界のドラッグで閉じた場合も開閉状態へ反映する
@@ -184,7 +195,7 @@ impl App {
                 request = Some(true);
             }
             if ui
-                .button("↔ 入替")
+                .add(icons::button(Icon::Swap, "入替"))
                 .on_hover_text("幅と高さの比を入れ替える")
                 .clicked()
             {
@@ -271,15 +282,18 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let pick_label = if self.background.pick_mode {
-                "💧 スポイト中"
+                "スポイト中"
             } else {
-                "💧 スポイト"
+                "スポイト"
             };
             // コンパクト表示では元画像のペインがなくクリック先がないため無効化する
             if ui
                 .add_enabled(
                     !self.prefs.compact_mode,
-                    egui::Button::selectable(self.background.pick_mode, pick_label),
+                    egui::Button::selectable(
+                        self.background.pick_mode,
+                        (Icon::Picker.atom(None), pick_label),
+                    ),
                 )
                 .on_hover_text("元画像をクリックして背景色を取得する (Esc で解除)")
                 .on_disabled_hover_text("コンパクト表示では元画像を表示しないため使用できない")
@@ -291,7 +305,7 @@ impl App {
             if ui
                 .add_enabled(
                     self.prefs.bg_override.is_some(),
-                    egui::Button::new("↺ 自動に戻す"),
+                    icons::button(Icon::Reset, "自動に戻す"),
                 )
                 .on_hover_text("手動指定を解除し、四辺から背景色を自動検出する")
                 .clicked()
@@ -383,7 +397,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("保存先");
             if ui
-                .button("📁 変更…")
+                .add(icons::button(Icon::Folder, "変更…"))
                 .on_hover_text("自動保存の保存先フォルダを変更")
                 .clicked()
             {
@@ -422,16 +436,29 @@ pub(super) fn set_panel_open(ctx: &egui::Context, open: bool) {
     ctx.data_mut(|d| d.insert_persisted(egui::Id::unique(PANEL_OPEN_ID), open));
 }
 
-/// セクションの見出し
-fn section_heading(ui: &mut egui::Ui, title: &str) {
-    ui.label(egui::RichText::new(title).strong().size(15.0));
-    ui.add_space(4.0);
+/// 見出し付きのカードでセクションを囲む
+///
+/// # Arguments
+/// * `ui` - 描画先
+/// * `title` - セクションの見出し
+/// * `add_contents` - セクションの中身を描画する
+fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    theme::card_frame(ui, SECTION_MARGIN).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(egui::RichText::new(title).strong().size(14.5));
+        ui.add_space(6.0);
+        add_contents(ui);
+    });
 }
 
 /// スライダーの幅を数値欄を除いたパネル幅に合わせる
+///
+/// つまみの大きさは部品の高さに比例するため、ボタンより低い高さにして小ぶりにする
 fn fit_slider_width(ui: &mut egui::Ui) {
     let width = ui.available_width() - SLIDER_VALUE_WIDTH - ui.spacing().item_spacing.x;
-    ui.spacing_mut().slider_width = width.max(80.0);
+    let spacing = ui.spacing_mut();
+    spacing.slider_width = width.max(80.0);
+    spacing.interact_size.y = SLIDER_HEIGHT;
 }
 
 /// アスペクト比の表示名 (例: `16:9`)

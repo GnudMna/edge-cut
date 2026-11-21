@@ -12,7 +12,7 @@ use super::error::BatchFileError;
 use super::memory_budget::MemoryBudget;
 use super::result::{BatchTrimParams, BatchTrimResult};
 use crate::consts::{BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK_MEMORY_FACTOR};
-use crate::image_load::{LoadedImage, open_image_with_icc, probe_decoded_bytes};
+use crate::image_load::{LoadedImage, open_image_with_icc_reserving};
 use crate::image_output::save_trimmed_output_with;
 use crate::panic_message::catch_panic;
 use crate::trim::trim_with_options;
@@ -238,10 +238,15 @@ fn process_one(
     params: BatchTrimParams,
     budget: &MemoryBudget,
 ) -> Result<bool, BatchFileError> {
-    let decoded_bytes = probe_decoded_bytes(path)?;
-    let _permit = budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR));
-
-    let LoadedImage { image, icc_profile } = open_image_with_icc(path)?;
+    // ヘッダの検証後、デコード前に見積もり分を確保する
+    let (
+        LoadedImage {
+            image, icc_profile, ..
+        },
+        _permit,
+    ) = open_image_with_icc_reserving(path, |decoded_bytes| {
+        budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR))
+    })?;
     let trimmed = trim_with_options(&image, &params.trim);
     // エンコード中のピークを見積もり内に収めるため、元画像は切り出し後すぐに解放する
     drop(image);

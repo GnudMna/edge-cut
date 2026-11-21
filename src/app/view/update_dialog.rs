@@ -2,7 +2,6 @@
 
 use eframe::egui;
 
-use super::ERROR_COLOR;
 use crate::app::state::{App, UpdateUiPhase};
 use crate::image_load::format_bytes;
 use crate::update::AvailableUpdate;
@@ -121,10 +120,10 @@ fn update_dialog_body(
             ui.label(
                 egui::RichText::new("更新に失敗しました")
                     .strong()
-                    .color(ERROR_COLOR),
+                    .color(ui.visuals().error_fg_color),
             );
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(message).color(ERROR_COLOR));
+            ui.label(egui::RichText::new(message).color(ui.visuals().error_fg_color));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("再試行").clicked() {
@@ -184,7 +183,7 @@ fn available_update_body(
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("一括トリミングまたは保存の完了後に更新できます")
-                .color(ERROR_COLOR),
+                .color(ui.visuals().error_fg_color),
         );
     }
     ui.add_space(8.0);

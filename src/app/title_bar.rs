@@ -37,11 +37,7 @@ pub fn apply(window: &impl HasWindowHandle, dark_mode: bool) {
     };
     let hwnd = win32.hwnd.get() as HWND;
 
-    let visuals = if dark_mode {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
+    let visuals = super::theme::visuals(dark_mode);
     set_color(hwnd, DWMWA_CAPTION_COLOR, visuals.panel_fill);
     set_color(hwnd, DWMWA_TEXT_COLOR, visuals.text_color());
 }

@@ -15,7 +15,7 @@ use eframe::egui;
 use image::DynamicImage;
 
 use super::state::IoMsg;
-use crate::image_load::validate_clipboard_rgba;
+use crate::image_load::{check_dimensions, validate_clipboard_rgba};
 use crate::panic_message::catch_panic;
 use crate::trim::{TrimInfo, apply_trim};
 
@@ -183,6 +183,8 @@ enum PasteContent {
 /// # Returns
 /// * `Result<PasteContent, String>` - 取得した内容、または失敗時のステータスメッセージ
 fn read_paste_content(cb: &mut arboard::Clipboard) -> Result<PasteContent, String> {
+    // `get_image` は画像全体を RGBA へ展開するため、展開前にヘッダの寸法を検証する
+    check_clipboard_image_dimensions()?;
     if let Ok(data) = cb.get_image() {
         return from_clipboard_data(data).map(PasteContent::Image);
     }
@@ -190,6 +192,83 @@ fn read_paste_content(cb: &mut arboard::Clipboard) -> Result<PasteContent, Strin
         Ok(paths) if !paths.is_empty() => Ok(PasteContent::Files(paths)),
         _ => Err("クリップボードに画像またはファイルがありません".to_string()),
     }
+}
+
+// ======================================================================
+// 寸法の事前検証
+// ======================================================================
+/// `BITMAPV5HEADER` のバイト数 (`CF_DIBV5` の先頭に置かれるヘッダ)
+const DIBV5_HEADER_LEN: usize = 124;
+
+/// ヘッダのバイト列から幅と高さを取り出す関数
+type DimensionsParser = fn(&[u8]) -> Option<(u32, u32)>;
+
+/// クリップボード画像の寸法を、展開前にヘッダだけ読んで検証する
+///
+/// `arboard` と同じく PNG を優先し、なければ `CF_DIBV5` を対象にする。
+/// ヘッダを読めない場合は検証せず、後続の `get_image` の判定に任せる
+///
+/// # Returns
+/// * `Result<(), String>` - 寸法が上限内、または判定できない場合は `Ok(())`。上限超過は失敗時のステータスメッセージ
+fn check_clipboard_image_dimensions() -> Result<(), String> {
+    // arboard の読み取りと重ならないよう、ヘッダの取得後すぐに閉じる
+    let Ok(_clipboard) = clipboard_win::Clipboard::new_attempts(10) else {
+        return Ok(());
+    };
+    let png_format = clipboard_win::register_format("PNG")
+        .map(u32::from)
+        .filter(|&id| clipboard_win::is_format_avail(id));
+    let (format, parse): (u32, DimensionsParser) = match png_format {
+        Some(id) => (id, png_dimensions),
+        None => (clipboard_win::formats::CF_DIBV5, dib_dimensions),
+    };
+    if !clipboard_win::is_format_avail(format) {
+        return Ok(());
+    }
+
+    let mut header = [0u8; DIBV5_HEADER_LEN];
+    let Ok(len) = clipboard_win::raw::get(format, &mut header) else {
+        return Ok(());
+    };
+    match parse(&header[..len]) {
+        Some((width, height)) => check_dimensions(width, height).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// PNG の先頭バイト列から `IHDR` の幅と高さを取り出す
+///
+/// # Arguments
+/// * `header` - PNG データの先頭バイト列
+///
+/// # Returns
+/// * `Option<(u32, u32)>` - 幅と高さ。PNG として読めない場合は `None`
+fn png_dimensions(header: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if header.len() < 24 || header[..8] != SIGNATURE || &header[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(header[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(header[20..24].try_into().ok()?);
+    Some((width, height))
+}
+
+/// DIB ヘッダの先頭バイト列から幅と高さを取り出す
+///
+/// 上下反転 (トップダウン) の DIB は高さが負になるため、絶対値を返す
+///
+/// # Arguments
+/// * `header` - `BITMAPV5HEADER` を含む先頭バイト列
+///
+/// # Returns
+/// * `Option<(u32, u32)>` - 幅と高さ。ヘッダとして読めない場合は `None`
+fn dib_dimensions(header: &[u8]) -> Option<(u32, u32)> {
+    if header.len() < DIBV5_HEADER_LEN {
+        return None;
+    }
+    let width = i32::from_le_bytes(header[4..8].try_into().ok()?);
+    let height = i32::from_le_bytes(header[8..12].try_into().ok()?);
+    Some((width.unsigned_abs(), height.unsigned_abs()))
 }
 
 // ======================================================================
@@ -293,6 +372,34 @@ mod tests {
         let data = to_clipboard_data(&rgb);
         assert_eq!(data.bytes.len(), 2 * 2 * 4);
         assert_eq!(&data.bytes[..4], &[1, 2, 3, 255]);
+    }
+
+    /// PNG の `IHDR` から幅と高さを取り出し、PNG でないデータは `None` になること
+    #[test]
+    fn png_dimensions_reads_ihdr() {
+        let mut header = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        header.extend_from_slice(&13u32.to_be_bytes());
+        header.extend_from_slice(b"IHDR");
+        header.extend_from_slice(&30_000u32.to_be_bytes());
+        header.extend_from_slice(&20_000u32.to_be_bytes());
+        assert_eq!(png_dimensions(&header), Some((30_000, 20_000)));
+
+        // 短すぎる・シグネチャ不一致は読めない
+        assert_eq!(png_dimensions(&header[..23]), None);
+        header[1] = b'X';
+        assert_eq!(png_dimensions(&header), None);
+    }
+
+    /// DIB ヘッダから幅と高さを取り出し、負の高さは絶対値にすること
+    #[test]
+    fn dib_dimensions_reads_header_and_handles_top_down() {
+        let mut header = [0u8; DIBV5_HEADER_LEN];
+        header[4..8].copy_from_slice(&1_000i32.to_le_bytes());
+        header[8..12].copy_from_slice(&(-2_000i32).to_le_bytes());
+        assert_eq!(dib_dimensions(&header), Some((1_000, 2_000)));
+
+        // ヘッダ長に満たないデータは読めない
+        assert_eq!(dib_dimensions(&header[..DIBV5_HEADER_LEN - 1]), None);
     }
 
     /// バッファ長が寸法と一致しないデータを拒否すること

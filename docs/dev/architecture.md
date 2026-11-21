@@ -7,14 +7,14 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | パス | 責務 |
 | :--- | :--- |
 | `src/trim/` | 背景色検出・余白除去のコアロジック (下表) |
-| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルの取得を含む) |
+| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルの取得とサイズ上限・複数フレームの検出を含む) |
 | `src/image_output/` | 出力形式の決定・画像保存・出力パス生成 (下表) |
 | `src/batch_trim/` | 複数ファイルの一括トリミング (下表) |
-| `src/panic_hook.rs` | panic フック。panic の内容を `%LOCALAPPDATA%\EdgeCut\panic.log` (`LOCALAPPDATA` 未設定時は一時ディレクトリ配下) へ追記し、UI スレッドの panic ではダイアログも表示 |
+| `src/panic_hook.rs` | panic フック。panic の内容を `%LOCALAPPDATA%\EdgeCut\panic.log` (`LOCALAPPDATA` 未設定時は一時ディレクトリ配下) へ追記し、256 KiB を超える場合は `panic.log.1` へ退避 (1 世代のみ)、UI スレッドの panic ではダイアログも表示 |
 | `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱う) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
 | `src/app/` | egui GUI (下表) |
-| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用 |
+| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用 (結合テストは `tests.rs`) |
 | `src/test_helpers.rs` | `#[cfg(test)]` 限定。`tests/common/images.rs` を `include!` してユニットテストと画像生成ヘルパーを共有 |
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
 | `docs/user/` | 利用者向けドキュメント (mdBook の原稿)。`scripts/common/build-user-docs.ps1` が HTML 化して MSI の `docs\` に同梱する |
@@ -58,14 +58,15 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | :--- | :--- |
 | `state/` | アプリの状態。`App` 本体と、責務ごとの部分構造体 (`settings` / `image_state` / `trim_state` / `io_state` / `batch_state` / `update_state`) |
 | `bundled` | 配布物に同梱した文書 (利用者向けドキュメント・LICENSE・THIRD_PARTY_NOTICES) の探索と、Windows の既定のアプリでの起動。同梱先は実行ファイルの位置から MSI の配布レイアウトに従って求める |
-| `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` に分割 |
+| `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` に分割し、ボタンに添える線画アイコンを `icons` に置く |
+| `theme` | ライト / ダークの配色・余白・角丸 (`egui::Style`) と、カードなど共通の枠 |
 | `actions/` | 操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割 |
 | `trim_worker` / `clipboard_worker` / `load_worker` | プレビュー用・コピーと貼り付け用・画像読み込み用の常駐ワーカースレッド |
 | `save_dir` | 自動保存先の既定パスの決定 (Windows の既知のフォルダ) |
 | `shortcuts` | キーボードショートカットの判定 |
-| `image_convert` | プレビュー用テクスチャ変換 |
+| `image_convert` | プレビュー用テクスチャ変換。長辺が上限を超える画像の縮小と、RGB の ICC プロファイルから sRGB への色変換 (`moxcms`) を行う |
 | `fonts/` / `icon` | フォント (`loader` / `registry`)・アイコンの読み込み |
-| `title_bar` | タイトルバーの色をテーマに合わせる (`unsafe_code` を許可する唯一のモジュール) |
+| `title_bar` | タイトルバーの色を `theme` の配色に合わせる (`unsafe_code` を許可する唯一のモジュール) |
 
 ## 設計方針
 

@@ -31,6 +31,8 @@ cargo test <テスト名>                      # 単一テスト
 | :--- | :--- |
 | 各モジュールの `#[cfg(test)]` | ユニットテスト |
 | `tests/` | lib クレートの公開 API に対する統合テスト |
+| `tests/malformed_image_test.rs` | 壊れた画像 (切り詰め・ランダム破損・寸法偽装・不正な ICC) を `open_image_with_icc` に通し、panic せず上限を守ることを確認する |
+| `src/update/tests.rs` | 更新フローの結合テスト。ローカルの HTTP サーバーを bridge の代わりに立て、version API から SHA-256・minisign 署名の検証までを通す (`msiexec` は起動しない) |
 | `tests/common/` | 画像生成ヘルパー。`src/test_helpers.rs` が `include!` してユニットテストでも共有する |
 
 ## 依存関係の監査

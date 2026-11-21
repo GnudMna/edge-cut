@@ -2,7 +2,10 @@
 
 use eframe::egui;
 
+use super::icons::{self, Icon};
+use crate::app::shortcuts;
 use crate::app::state::{App, PaneView};
+use crate::app::theme;
 use crate::trim::TrimInfo;
 
 /// 元画像プレビューで削られる領域に重ねる暗幕の色
@@ -26,6 +29,31 @@ const PANE_MARGIN: f32 = 8.0;
 /// ペインに収める倍率の下限 (極端に小さいペインでの倍率 0 を避ける)
 const MIN_FIT_SCALE: f32 = 0.001;
 
+/// 画像がないときのドロップ領域の中身の高さ (縦方向の中央寄せに使う)
+const EMPTY_CONTENT_HEIGHT: f32 = 210.0;
+
+/// 画像がないときのアイコンを囲む円の半径
+const EMPTY_ICON_RADIUS: f32 = 34.0;
+
+/// 1 ペイン分の表示内容
+#[derive(Clone, Copy)]
+struct PaneSpec<'a> {
+    /// 見出し
+    title: &'a str,
+    /// 見出しの横に添える寸法
+    dims: Option<[u32; 2]>,
+    /// 表示するテクスチャ (`None` のときは見出しと空の領域だけを描く)
+    tex: Option<&'a egui::TextureHandle>,
+    /// トリミング矩形の見せ方
+    crop: Option<CropView>,
+    /// ペインの最大幅
+    max_w: f32,
+    /// `true` のとき画像クリックでピクセル座標を返す
+    pick_mode: bool,
+    /// 元画像の寸法。プレビュー縮小時も倍率とスポイト座標を元解像度へ合わせる
+    source_size: Option<[u32; 2]>,
+}
+
 /// プレビューでのトリミング矩形の見せ方
 #[derive(Clone, Copy)]
 enum CropView {
@@ -47,24 +75,12 @@ enum CropView {
 // ======================================================================
 impl App {
     pub(super) fn render_central_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show(ui, |ui| {
+        let frame = egui::Frame::new()
+            .fill(theme::palette_of(ui).canvas)
+            .inner_margin(egui::Margin::same(10));
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             if self.image.original.is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() / 2.0 - 40.0);
-                        ui.label(
-                            egui::RichText::new("📂 画像をここにドロップ")
-                                .size(24.0)
-                                .weak(),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("または「開く」ボタンから画像を選択")
-                                .size(13.0)
-                                .weak(),
-                        );
-                    });
-                });
+                self.render_empty_state(ui);
                 return;
             }
 
@@ -84,62 +100,160 @@ impl App {
                 }
             });
 
+            // テクスチャは描画の直前に差し込む (スポイトで状態が変わるため借用を先に作らない)
+            let trim_pane = PaneSpec {
+                title: "トリミング後",
+                dims: trim_dims,
+                tex: None,
+                crop: trim_clip,
+                max_w: avail.x,
+                pick_mode: false,
+                source_size: orig_dims,
+            };
+
             if self.prefs.compact_mode {
-                let col_w = avail.x - 8.0;
-                let trim_label = trim_dims.map_or_else(
-                    || "トリミング後".into(),
-                    |[w, h]| format!("トリミング後  {w}×{h}"),
-                );
-                show_panel(
-                    ui,
-                    &trim_label,
-                    self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
-                    trim_clip,
-                    &mut self.image.views[1],
-                    col_w,
-                    false,
-                    orig_dims,
-                );
+                let pane = PaneSpec {
+                    tex: self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
+                    ..trim_pane
+                };
+                show_panel(ui, &pane, &mut self.image.views[1]);
             } else {
                 let col_w = (avail.x - 16.0) / 2.0;
                 let ctx = ui.ctx().clone();
                 ui.columns(2, |cols| {
-                    let orig_label = if self.background.pick_mode {
-                        orig_dims.map_or_else(
-                            || "元画像 (クリックで背景色を選択)".into(),
-                            |[w, h]| format!("元画像 (クリックで背景色を選択)  {w}×{h}"),
-                        )
-                    } else {
-                        orig_dims
-                            .map_or_else(|| "元画像".into(), |[w, h]| format!("元画像  {w}×{h}"))
+                    let orig_pane = PaneSpec {
+                        title: if self.background.pick_mode {
+                            "元画像 (クリックで背景色を選択)"
+                        } else {
+                            "元画像"
+                        },
+                        dims: orig_dims,
+                        tex: self.image.orig_tex.as_ref(),
+                        crop: trim_uv.map(CropView::Overlay),
+                        max_w: col_w,
+                        pick_mode: self.background.pick_mode,
+                        source_size: orig_dims,
                     };
-                    let trim_label = trim_dims.map_or_else(
-                        || "トリミング後".into(),
-                        |[w, h]| format!("トリミング後  {w}×{h}"),
-                    );
-                    if let Some((x, y)) = show_panel(
-                        &mut cols[0],
-                        &orig_label,
-                        self.image.orig_tex.as_ref(),
-                        trim_uv.map(CropView::Overlay),
-                        &mut self.image.views[0],
-                        col_w,
-                        self.background.pick_mode,
-                        orig_dims,
-                    ) {
+                    if let Some((x, y)) =
+                        show_panel(&mut cols[0], &orig_pane, &mut self.image.views[0])
+                    {
                         self.pick_bg_from_pixel(&ctx, x, y);
                     }
-                    show_panel(
-                        &mut cols[1],
-                        &trim_label,
-                        self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
-                        trim_clip,
-                        &mut self.image.views[1],
-                        col_w,
-                        false,
-                        orig_dims,
-                    );
+                    let pane = PaneSpec {
+                        tex: self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
+                        max_w: col_w,
+                        ..trim_pane
+                    };
+                    show_panel(&mut cols[1], &pane, &mut self.image.views[1]);
                 });
+            }
+        });
+    }
+
+    /// 画像がないときのドロップ領域と、開く・貼り付けのボタン
+    ///
+    /// ファイルをウィンドウ上へドラッグしている間は、枠をアクセント色にしてドロップできることを示す
+    fn render_empty_state(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let p = theme::palette_of(ui);
+        let zone = ui.available_rect_before_wrap();
+        let dragging = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
+        let (fill, border) = if dragging {
+            (p.accent.gamma_multiply(0.08), p.accent)
+        } else {
+            (p.panel, p.border.gamma_multiply(1.6))
+        };
+        let painter = ui.painter();
+        painter.rect_filled(zone, theme::CARD_RADIUS, fill);
+        let corners = [
+            zone.left_top(),
+            zone.right_top(),
+            zone.right_bottom(),
+            zone.left_bottom(),
+            zone.left_top(),
+        ];
+        painter.extend(egui::Shape::dashed_line(
+            &corners,
+            egui::Stroke::new(1.5, border),
+            8.0,
+            6.0,
+        ));
+
+        let content = egui::Rect::from_center_size(
+            zone.center(),
+            egui::vec2(zone.width(), EMPTY_CONTENT_HEIGHT),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(content)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                let (icon_rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::splat(EMPTY_ICON_RADIUS * 2.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter().circle_filled(
+                    icon_rect.center(),
+                    EMPTY_ICON_RADIUS,
+                    p.accent.gamma_multiply(0.15),
+                );
+                Icon::Image.paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(icon_rect.center(), egui::Vec2::splat(32.0)),
+                    p.accent,
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new("画像をここにドロップ")
+                        .size(19.0)
+                        .strong(),
+                );
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("背景の余白を自動で検出してトリミングします").weak());
+                ui.add_space(14.0);
+                self.render_empty_actions(ui, &ctx);
+            },
+        );
+        ui.allocate_rect(zone, egui::Sense::hover());
+    }
+
+    /// 画像がないときの開く・貼り付けボタンを横に並べて中央に置く
+    ///
+    /// 横並びの中央寄せには行の幅が要るため、前のフレームで測った幅を使う
+    fn render_empty_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let width_id = egui::Id::unique("empty_actions_width");
+        let width = ctx.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+            let start = ui.cursor().min.x;
+            let size = egui::vec2(0.0, 32.0);
+            if ui
+                .add(icons::primary_button(ui, Icon::Folder, "画像を開く").min_size(size))
+                .on_hover_text(shortcuts::with_shortcut(
+                    ctx,
+                    "画像ファイルを開く",
+                    shortcuts::OPEN,
+                ))
+                .clicked()
+            {
+                self.open_image(ctx);
+            }
+            if ui
+                .add(icons::button(Icon::Paste, "クリップボードから貼り付け").min_size(size))
+                .on_hover_text(shortcuts::with_shortcut(
+                    ctx,
+                    "クリップボードの画像を使用",
+                    shortcuts::PASTE,
+                ))
+                .clicked()
+            {
+                self.paste_from_clipboard(ctx);
+            }
+            let used = ui.min_rect().max.x - start;
+            if (used - width).abs() > 0.5 {
+                ctx.data_mut(|d| d.insert_temp(width_id, used));
+                ctx.request_repaint();
             }
         });
     }
@@ -256,28 +370,50 @@ fn paint_trim_overlay(
     );
 }
 
-/// タイトルとズーム・パン可能な画像を 1 ペイン分描画する
+/// タイトルとズーム・パン可能な画像を 1 ペイン分、カードに収めて描画する
 ///
 /// ホイールでカーソル位置を中心にズームし、ドラッグでパンする
 /// タイトル行の「フィット」「100%」で倍率を戻せる
-/// `crop` が `Overlay` のときは削られる領域を重ねて表示し、
+/// `pane.crop` が `Overlay` のときは削られる領域を重ねて表示し、
 /// `Clip` のときはテクスチャから矩形部分だけを UV で切り出して表示し、
 /// 元画像の範囲外へはみ出す部分は塗り色で描く
-/// `pick_mode` が `true` のとき画像クリックでピクセル座標を返す
-/// `source_size` は元画像の寸法。プレビュー縮小時も倍率とスポイト座標を元解像度へ合わせる
-#[allow(clippy::too_many_arguments)]
-fn show_panel(
+///
+/// # Arguments
+/// * `ui` - 描画先
+/// * `pane` - ペインの表示内容
+/// * `view` - ペインのズームとパンの状態
+///
+/// # Returns
+/// * `Option<(u32, u32)>` - スポイト中に画像がクリックされたときの元画像上のピクセル座標
+fn show_panel(ui: &mut egui::Ui, pane: &PaneSpec, view: &mut PaneView) -> Option<(u32, u32)> {
+    theme::card_frame(ui, 6)
+        .show(ui, |ui| show_pane_contents(ui, pane, view))
+        .inner
+}
+
+/// ペインの中身 (見出し行と画像) を描画する
+///
+/// 引数と戻り値は `show_panel` と同じ
+fn show_pane_contents(
     ui: &mut egui::Ui,
-    title: &str,
-    tex: Option<&egui::TextureHandle>,
-    crop: Option<CropView>,
+    pane: &PaneSpec,
     view: &mut PaneView,
-    max_w: f32,
-    pick_mode: bool,
-    source_size: Option<[u32; 2]>,
 ) -> Option<(u32, u32)> {
+    let PaneSpec {
+        title,
+        dims,
+        tex,
+        crop,
+        max_w,
+        pick_mode,
+        source_size,
+    } = *pane;
     ui.horizontal(|ui| {
+        ui.add_space(4.0);
         ui.strong(title);
+        if let Some([w, h]) = dims {
+            ui.label(egui::RichText::new(format!("{w} × {h}")).small().weak());
+        }
         if tex.is_some() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("100%").clicked() {
@@ -292,7 +428,7 @@ fn show_panel(
             });
         }
     });
-    ui.separator();
+    ui.add_space(2.0);
     let viewport_size = egui::vec2(
         max_w.min(ui.available_width()).max(1.0),
         ui.available_height().max(1.0),
@@ -329,6 +465,8 @@ fn show_panel(
     view.offset = clamp_offset(view.offset, disp, viewport.size());
 
     let painter = ui.painter_at(viewport);
+    let palette = theme::palette_of(ui);
+    painter.rect_filled(viewport, theme::CARD_RADIUS - 4, palette.canvas);
     // 等倍付近で画素がにじまないよう、画像の位置を物理ピクセルに揃える
     let ppp = painter.pixels_per_point();
     let min = (viewport.center() + view.offset - disp / 2.0).to_vec2();
@@ -346,16 +484,9 @@ fn show_panel(
     let inner = egui::Rect::from_min_max(to_screen(inner_uv.min), to_screen(inner_uv.max));
     painter.image(t.id(), inner, inner_uv, egui::Color32::WHITE);
     if let Some(CropView::Overlay(trim_uv)) = crop {
-        paint_trim_overlay(&painter, ui.visuals().selection.stroke.color, rect, trim_uv);
+        paint_trim_overlay(&painter, palette.accent, rect, trim_uv);
     }
     paint_zoom_badge(&painter, viewport, scale);
-    // ペインの境界を示し、隣のペインと区別できるようにする
-    painter.rect_stroke(
-        viewport,
-        0.0,
-        ui.visuals().widgets.noninteractive.bg_stroke,
-        egui::StrokeKind::Inside,
-    );
 
     // カーソルの形でパン可能なことと、スポイト中であることを示す
     if response.dragged() {
@@ -478,8 +609,8 @@ fn paint_zoom_badge(painter: &egui::Painter, viewport: egui::Rect, scale: f32) {
     let pos = viewport.right_bottom() - galley.size() - egui::vec2(10.0, 8.0);
     painter.rect_filled(
         egui::Rect::from_min_size(pos, galley.size()).expand2(egui::vec2(4.0, 2.0)),
-        3.0,
-        egui::Color32::from_black_alpha(150),
+        4.0,
+        egui::Color32::from_black_alpha(160),
     );
     painter.galley(pos, galley, egui::Color32::WHITE);
 }

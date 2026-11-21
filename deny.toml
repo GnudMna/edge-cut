@@ -21,11 +21,6 @@ targets = [
 [advisories]
 yanked = "deny"
 unmaintained = "workspace"
-ignore = [
-    # wayland-scanner / zbus_xml が quick-xml ^0.39 を要求し 0.41 未満に固定されるため (上流更新待ち)
-    { id = "RUSTSEC-2026-0194", reason = "wayland-scanner / zbus_xml 経由の quick-xml は上流が ^0.39 のため 0.41 未満に固定される" },
-    { id = "RUSTSEC-2026-0195", reason = "wayland-scanner / zbus_xml 経由の quick-xml は上流が ^0.39 のため 0.41 未満に固定される" },
-]
 
 [licenses]
 unused-allowed-license = "allow"

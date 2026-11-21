@@ -8,27 +8,22 @@
 
 #requires -Version 7.0
 
-# エクスプローラー経由の起動かどうかを親プロセスチェーンで判定する
+# エクスプローラー経由の起動かどうかを直接の親プロセスで判定する
+# (祖先まで辿ると、スタートメニュー等から起動したターミナル配下でも常に true になる)
 function Test-LaunchedFromExplorer {
     try {
-        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
-        $depth = 0
-
-        while ($process -and $depth -lt 12) {
-            $name = $process.Name.ToLowerInvariant()
-            if ($name -eq 'explorer.exe' -or $name -eq 'openwith.exe') {
-                return $true
-            }
-
-            if ($process.ParentProcessId -eq 0) {
-                break
-            }
-
-            $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.ParentProcessId)" -ErrorAction SilentlyContinue
-            $depth++
+        $self = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+        if (-not $self -or $self.ParentProcessId -eq 0) {
+            return $false
         }
 
-        return $false
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($self.ParentProcessId)" -ErrorAction Stop
+        if (-not $parent) {
+            return $false
+        }
+
+        $name = $parent.Name.ToLowerInvariant()
+        return ($name -eq 'explorer.exe' -or $name -eq 'openwith.exe')
     } catch {
         return $false
     }
@@ -36,12 +31,23 @@ function Test-LaunchedFromExplorer {
 
 # ダブルクリック実行時のみ Enter 待ちでウィンドウを開いたままにする
 function Wait-IfDoubleClicked {
+    # 入力がリダイレクトされた非対話の実行では待たない
+    if ([Console]::IsInputRedirected) {
+        return
+    }
+
     if (-not (Test-LaunchedFromExplorer)) {
         return
     }
 
     Write-Host ''
-    Read-Host '終了するには Enter キーを押してください'
+
+    # -NonInteractive などで Read-Host が使えなくても、終了コードには影響させない
+    try {
+        Read-Host '終了するには Enter キーを押してください' | Out-Null
+    } catch {
+        return
+    }
 }
 
 # スクリプト本体を実行し、エラー時も Enter 待ち後に静かに終了する
@@ -52,12 +58,12 @@ function Invoke-ScriptMain {
         [scriptblock]$Body
     )
 
-    if (-not (Get-Variable -Name ClipRefinerScriptMainDepth -Scope Global -ErrorAction SilentlyContinue)) {
-        $global:ClipRefinerScriptMainDepth = 0
+    if (-not (Get-Variable -Name EdgeCutScriptMainDepth -Scope Global -ErrorAction SilentlyContinue)) {
+        $global:EdgeCutScriptMainDepth = 0
     }
 
-    $global:ClipRefinerScriptMainDepth++
-    $isOuterInvocation = $global:ClipRefinerScriptMainDepth -eq 1
+    $global:EdgeCutScriptMainDepth++
+    $isOuterInvocation = $global:EdgeCutScriptMainDepth -eq 1
     $exitCode = 0
 
     try {
@@ -76,7 +82,7 @@ function Invoke-ScriptMain {
             Write-Host $_
         }
     } finally {
-        $global:ClipRefinerScriptMainDepth--
+        $global:EdgeCutScriptMainDepth--
 
         # 他スクリプトから呼ばれた場合は Enter 待ちしない (最外の直接実行時のみ)
         if ($isOuterInvocation) {

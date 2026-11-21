@@ -27,6 +27,9 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     pub(in crate::app) fn save_image(&mut self, ctx: &egui::Context) {
+        if self.reject_file_work_while_updating() {
+            return;
+        }
         let Some((original, info)) = self.current_trim_target() else {
             return;
         };
@@ -62,6 +65,10 @@ impl App {
         request: SaveRequest,
         path: PathBuf,
     ) {
+        // ダイアログを開いたまま更新の適用が始まった場合もここで止める
+        if self.reject_file_work_while_updating() {
+            return;
+        }
         let path = with_default_extension(path, &request.ext);
         let options = self.save_options();
         self.spawn_save(ctx, SaveKind::Manual, move || {

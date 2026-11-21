@@ -15,6 +15,9 @@ use crate::app::state::{App, IoMsg, SaveKind};
 /// クリップボードから貼り付けた画像の元ファイル名 (拡張子なしのため `Original` 形式では PNG)
 const CLIPBOARD_SOURCE_NAME: &str = "clipboard";
 
+/// 複数フレームのファイルを読み込んだときにステータスへ追記する補足
+const EXTRA_FRAMES_NOTE: &str = " (先頭の 1 フレームのみ読み込み)";
+
 // ======================================================================
 // 画像 I/O の結果受信
 // ======================================================================
@@ -63,7 +66,12 @@ impl App {
                     let note = self.io.load_note.take().unwrap_or_default();
                     match result {
                         Ok(loaded) => {
-                            let status = format!("読み込み完了: {file_name}{note}");
+                            let frames = if loaded.has_extra_frames {
+                                EXTRA_FRAMES_NOTE
+                            } else {
+                                ""
+                            };
+                            let status = format!("読み込み完了: {file_name}{frames}{note}");
                             self.set_original_image(
                                 ctx,
                                 loaded.image,
@@ -153,6 +161,40 @@ mod tests {
     use super::CLIPBOARD_SOURCE_NAME;
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until};
     use crate::app::state::{App, IoMsg};
+    use crate::image_load::LoadedImage;
+
+    // ======================================================================
+    // 読み込み結果の受信
+    // ======================================================================
+    /// 読み込み完了のステータスに、複数フレームのときだけ先頭フレームのみである旨を追記すること
+    #[test]
+    fn poll_io_notes_first_frame_only_for_multi_frame_files() {
+        let ctx = egui::Context::default();
+        for (has_extra_frames, expected) in [(true, true), (false, false)] {
+            let mut app = App::default();
+            let request_id = app.io.load_request_id;
+            app.io
+                .tx
+                .send(IoMsg::Loaded {
+                    request_id,
+                    file_name: "anim.gif".into(),
+                    result: Ok(LoadedImage {
+                        image: make_test_image(),
+                        icc_profile: None,
+                        has_extra_frames,
+                    }),
+                })
+                .unwrap();
+            app.poll_io(&ctx);
+
+            assert!(
+                app.status.contains("読み込み完了: anim.gif"),
+                "{}",
+                app.status
+            );
+            assert_eq!(app.status.contains("先頭の 1 フレームのみ"), expected);
+        }
+    }
 
     // ======================================================================
     // クリップボード結果の受信

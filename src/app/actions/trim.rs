@@ -169,6 +169,7 @@ impl App {
         self.trim_worker.handle.submit(TrimJob {
             request_id,
             original,
+            icc_profile: self.image.icc_profile.clone(),
             options,
             refresh_orig_tex,
             ctx: ctx.clone(),

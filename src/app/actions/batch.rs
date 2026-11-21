@@ -26,7 +26,7 @@ impl App {
     /// # Arguments
     /// * `ctx` - egui のコンテキスト (再描画リクエストに使用)
     pub(in crate::app) fn batch_trim(&mut self, ctx: &egui::Context) {
-        if self.batch.running {
+        if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
         self.spawn_dialog(ctx, || {
@@ -51,7 +51,7 @@ impl App {
         paths: Vec<PathBuf>,
         skipped: usize,
     ) {
-        if self.batch.running {
+        if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
         self.spawn_dialog(ctx, move || {
@@ -81,7 +81,8 @@ impl App {
         out_dir: PathBuf,
     ) {
         // 二重起動を防ぐ
-        if self.batch.running {
+        // ダイアログを開いたまま更新の適用が始まった場合もここで止める
+        if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
 
