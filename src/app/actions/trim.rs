@@ -104,8 +104,14 @@ impl App {
                 }
             };
             if let Some(orig) = preview.orig_color {
-                self.image.orig_tex =
-                    Some(ctx.load_texture("orig", orig, egui::TextureOptions::LINEAR));
+                // 縮小表示時のちらつきを抑えるためミップマップを使う
+                // 拡大時は画素を滲ませず、トリミング境界を画素単位で確認できるようにする
+                let options = egui::TextureOptions {
+                    magnification: egui::TextureFilter::Nearest,
+                    ..egui::TextureOptions::LINEAR
+                }
+                .with_mipmap_mode(Some(egui::TextureFilter::Linear));
+                self.image.orig_tex = Some(ctx.load_texture("orig", orig, options));
                 self.trim_worker.refresh_orig_tex = false;
             }
             self.image.info = Some(preview.info);

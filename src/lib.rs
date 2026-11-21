@@ -25,6 +25,7 @@
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
 //! | [`app`] | egui ベースの GUI (`app::run`) |
+//! | `panic_hook` | panic のログ記録と UI スレッドでのダイアログ通知 (クレート内部用) |
 //! | `panic_message` | panic の捕捉とメッセージ取り出し (クレート内部用) |
 //! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 (Windows) |
 
@@ -36,6 +37,7 @@ pub mod trim;
 
 pub mod app;
 
+mod panic_hook;
 mod panic_message;
 
 #[cfg(windows)]

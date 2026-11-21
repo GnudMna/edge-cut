@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -22,7 +22,7 @@ linker-args = ["-sice:ICE91"]
 [dependencies]
 arboard = "3.6.1"
 eframe = { version = "0.36.2", features = ["persistence"] }
-image = "0.25.10"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 rayon = "1.12.0"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -33,9 +33,11 @@ tempfile = "3.27.0"
 [target.'cfg(windows)'.dependencies]
 known-folders = "1.4.2"
 minisign-verify = "0.3.0"
+raw-window-handle = "0.6.2"
 semver = "1.0.28"
 sha2 = "0.11.0"
 ureq = { version = "3.4.2", features = ["json"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 minisign = "0.10.0"
@@ -53,7 +55,8 @@ name = "EdgeCut"
 path = "src/main.rs"
 
 [lints.rust]
-unsafe_code = "forbid"
+# タイトルバー色の設定 (src/app/title_bar.rs) だけが Win32 API 呼び出しのため許可する
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

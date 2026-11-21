@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::app::state::App;
+use crate::app::state::{App, PaneView};
 use crate::trim::TrimInfo;
 
 /// 元画像プレビューで削られる領域に重ねる暗幕の色
@@ -13,6 +13,18 @@ const TRIM_FRAME_WIDTH: f32 = 1.5;
 
 /// 画像プレビューに敷く市松模様の 1 マスの大きさ
 const PREVIEW_CHECKER_CELL: f32 = 8.0;
+
+/// プレビューのズーム倍率の上限 (画像 1 px あたりの画面 px 数)
+const MAX_ZOOM: f32 = 16.0;
+
+/// スクロール 1 ポイントあたりのズーム量 (指数)
+const ZOOM_PER_SCROLL: f32 = 0.002;
+
+/// ペインに収める際に画像の周囲へ空ける余白
+const PANE_MARGIN: f32 = 8.0;
+
+/// ペインに収める倍率の下限 (極端に小さいペインでの倍率 0 を避ける)
+const MIN_FIT_SCALE: f32 = 0.001;
 
 /// プレビューでのトリミング矩形の見せ方
 #[derive(Clone, Copy)]
@@ -83,9 +95,10 @@ impl App {
                     &trim_label,
                     self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
                     trim_clip,
+                    &mut self.image.views[1],
                     col_w,
                     false,
-                    None,
+                    orig_dims,
                 );
             } else {
                 let col_w = (avail.x - 16.0) / 2.0;
@@ -109,6 +122,7 @@ impl App {
                         &orig_label,
                         self.image.orig_tex.as_ref(),
                         trim_uv.map(CropView::Overlay),
+                        &mut self.image.views[0],
                         col_w,
                         self.background.pick_mode,
                         orig_dims,
@@ -120,9 +134,10 @@ impl App {
                         &trim_label,
                         self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
                         trim_clip,
+                        &mut self.image.views[1],
                         col_w,
                         false,
-                        None,
+                        orig_dims,
                     );
                 });
             }
@@ -201,16 +216,21 @@ fn trim_uv_rect(info: &TrimInfo) -> egui::Rect {
 /// 範囲外へ拡張する余白は元画像上に描けないため、枠線は画像の表示領域内に収める
 ///
 /// # Arguments
-/// * `ui` - 描画先
-/// * `image_rect` - 画面上の画像の表示領域
+/// * `painter` - ペインにクリップした描画先
+/// * `frame_color` - 枠線の色
+/// * `image_rect` - 画面上の画像の表示領域 (ペインからはみ出していてもよい)
 /// * `uv` - 正規化座標のトリミング矩形
-fn paint_trim_overlay(ui: &egui::Ui, image_rect: egui::Rect, uv: egui::Rect) {
+fn paint_trim_overlay(
+    painter: &egui::Painter,
+    frame_color: egui::Color32,
+    image_rect: egui::Rect,
+    uv: egui::Rect,
+) {
     if uv.contains_rect(FULL_UV) {
         return;
     }
     let to_screen = |p: egui::Pos2| image_rect.min + p.to_vec2() * image_rect.size();
     let crop = egui::Rect::from_min_max(to_screen(uv.min), to_screen(uv.max));
-    let painter = ui.painter_at(image_rect);
 
     // 上下は全幅、左右は矩形の高さ分だけ塗り、暗幕が重ならないようにする
     let shades = [
@@ -231,91 +251,298 @@ fn paint_trim_overlay(ui: &egui::Ui, image_rect: egui::Rect, uv: egui::Rect) {
     painter.rect_stroke(
         crop.intersect(image_rect),
         0.0,
-        egui::Stroke::new(TRIM_FRAME_WIDTH, ui.visuals().selection.stroke.color),
+        egui::Stroke::new(TRIM_FRAME_WIDTH, frame_color),
         egui::StrokeKind::Inside,
     );
 }
 
-/// タイトルとスクロール可能な画像を 1 ペイン分描画する
+/// タイトルとズーム・パン可能な画像を 1 ペイン分描画する
 ///
+/// ホイールでカーソル位置を中心にズームし、ドラッグでパンする
+/// タイトル行の「フィット」「100%」で倍率を戻せる
 /// `crop` が `Overlay` のときは削られる領域を重ねて表示し、
 /// `Clip` のときはテクスチャから矩形部分だけを UV で切り出して表示し、
 /// 元画像の範囲外へはみ出す部分は塗り色で描く
 /// `pick_mode` が `true` のとき画像クリックでピクセル座標を返す
-/// `pick_source_size` は元画像の寸法。プレビュー縮小時もスポイト座標を元解像度へ合わせる
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+/// `source_size` は元画像の寸法。プレビュー縮小時も倍率とスポイト座標を元解像度へ合わせる
+#[allow(clippy::too_many_arguments)]
 fn show_panel(
     ui: &mut egui::Ui,
     title: &str,
     tex: Option<&egui::TextureHandle>,
     crop: Option<CropView>,
+    view: &mut PaneView,
     max_w: f32,
     pick_mode: bool,
-    pick_source_size: Option<[u32; 2]>,
+    source_size: Option<[u32; 2]>,
 ) -> Option<(u32, u32)> {
-    ui.strong(title);
+    ui.horizontal(|ui| {
+        ui.strong(title);
+        if tex.is_some() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("100%").clicked() {
+                    *view = PaneView {
+                        zoom: Some(1.0),
+                        offset: egui::Vec2::ZERO,
+                    };
+                }
+                if ui.small_button("フィット").clicked() {
+                    *view = PaneView::default();
+                }
+            });
+        }
+    });
     ui.separator();
-    let avail_h = ui.available_height();
-    let mut picked = None;
-    egui::ScrollArea::both()
-        .id_salt(title)
-        .max_width(max_w)
-        .max_height(avail_h)
-        .show(ui, |ui| {
-            if let Some(t) = tex {
-                let (uv, fill) = match crop {
-                    Some(CropView::Clip { uv, fill }) => (uv, Some(fill)),
-                    _ => (FULL_UV, None),
-                };
-                let ts = t.size_vec2() * uv.size();
-                let scale = ((max_w - 8.0) / ts.x).min((avail_h - 8.0) / ts.y).min(1.0);
-                let disp = ts * scale;
-                let sense = if pick_mode {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
-                };
-                let (rect, response) = ui.allocate_exact_size(disp, sense);
-                // 透明部分がパネルの背景に溶けないよう、画像の下に市松模様を敷く
-                paint_checkerboard(ui.painter(), rect, PREVIEW_CHECKER_CELL);
-                // 範囲外の余白を塗ってから、元画像と重なる部分だけをテクスチャから描く
-                if let Some(fill) = fill.filter(|_| !FULL_UV.contains_rect(uv)) {
-                    ui.painter().rect_filled(rect, 0.0, fill);
-                }
-                let inner_uv = uv.intersect(FULL_UV);
-                let to_screen = |p: egui::Pos2| rect.min + (p - uv.min) / uv.size() * rect.size();
-                let inner =
-                    egui::Rect::from_min_max(to_screen(inner_uv.min), to_screen(inner_uv.max));
-                egui::Image::new((t.id(), inner.size()))
-                    .uv(inner_uv)
-                    .corner_radius(egui::CornerRadius::ZERO)
-                    .paint_at(ui, inner);
-                if let Some(CropView::Overlay(trim_uv)) = crop {
-                    paint_trim_overlay(ui, response.rect, trim_uv);
-                }
-                if pick_mode {
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                    }
-                    if let Some(pos) = response
-                        .interact_pointer_pos()
-                        .filter(|_| response.clicked())
-                    {
-                        let rel = pos - response.rect.min;
-                        let [sw, sh] = pick_source_size.unwrap_or([ts.x as u32, ts.y as u32]);
-                        #[allow(clippy::cast_precision_loss)]
-                        {
-                            let px = ((rel.x / response.rect.width()) * sw as f32)
-                                .clamp(0.0, sw.saturating_sub(1) as f32)
-                                .floor() as u32;
-                            let py = ((rel.y / response.rect.height()) * sh as f32)
-                                .clamp(0.0, sh.saturating_sub(1) as f32)
-                                .floor() as u32;
-                            picked = Some((px, py));
-                        }
-                    }
-                }
-            }
-        });
-    picked
+    let viewport_size = egui::vec2(
+        max_w.min(ui.available_width()).max(1.0),
+        ui.available_height().max(1.0),
+    );
+    let (viewport, response) = ui.allocate_exact_size(viewport_size, egui::Sense::click_and_drag());
+    let t = tex?;
+
+    let (uv, fill) = match crop {
+        Some(CropView::Clip { uv, fill }) => (uv, Some(fill)),
+        _ => (FULL_UV, None),
+    };
+    let [sw, sh] = source_size.unwrap_or_else(|| tex_size_px(t.size_vec2()));
+    #[allow(clippy::cast_precision_loss)]
+    let src = egui::vec2(sw as f32, sh as f32) * uv.size();
+    let fit = fit_scale(src, viewport.size());
+
+    // ズームとパンの入力を反映する
+    let mut scale = view.zoom.unwrap_or(fit).clamp(fit, MAX_ZOOM);
+    if response.hovered() {
+        let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta().y, i.zoom_delta()));
+        let factor = pinch * (scroll * ZOOM_PER_SCROLL).exp();
+        if let Some(pointer) = response.hover_pos().filter(|_| (factor - 1.0).abs() > 1e-4) {
+            let new_scale = (scale * factor).clamp(fit, MAX_ZOOM);
+            view.offset = zoom_about(view.offset, pointer - viewport.center(), scale, new_scale);
+            scale = new_scale;
+        }
+    }
+    if response.dragged_by(egui::PointerButton::Primary) {
+        view.offset += response.drag_delta();
+    }
+    // 収まる倍率まで戻したら、ウィンドウサイズへの追従に戻す
+    view.zoom = (scale > fit + 1e-3).then_some(scale);
+    let disp = src * scale;
+    view.offset = clamp_offset(view.offset, disp, viewport.size());
+
+    let painter = ui.painter_at(viewport);
+    // 等倍付近で画素がにじまないよう、画像の位置を物理ピクセルに揃える
+    let ppp = painter.pixels_per_point();
+    let min = (viewport.center() + view.offset - disp / 2.0).to_vec2();
+    let min = egui::Pos2::ZERO + (min * ppp).round() / ppp;
+    let rect = egui::Rect::from_min_size(min, disp);
+
+    // 透明部分がパネルの背景に溶けないよう、画像の下に市松模様を敷く
+    paint_checkerboard(&painter, rect, PREVIEW_CHECKER_CELL);
+    // 範囲外の余白を塗ってから、元画像と重なる部分だけをテクスチャから描く
+    if let Some(fill) = fill.filter(|_| !FULL_UV.contains_rect(uv)) {
+        painter.rect_filled(rect, 0.0, fill);
+    }
+    let inner_uv = uv.intersect(FULL_UV);
+    let to_screen = |p: egui::Pos2| rect.min + (p - uv.min) / uv.size() * rect.size();
+    let inner = egui::Rect::from_min_max(to_screen(inner_uv.min), to_screen(inner_uv.max));
+    painter.image(t.id(), inner, inner_uv, egui::Color32::WHITE);
+    if let Some(CropView::Overlay(trim_uv)) = crop {
+        paint_trim_overlay(&painter, ui.visuals().selection.stroke.color, rect, trim_uv);
+    }
+    paint_zoom_badge(&painter, viewport, scale);
+    // ペインの境界を示し、隣のペインと区別できるようにする
+    painter.rect_stroke(
+        viewport,
+        0.0,
+        ui.visuals().widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+
+    // カーソルの形でパン可能なことと、スポイト中であることを示す
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hovered() {
+        if pick_mode {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        } else if disp.x > viewport.width() || disp.y > viewport.height() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+
+    pick_mode
+        .then(|| {
+            response
+                .interact_pointer_pos()
+                .filter(|_| response.clicked())
+        })
+        .flatten()
+        .filter(|pos| rect.contains(*pos))
+        .map(|pos| pixel_at(pos - rect.min, rect.size(), [sw, sh]))
+}
+
+/// テクスチャの寸法を整数のピクセル数へ変換する
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn tex_size_px(size: egui::Vec2) -> [u32; 2] {
+    [size.x as u32, size.y as u32]
+}
+
+/// 画像内の相対位置を元画像のピクセル座標へ変換する
+///
+/// # Arguments
+/// * `rel` - 画像表示領域の左上からの位置 (画面 px)
+/// * `disp` - 画像表示領域の大きさ (画面 px)
+/// * `source` - 元画像の寸法
+///
+/// # Returns
+/// * `(u32, u32)` - 画像内へクランプしたピクセル座標
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn pixel_at(rel: egui::Vec2, disp: egui::Vec2, source: [u32; 2]) -> (u32, u32) {
+    let [sw, sh] = source;
+    let px = ((rel.x / disp.x) * sw as f32)
+        .clamp(0.0, sw.saturating_sub(1) as f32)
+        .floor() as u32;
+    let py = ((rel.y / disp.y) * sh as f32)
+        .clamp(0.0, sh.saturating_sub(1) as f32)
+        .floor() as u32;
+    (px, py)
+}
+
+// ======================================================================
+// ズームとパンの計算
+// ======================================================================
+/// ペインに収まる倍率を返す (拡大はしないため最大 1.0)
+///
+/// # Arguments
+/// * `src` - 表示する範囲の元画像上の大きさ (px)
+/// * `viewport` - ペインの大きさ (画面 px)
+///
+/// # Returns
+/// * `f32` - 画像 1 px あたりの画面 px 数
+fn fit_scale(src: egui::Vec2, viewport: egui::Vec2) -> f32 {
+    let src = src.max(egui::Vec2::splat(1.0));
+    ((viewport.x - PANE_MARGIN) / src.x)
+        .min((viewport.y - PANE_MARGIN) / src.y)
+        .clamp(MIN_FIT_SCALE, 1.0)
+}
+
+/// 画像がペインからはみ出さない範囲へパンの移動量を収める
+///
+/// 画像がペインより小さい軸は中央に固定する
+///
+/// # Arguments
+/// * `offset` - 画像の中心のずれ (画面 px)
+/// * `disp` - 画像の表示サイズ (画面 px)
+/// * `viewport` - ペインの大きさ (画面 px)
+///
+/// # Returns
+/// * `egui::Vec2` - 収めた後の画像の中心のずれ
+fn clamp_offset(offset: egui::Vec2, disp: egui::Vec2, viewport: egui::Vec2) -> egui::Vec2 {
+    let limit = ((disp - viewport) / 2.0).max(egui::Vec2::ZERO);
+    offset.clamp(-limit, limit)
+}
+
+/// カーソル下の画像上の点を動かさずに倍率を変えたときのパンの移動量を返す
+///
+/// # Arguments
+/// * `offset` - 変更前の画像の中心のずれ (画面 px)
+/// * `pointer` - ペインの中心からのカーソル位置 (画面 px)
+/// * `old_scale` - 変更前の倍率
+/// * `new_scale` - 変更後の倍率
+///
+/// # Returns
+/// * `egui::Vec2` - 変更後の画像の中心のずれ
+fn zoom_about(
+    offset: egui::Vec2,
+    pointer: egui::Vec2,
+    old_scale: f32,
+    new_scale: f32,
+) -> egui::Vec2 {
+    pointer - (pointer - offset) * (new_scale / old_scale)
+}
+
+/// ペインの右下に現在の倍率を表示する
+///
+/// # Arguments
+/// * `painter` - ペインにクリップした描画先
+/// * `viewport` - ペインの領域
+/// * `scale` - 画像 1 px あたりの画面 px 数
+fn paint_zoom_badge(painter: &egui::Painter, viewport: egui::Rect, scale: f32) {
+    let galley = painter.layout_no_wrap(
+        format!("{:.0}%", scale * 100.0),
+        egui::FontId::proportional(12.0),
+        egui::Color32::WHITE,
+    );
+    let pos = viewport.right_bottom() - galley.size() - egui::vec2(10.0, 8.0);
+    painter.rect_filled(
+        egui::Rect::from_min_size(pos, galley.size()).expand2(egui::vec2(4.0, 2.0)),
+        3.0,
+        egui::Color32::from_black_alpha(150),
+    );
+    painter.galley(pos, galley, egui::Color32::WHITE);
+}
+
+// ======================================================================
+// テスト
+// ======================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 大きな画像はペインに収まる倍率になり、小さな画像は 1.0 を超えないこと
+    #[test]
+    fn fit_scale_shrinks_large_and_never_enlarges() {
+        let viewport = egui::vec2(408.0, 308.0);
+        let large = fit_scale(egui::vec2(4000.0, 1000.0), viewport);
+        assert!((large - 0.1).abs() < 1e-6);
+        assert!((fit_scale(egui::vec2(100.0, 100.0), viewport) - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// 寸法 0 の範囲やペインが極端に小さい場合でも正の倍率を返すこと
+    #[test]
+    fn fit_scale_stays_positive_for_degenerate_input() {
+        assert!(fit_scale(egui::Vec2::ZERO, egui::vec2(100.0, 100.0)) > 0.0);
+        assert!(fit_scale(egui::vec2(500.0, 500.0), egui::vec2(4.0, 4.0)) > 0.0);
+    }
+
+    /// 画像がペインより小さい軸は中央に固定し、大きい軸ははみ出さない範囲に収めること
+    #[test]
+    fn clamp_offset_keeps_image_covering_pane() {
+        let viewport = egui::vec2(400.0, 300.0);
+        // 横だけはみ出す画像: 縦は中央固定、横は (800 - 400) / 2 まで
+        let disp = egui::vec2(800.0, 200.0);
+        let clamped = clamp_offset(egui::vec2(999.0, 50.0), disp, viewport);
+        assert_eq!(clamped, egui::vec2(200.0, 0.0));
+        let clamped = clamp_offset(egui::vec2(-999.0, -50.0), disp, viewport);
+        assert_eq!(clamped, egui::vec2(-200.0, 0.0));
+    }
+
+    /// 倍率を変えてもカーソル下の画像上の点が動かないこと
+    #[test]
+    fn zoom_about_keeps_point_under_pointer() {
+        let offset = egui::vec2(30.0, -20.0);
+        let pointer = egui::vec2(70.0, 40.0);
+        let (old, new) = (0.5, 2.0);
+        // 拡大前にカーソル下にあった画像上の点が、拡大後も同じ画面位置に来ること
+        let image_point = (pointer - offset) / old;
+        let new_offset = zoom_about(offset, pointer, old, new);
+        let after = new_offset + image_point * new;
+        assert!((after - pointer).length() < 1e-4);
+    }
+
+    /// 表示領域外の位置は画像内へクランプし、縮小表示でも元解像度の座標を返すこと
+    #[test]
+    fn pixel_at_maps_to_source_resolution() {
+        let disp = egui::vec2(100.0, 50.0);
+        assert_eq!(
+            pixel_at(egui::vec2(50.0, 25.0), disp, [1000, 500]),
+            (500, 250)
+        );
+        assert_eq!(
+            pixel_at(egui::vec2(-5.0, 999.0), disp, [1000, 500]),
+            (0, 499)
+        );
+    }
 }

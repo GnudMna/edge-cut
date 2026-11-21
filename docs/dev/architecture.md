@@ -10,6 +10,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルの取得を含む) |
 | `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルの再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
 | `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
+| `src/panic_hook.rs` | panic フック。panic の内容を `%LOCALAPPDATA%\EdgeCut\panic.log` (Windows 以外は一時ディレクトリ配下) へ追記し、UI スレッドの panic ではダイアログも表示 |
 | `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱う) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
 | `src/app/` | egui GUI (下表) |
@@ -30,6 +31,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `shortcuts` | キーボードショートカットの判定 |
 | `image_convert` | プレビュー用テクスチャ変換 |
 | `fonts/` / `icon` | フォント (`loader` / `registry`)・アイコンの読み込み |
+| `title_bar` | タイトルバーの色をテーマに合わせる (`#[cfg(windows)]` 限定。`unsafe_code` を許可する唯一のモジュール) |
 
 ## 設計方針
 

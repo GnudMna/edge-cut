@@ -111,6 +111,15 @@ impl Settings {
 // ======================================================================
 // 状態の部分構造体
 // ======================================================================
+/// プレビュー 1 ペイン分のズームとパンの状態
+#[derive(Clone, Copy, Default)]
+pub(super) struct PaneView {
+    /// 画像 1 px あたりの画面 px 数。`None` のときはペインに収まる倍率 (最大 1.0) に追従する
+    pub zoom: Option<f32>,
+    /// 画像の中心がペインの中心からずれている量 (画面 px)
+    pub offset: egui::Vec2,
+}
+
 /// 読み込み画像とプレビュー表示
 #[derive(Default)]
 pub(super) struct ImageState {
@@ -124,6 +133,8 @@ pub(super) struct ImageState {
     pub icc_profile: Option<Arc<[u8]>>,
     /// 元画像の GPU テクスチャ。トリミング後のプレビューも UV で切り出して共用する
     pub orig_tex: Option<egui::TextureHandle>,
+    /// プレビューのズームとパン。`[0]` が元画像、`[1]` がトリミング後のペイン
+    pub views: [PaneView; 2],
     /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
     pub info: Option<TrimInfo>,
     /// 直近のトリミング実行時の `(tolerance, padding, bg_override)`。同じ値なら再実行をスキップする
@@ -134,6 +145,7 @@ impl ImageState {
     /// 新しい画像読み込み前にプレビュー関連の状態をリセットする
     pub(super) fn prepare_for_load(&mut self) {
         self.orig_tex = None;
+        self.views = [PaneView::default(); 2];
         self.info = None;
         self.cache_key = None;
     }

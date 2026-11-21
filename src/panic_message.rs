@@ -27,7 +27,7 @@ pub(crate) fn catch_panic<T>(run: impl FnOnce() -> T) -> Result<T, String> {
 ///
 /// # Returns
 /// * `String` - panic メッセージ。取り出せない場合は `"不明なエラー"`
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {

@@ -25,7 +25,7 @@ impl eframe::App for App {
         self.save_settings(storage);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_batch_result();
         self.poll_io(&ctx);
@@ -33,6 +33,8 @@ impl eframe::App for App {
         #[cfg(windows)]
         self.poll_update(&ctx);
         apply_theme(&ctx, self.prefs.dark_mode);
+        #[cfg(windows)]
+        apply_title_bar_color(&ctx, frame, self.prefs.dark_mode);
         input::handle_file_drop(self, &ctx);
         self.handle_shortcuts(&ctx);
 
@@ -107,10 +109,32 @@ impl App {
 // ======================================================================
 // UI ヘルパー
 // ======================================================================
+/// アプリのテーマを egui とネイティブウィンドウ (タイトルバー) へ反映する
+///
+/// `set_theme` は egui の配色に加え、`ViewportCommand::SetTheme` でタイトルバーの色も切り替える
+///
+/// # Arguments
+/// * `ctx` - egui のコンテキスト
+/// * `dark_mode` - ダークテーマを使うか
 fn apply_theme(ctx: &egui::Context, dark_mode: bool) {
-    if dark_mode {
-        ctx.set_visuals(egui::Visuals::dark());
+    ctx.set_theme(if dark_mode {
+        egui::Theme::Dark
     } else {
-        ctx.set_visuals(egui::Visuals::light());
+        egui::Theme::Light
+    });
+}
+
+/// タイトルバーの色を、テーマが変わったときだけ更新する
+///
+/// # Arguments
+/// * `ctx` - egui のコンテキスト (適用済みのテーマの記録に使う)
+/// * `frame` - タイトルバーを持つウィンドウ
+/// * `dark_mode` - ダークテーマか
+#[cfg(windows)]
+fn apply_title_bar_color(ctx: &egui::Context, frame: &eframe::Frame, dark_mode: bool) {
+    let id = egui::Id::new("title_bar_dark_mode");
+    if ctx.data(|d| d.get_temp::<bool>(id)) != Some(dark_mode) {
+        super::title_bar::apply(frame, dark_mode);
+        ctx.data_mut(|d| d.insert_temp(id, dark_mode));
     }
 }

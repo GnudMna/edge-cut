@@ -519,24 +519,24 @@ fn find_content_bounds(
 
     let (top, bottom) = (top_opt?, bottom_opt?);
 
-    let col_has_content = |x: u32| -> bool {
-        if parallel {
-            (top..=bottom).into_par_iter().any(|y| !is_bg(x, y))
-        } else {
-            (top..=bottom).any(|y| !is_bg(x, y))
-        }
+    // 左右端は行ごとに両端から走査して最小・最大の x を集める (列方向の走査はキャッシュに不利)
+    let row_extent = |y: u32| -> Option<(u32, u32)> {
+        let l = (0..w).find(|&x| !is_bg(x, y))?;
+        let r = (l..w).rev().find(|&x| !is_bg(x, y))?;
+        Some((l, r))
     };
+    let merge = |a: (u32, u32), b: (u32, u32)| (a.0.min(b.0), a.1.max(b.1));
 
+    // 上端行は内容を持つため、実際には必ず更新される
     let (left, right) = if parallel {
-        rayon::join(
-            || (0..w).find(|&x| col_has_content(x)).unwrap_or(0),
-            || (0..w).rev().find(|&x| col_has_content(x)).unwrap_or(w - 1),
-        )
+        (top..=bottom)
+            .into_par_iter()
+            .filter_map(row_extent)
+            .reduce(|| (w - 1, 0), merge)
     } else {
-        (
-            (0..w).find(|&x| col_has_content(x)).unwrap_or(0),
-            (0..w).rev().find(|&x| col_has_content(x)).unwrap_or(w - 1),
-        )
+        (top..=bottom)
+            .filter_map(row_extent)
+            .fold((w - 1, 0), merge)
     };
 
     Some(ContentBounds {
