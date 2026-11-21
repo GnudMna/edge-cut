@@ -1,17 +1,20 @@
 //! フォント設定を提供
-use crate::fonts::loader;
+use super::loader;
 
 use eframe::egui::{
     Context, FontData, FontFamily,
     epaint::text::{FontInsert, FontPriority, InsertFontFamily},
 };
 
+// ======================================================================
+// フォント登録
+// ======================================================================
 /// 日本語フォントの登録名
 pub const JAPANESE_FONT_KEY: &str = "japanese_font";
 
 /// 日本語フォントをフォントへ追加する
 ///
-/// Windowsシステムフォント（MS Gothic → Meiryo → Yu Gothic を優先して使用する。
+/// Windowsシステムフォント(MS Gothic → Meiryo → Yu Gothic を優先して使用する。
 /// いずれも見つからない場合はフォントを追加しない。
 ///
 /// # Arguments

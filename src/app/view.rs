@@ -1,11 +1,24 @@
 //! UI 描画 (`eframe::App` 実装)
+use std::path::PathBuf;
+
 use super::state::App;
+use crate::consts::{PADDING_MAX, PADDING_MIN, TOL_MAX, TOL_MIN};
 
 use eframe::egui;
 
+// ======================================================================
+// UI 描画
+// ======================================================================
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.save_settings(storage);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // 一括トリミングの結果をポーリング
+        self.poll_batch_result();
 
         // テーマの適用
         if self.dark_mode {
@@ -15,7 +28,7 @@ impl eframe::App for App {
         }
 
         // ファイルのドラッグアンドドロップ
-        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
                 .iter()
@@ -73,6 +86,27 @@ impl eframe::App for App {
                 }
 
                 if ui
+                    .button("📂 一括トリミング")
+                    .on_hover_text("複数の画像ファイルをまとめてトリミングして保存")
+                    .clicked()
+                    && !self.batch_running
+                {
+                    self.batch_trim(&ctx);
+                }
+
+                if self.batch_running
+                    && ui
+                        .button(
+                            egui::RichText::new("⏹ キャンセル")
+                                .color(egui::Color32::from_rgb(200, 80, 80)),
+                        )
+                        .on_hover_text("一括トリミングを中止")
+                        .clicked()
+                {
+                    self.cancel_batch();
+                }
+
+                if ui
                     .button("📋 貼り付け")
                     .on_hover_text("クリップボードの画像を使用")
                     .clicked()
@@ -87,6 +121,16 @@ impl eframe::App for App {
                         .clicked()
                     {
                         self.save_image();
+                    }
+                });
+
+                ui.add_enabled_ui(self.trimmed.is_some(), |ui| {
+                    if ui
+                        .button("📋 コピー")
+                        .on_hover_text("トリミング後の画像をクリップボードへコピー")
+                        .clicked()
+                    {
+                        self.copy_trimmed_to_clipboard();
                     }
                 });
 
@@ -138,10 +182,11 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label("許容度:");
                 let tol_resp = ui.add(
-                    egui::Slider::new(&mut self.tolerance, 0u32..=100)
+                    egui::Slider::new(&mut self.tolerance, TOL_MIN..=TOL_MAX)
                         .clamping(egui::SliderClamping::Always),
                 );
-                if tol_resp.changed() {
+                // ドラッグ解放・キーボード操作時にトリミングを実行する
+                if slider_needs_trim(&tol_resp, &ctx, &mut self.tolerance, TOL_MIN, TOL_MAX) {
                     self.do_trim(&ctx);
                 }
                 tol_resp.on_hover_text("背景色との類似度。値が大きいほど広い範囲を余白とみなす");
@@ -149,11 +194,12 @@ impl eframe::App for App {
                 ui.add_space(12.0);
                 ui.label("余白:");
                 let pad_resp = ui.add(
-                    egui::Slider::new(&mut self.padding, 0u32..=100)
+                    egui::Slider::new(&mut self.padding, PADDING_MIN..=PADDING_MAX)
                         .suffix(" px")
                         .clamping(egui::SliderClamping::Always),
                 );
-                if pad_resp.changed() {
+                // ドラッグ解放・キーボード操作時にトリミングを実行する
+                if slider_needs_trim(&pad_resp, &ctx, &mut self.padding, PADDING_MIN, PADDING_MAX) {
                     self.do_trim(&ctx);
                 }
                 pad_resp.on_hover_text("トリミング後に四辺へ追加する余白ピクセル数");
@@ -164,7 +210,7 @@ impl eframe::App for App {
 
                 // 自動保存
                 let prev_auto_save = self.auto_save;
-                ui.checkbox(&mut self.auto_save, "🤖 自動保存");
+                ui.checkbox(&mut self.auto_save, "自動保存");
                 if self.auto_save && !prev_auto_save {
                     self.auto_save_if_enabled();
                 }
@@ -176,13 +222,12 @@ impl eframe::App for App {
                 } else {
                     "保存先フォルダを変更"
                 });
-                if dir_btn.clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
+                if dir_btn.clicked()
+                    && let Some(dir) = rfd::FileDialog::new()
                         .set_directory(&self.auto_save_dir)
                         .pick_folder()
-                    {
-                        self.auto_save_dir = dir;
-                    }
+                {
+                    self.auto_save_dir = dir;
                 }
                 if !self.compact_mode {
                     ui.label(egui::RichText::new(&full_path).weak().monospace());
@@ -240,6 +285,46 @@ impl eframe::App for App {
             }
         });
     }
+}
+
+// ======================================================================
+// UI ヘルパー
+// ======================================================================
+/// スライダーのレスポンスを受け取り、トリミングを再実行すべきかどうかを返す。
+///
+/// 以下のいずれかの条件を満たす場合に `true` を返し、`value` を更新する:
+/// - ドラッグ操作が完了した
+/// - ドラッグ以外 (キーボード等) で値が変化した
+/// - ホバー中かつ未フォーカス状態で左右矢印キーが押された
+///
+/// # Arguments
+/// * `resp`  - スライダーの `Response`
+/// * `ctx`   - キー入力の取得に使う egui コンテキスト
+/// * `value` - 書き換え対象の値
+/// * `min`   - クランプ下限
+/// * `max`   - クランプ上限
+fn slider_needs_trim(
+    resp: &egui::Response,
+    ctx: &egui::Context,
+    value: &mut u32,
+    min: u32,
+    max: u32,
+) -> bool {
+    // ドラッグ中はトリミングしない。ドラッグ解放またはキーボード操作時のみ実行
+    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        return true;
+    }
+    // ホバー中はカーソルキーで操作可能にする(フォーカス済みの場合は egui 内部で処理)
+    if resp.hovered() && !resp.has_focus() {
+        let delta: i32 = ctx.input(|i| {
+            i.key_pressed(egui::Key::ArrowRight) as i32 - i.key_pressed(egui::Key::ArrowLeft) as i32
+        });
+        if delta != 0 {
+            *value = (*value as i32 + delta).clamp(min as i32, max as i32) as u32;
+            return true;
+        }
+    }
+    false
 }
 
 /// タイトルとスクロール可能な画像を 1 ペイン分描画する

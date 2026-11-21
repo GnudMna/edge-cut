@@ -1,14 +1,17 @@
 //! アプリケーションモジュール
 mod actions;
+mod fonts;
 mod icon;
 mod state;
 mod view;
 
 use crate::consts;
-use crate::fonts;
 
 use eframe::egui;
 
+// ======================================================================
+// アプリケーション起動
+// ======================================================================
 /// アプリケーションの実行
 ///
 /// # Returns
@@ -30,7 +33,7 @@ pub fn run() -> eframe::Result {
             // フォントの追加
             fonts::regist_japanese_font(&cc.egui_ctx);
 
-            Ok(Box::new(state::App::new()))
+            Ok(Box::new(state::App::new(cc.storage)))
         }),
     )
 }
