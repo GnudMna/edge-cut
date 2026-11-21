@@ -1,4 +1,5 @@
 //! フォント設定を提供
+
 use super::loader;
 
 use eframe::egui::{
@@ -14,8 +15,8 @@ pub const JAPANESE_FONT_KEY: &str = "japanese_font";
 
 /// 日本語フォントをフォントへ追加する
 ///
-/// Windowsシステムフォント(MS Gothic → Meiryo → Yu Gothic を優先して使用する。
-/// いずれも見つからない場合はフォントを追加しない。
+/// OS のシステムフォントから日本語フォントを検索して登録する
+/// 見つからない場合はフォントを追加しない
 ///
 /// # Arguments
 /// * `ctx` - 追加対象のGUIコンテキスト
@@ -27,12 +28,12 @@ pub fn regist_japanese_font(ctx: &Context) {
 
 /// フォントを追加
 ///
-/// 既存のフォント設定を保持したまま新しいフォントを追加する。
+/// 既存のフォント設定を保持したまま新しいフォントを追加する
 ///
 /// # Arguments
-/// * ctx - 追加対象のGUIコンテキスト
-/// * font_name - 追加するフォントの名前
-/// * font_data - 追加するフォントのデータ
+/// * `ctx` - 追加対象の GUI コンテキスト
+/// * `font_name` - 追加するフォントの名前
+/// * `font_data` - 追加するフォントのデータ
 fn regist_font(ctx: &Context, font_name: &str, font_data: FontData) {
     ctx.add_font(FontInsert::new(
         font_name,

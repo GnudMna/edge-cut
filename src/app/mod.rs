@@ -3,6 +3,7 @@ mod actions;
 mod fonts;
 mod icon;
 mod state;
+mod trim_worker;
 mod view;
 
 use crate::consts;

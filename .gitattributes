@@ -1,5 +1,10 @@
 *      text eol=lf
 *.bat  text eol=crlf
-*.ico  binary
 *.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.bmp  binary
+*.tiff binary
+*.ico  binary
 *.svg  binary

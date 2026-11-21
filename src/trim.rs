@@ -1,4 +1,5 @@
 //! 画像余白トリミングロジックを提供
+
 use std::collections::HashMap;
 
 use crate::consts::{ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, TOL_SCALE_DENOM};
@@ -12,7 +13,7 @@ use rayon::prelude::*;
 // トリミング結果
 // ======================================================================
 /// トリミング結果の情報
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrimInfo {
     /// 元画像の幅 (px)
     pub orig_w: u32,
@@ -53,7 +54,7 @@ pub fn to_color_image(img: &DynamicImage) -> ColorImage {
 ///
 /// 四隅 4 点のみ参照する旧実装と異なり、上・下・左・右の全辺ピクセルを
 /// サンプリングするため、角が丸い素材や隅に異なる色が置かれた画像でも
-/// 誤検出しにくい。
+/// 誤検出しにくい
 ///
 /// # Arguments
 /// * `rgba` - 対象画像の RGBA バッファ
@@ -62,7 +63,7 @@ pub fn to_color_image(img: &DynamicImage) -> ColorImage {
 ///
 /// # Returns
 /// * `[u8; 4]` - 背景と推定される RGBA 値
-fn detect_bg(rgba: &RgbaImage, w: u32, h: u32) -> [u8; 4] {
+pub fn detect_background_rgba(rgba: &RgbaImage, w: u32, h: u32) -> [u8; 4] {
     let raw = rgba.as_raw();
     let stride = (w * 4) as usize;
     let pixel = |x: u32, y: u32| -> [u8; 4] {
@@ -82,30 +83,49 @@ fn detect_bg(rgba: &RgbaImage, w: u32, h: u32) -> [u8; 4] {
     }
     freq.into_iter()
         .max_by_key(|(_, v)| *v)
-        .map(|(k, _)| k)
-        .unwrap_or([255, 255, 255, 255])
+        .map_or([255, 255, 255, 255], |(k, _)| k)
+}
+
+/// 画像上の指定座標の RGBA 値を取得する
+///
+/// 座標が画像範囲外のときは `None` を返す
+pub fn sample_pixel(img: &DynamicImage, px: u32, py: u32) -> Option<[u8; 4]> {
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if px >= width || py >= height {
+        return None;
+    }
+    let pixel = rgba.get_pixel(px, py).0;
+    Some(pixel)
 }
 
 /// 画像の四辺から背景余白をトリミングする
 ///
-/// 許容度 `tol` は 0–100 の範囲で指定する。
+/// 許容度 `tol` は 0–100 の範囲で指定する
 /// 0 のとき背景色と完全一致するピクセルのみを除去し、
-/// 100 のとき最大 RGB 二乗距離 (195,075) 以内のすべての色を背景とみなす。
-/// `padding` はトリミング後に四辺に追加する余白ピクセル数。
+/// 100 のとき最大 RGB 二乗距離 (195,075) 以内のすべての色を背景とみなす
+/// `padding` はトリミング後に四辺に追加する余白ピクセル数
 ///
 /// # Arguments
-/// * `img`     - トリミング元の画像
-/// * `tol`     - 余白検出の許容度 (0–100)
-/// * `padding` - トリミング後に残す余白ピクセル数
+/// * `img`         - トリミング元の画像
+/// * `tol`         - 余白検出の許容度 (0–100)
+/// * `padding`     - トリミング後に残す余白ピクセル数
+/// * `bg_override` - 手動指定の背景色。`None` のとき四辺から自動検出する
 ///
 /// # Returns
-/// * `(DynamicImage, TrimInfo)` - トリミング後の画像とトリミング情報
-pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimInfo) {
+/// * `(DynamicImage, TrimInfo, [u8; 4])` - トリミング後の画像、トリミング情報、使用した背景色
+pub fn trim(
+    img: &DynamicImage,
+    tol: u32,
+    padding: u32,
+    bg_override: Option<[u8; 4]>,
+) -> (DynamicImage, TrimInfo, [u8; 4]) {
     let rgba = img.to_rgba8();
     let (w, h) = (img.width(), img.height());
 
     // 0x0 画像は演算がアンダーフローするためそのまま返す
     if w == 0 || h == 0 {
+        let bg = bg_override.unwrap_or([255, 255, 255, 255]);
         return (
             img.clone(),
             TrimInfo {
@@ -116,13 +136,16 @@ pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimIn
                 offset_x: 0,
                 offset_y: 0,
             },
+            bg,
         );
     }
 
-    let bg = detect_bg(&rgba, w, h);
+    let bg = bg_override.unwrap_or_else(|| detect_background_rgba(&rgba, w, h));
 
     // RGB 各チャネルの差の二乗和がこの値以下なら背景とみなす
-    let sq_thresh = (tol as u64 * tol as u64 * MAX_RGB_SQ_DIST / TOL_SCALE_DENOM) as u32;
+    let sq_thresh =
+        u32::try_from(u64::from(tol) * u64::from(tol) * MAX_RGB_SQ_DIST / TOL_SCALE_DENOM)
+            .unwrap_or(u32::MAX);
     let raw = rgba.as_raw();
     let stride = (w * 4) as usize;
 
@@ -135,10 +158,10 @@ pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimIn
         if bg[3] < ALPHA_TRANSPARENT_THRESHOLD {
             return p[3] < ALPHA_TRANSPARENT_THRESHOLD;
         } // ほぼ完全に透明なキャンバス → アルファのみで判定
-        let dr = p[0] as i32 - bg[0] as i32;
-        let dg = p[1] as i32 - bg[1] as i32;
-        let db = p[2] as i32 - bg[2] as i32;
-        (dr * dr + dg * dg + db * db) as u32 <= sq_thresh
+        let dr = u32::from(p[0]).abs_diff(u32::from(bg[0]));
+        let dg = u32::from(p[1]).abs_diff(u32::from(bg[1]));
+        let db = u32::from(p[2]).abs_diff(u32::from(bg[2]));
+        dr * dr + dg * dg + db * db <= sq_thresh
     };
 
     // top/bottom を並列に走査する
@@ -163,6 +186,7 @@ pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimIn
                 offset_x: 0,
                 offset_y: 0,
             },
+            bg,
         );
     };
 
@@ -197,7 +221,7 @@ pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimIn
         offset_x: px_left,
         offset_y: px_top,
     };
-    (img.crop_imm(px_left, px_top, tw, th), info)
+    (img.crop_imm(px_left, px_top, tw, th), info, bg)
 }
 
 // ======================================================================
@@ -205,19 +229,17 @@ pub fn trim(img: &DynamicImage, tol: u32, padding: u32) -> (DynamicImage, TrimIn
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use std::iter;
-
     use super::*;
+
     use eframe::egui;
     use image::{DynamicImage, RgbaImage};
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // ヘルパー関数
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// 単色の RGBA 画像を生成する
     fn solid_rgba(w: u32, h: u32, color: [u8; 4]) -> DynamicImage {
-        let buf: Vec<u8> = iter::repeat(color)
-            .take((w * h) as usize)
+        let buf: Vec<u8> = std::iter::repeat_n(color, (w * h) as usize)
             .flatten()
             .collect();
         DynamicImage::ImageRgba8(RgbaImage::from_raw(w, h, buf).unwrap())
@@ -239,9 +261,9 @@ mod tests {
         DynamicImage::ImageRgba8(img)
     }
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // 画像変換
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// サイズが元画像と一致することを確認する
     #[test]
     fn color_image_size_matches_source() {
@@ -278,14 +300,14 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // トリム
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// トリミング前後で元画像の幅と高さが保持されていることを確認する
     #[test]
     fn trim_info_preserves_original_dimensions() {
         let img = bordered_rgba(20, 16, 3, [255, 255, 255, 255], [0, 0, 0, 255]);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.orig_w, 20);
         assert_eq!(info.orig_h, 16);
     }
@@ -295,7 +317,7 @@ mod tests {
     fn trim_removes_white_border() {
         // 10x10 / 縁 2px 白 / 中央 6x6 赤
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.offset_x, 2);
         assert_eq!(info.offset_y, 2);
         assert_eq!(info.trim_w, 6);
@@ -306,7 +328,7 @@ mod tests {
     #[test]
     fn trim_result_image_size_matches_info() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
-        let (result, info) = trim(&img, 0, 0);
+        let (result, info, _) = trim(&img, 0, 0, None);
         assert_eq!(result.width(), info.trim_w);
         assert_eq!(result.height(), info.trim_h);
     }
@@ -316,7 +338,7 @@ mod tests {
     fn trim_solid_background_returns_original_size() {
         // 全ピクセルが背景色 → トリミング後もサイズ変わらず
         let img = solid_rgba(8, 8, [255, 255, 255, 255]);
-        let (result, info) = trim(&img, 0, 0);
+        let (result, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.trim_w, 8);
         assert_eq!(info.trim_h, 8);
         assert_eq!(result.width(), 8);
@@ -327,7 +349,7 @@ mod tests {
     #[test]
     fn trim_1x1_image_does_not_panic() {
         let img = solid_rgba(1, 1, [255, 0, 0, 255]);
-        let (result, info) = trim(&img, 0, 0);
+        let (result, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.orig_w, 1);
         assert_eq!(info.orig_h, 1);
         assert_eq!(result.width(), 1);
@@ -339,23 +361,23 @@ mod tests {
     fn trim_asymmetric_image_correct_dimensions() {
         // 30x20 / 縁 3px 白 / 中央 24x14 黒
         let img = bordered_rgba(30, 20, 3, [255, 255, 255, 255], [0, 0, 0, 255]);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.orig_w, 30);
         assert_eq!(info.orig_h, 20);
         assert_eq!(info.trim_w, 24);
         assert_eq!(info.trim_h, 14);
     }
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // トリム - パディング
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// padding を指定したとき、トリミング結果が正しく拡張されることを確認する
     #[test]
     fn trim_padding_expands_result() {
         // 20x20 / 縁 5px 白 / 中央 10x10 青
         // padding=2 → offset=3, size=14
         let img = bordered_rgba(20, 20, 5, [255, 255, 255, 255], [0, 0, 255, 255]);
-        let (_, info) = trim(&img, 0, 2);
+        let (_, info, _) = trim(&img, 0, 2, None);
         assert_eq!(info.offset_x, 3);
         assert_eq!(info.offset_y, 3);
         assert_eq!(info.trim_w, 14);
@@ -367,21 +389,21 @@ mod tests {
     fn trim_padding_clamped_at_image_boundary() {
         // 10x10 / 縁 1px 白 / padding=10 → 画像端でクランプ
         let img = bordered_rgba(10, 10, 1, [255, 255, 255, 255], [0, 255, 0, 255]);
-        let (_, info) = trim(&img, 0, 10);
+        let (_, info, _) = trim(&img, 0, 10, None);
         assert_eq!(info.offset_x, 0);
         assert_eq!(info.offset_y, 0);
         assert_eq!(info.trim_w, 10);
         assert_eq!(info.trim_h, 10);
     }
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // トリム - 許容誤差
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// tol=0 のとき、正確なマッチングでトリミングが行われることを確認する
     #[test]
     fn trim_tolerance_zero_performs_exact_match_trim() {
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.trim_w, 6);
         assert_eq!(info.trim_h, 6);
     }
@@ -392,23 +414,23 @@ mod tests {
         // tol=100 のとき背景(白)との RGB 二乗距離 130050 ≤ 195075 となり、
         // 赤 [255,0,0] も背景とみなされ → 全体が bg → サイズ変わらず
         let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
-        let (result, info) = trim(&img, 100, 0);
+        let (result, info, _) = trim(&img, 100, 0, None);
         assert_eq!(info.trim_w, info.orig_w);
         assert_eq!(info.trim_h, info.orig_h);
         assert_eq!(result.width(), 10);
         assert_eq!(result.height(), 10);
     }
 
-    // ------------------------------------------------------------------
+    // ======================================================================
     // トリム - 透明ピクセル
-    // ------------------------------------------------------------------
+    // ======================================================================
     /// 完全に透明なピクセルが背景として扱われることを確認する
     #[test]
     fn trim_fully_transparent_border_treated_as_background() {
         let mut buf = RgbaImage::new(10, 10);
         for y in 0..10u32 {
             for x in 0..10u32 {
-                let px = if x < 2 || x >= 8 || y < 2 || y >= 8 {
+                let px = if !(2..8).contains(&x) || !(2..8).contains(&y) {
                     image::Rgba([0u8, 0, 0, 0]) // 完全透明
                 } else {
                     image::Rgba([255u8, 0, 0, 255]) // 不透明赤
@@ -417,7 +439,7 @@ mod tests {
             }
         }
         let img = DynamicImage::ImageRgba8(buf);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.offset_x, 2);
         assert_eq!(info.offset_y, 2);
         assert_eq!(info.trim_w, 6);
@@ -440,16 +462,16 @@ mod tests {
             }
         }
         let img = DynamicImage::ImageRgba8(buf);
-        let (_, info) = trim(&img, 0, 0);
+        let (_, info, _) = trim(&img, 0, 0, None);
         assert_eq!(info.offset_x, 1);
         assert_eq!(info.offset_y, 1);
         assert_eq!(info.trim_w, 4);
         assert_eq!(info.trim_h, 4);
     }
 
-    // ------------------------------------------------------------------
-    // detect_bg(private関数の間接テスト)
-    // ------------------------------------------------------------------
+    // ======================================================================
+    // detect_bg (private 関数の間接テスト)
+    // ======================================================================
     /// 四辺のうち 3 辺を白・1 辺を黒にした場合、白が背景色として選ばれることを確認する
     #[test]
     fn detect_bg_picks_most_frequent_edge_color() {
@@ -470,7 +492,7 @@ mod tests {
         for x in 0..10u32 {
             buf.put_pixel(x, 5, black);
         }
-        let bg = detect_bg(&buf, 10, 6);
+        let bg = detect_background_rgba(&buf, 10, 6);
         assert_eq!(bg, [255, 255, 255, 255]);
     }
 
@@ -488,7 +510,37 @@ mod tests {
             buf.put_pixel(0, y, red); // 左辺
             buf.put_pixel(4, y, red); // 右辺
         }
-        let bg = detect_bg(&buf, 5, 5);
+        let bg = detect_background_rgba(&buf, 5, 5);
         assert_eq!(bg, [200, 50, 50, 255]);
+    }
+
+    /// 手動指定の背景色がトリミング結果に反映されることを確認する
+    #[test]
+    fn trim_manual_background_returns_specified_color() {
+        let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
+        let manual = [10, 20, 30, 255];
+        let (_, _, used_bg) = trim(&img, 0, 0, Some(manual));
+        assert_eq!(used_bg, manual);
+    }
+
+    /// 手動で白を指定したとき、自動検出と同じトリミング結果になることを確認する
+    #[test]
+    fn trim_manual_white_matches_auto_detection() {
+        let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
+        let (_, info_auto, _) = trim(&img, 0, 0, None);
+        let (_, info_manual, _) = trim(&img, 0, 0, Some([255, 255, 255, 255]));
+        assert_eq!(info_auto.trim_w, info_manual.trim_w);
+        assert_eq!(info_auto.trim_h, info_manual.trim_h);
+        assert_eq!(info_auto.offset_x, info_manual.offset_x);
+        assert_eq!(info_auto.offset_y, info_manual.offset_y);
+    }
+
+    /// `sample_pixel` が画像内の色を正しく返すことを確認する
+    #[test]
+    fn sample_pixel_returns_rgba_at_coordinates() {
+        let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 0, 0, 255]);
+        assert_eq!(sample_pixel(&img, 0, 0), Some([255, 255, 255, 255]));
+        assert_eq!(sample_pixel(&img, 5, 5), Some([255, 0, 0, 255]));
+        assert_eq!(sample_pixel(&img, 10, 0), None);
     }
 }

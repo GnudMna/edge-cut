@@ -1,8 +1,23 @@
 [package]
 name = "edge-cut"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2024"
-authors = ["y_hirata"]
+rust-version = "1.96"
+authors = ["Yuto Hirata"]
+description = "画像の背景余白を自動検出・トリミングする GUI ツール"
+license = "MIT"
+readme = "README.md"
+build = "build.rs"
+
+[package.metadata.wix]
+upgrade-guid = "72F3B69C-49F4-41F8-BB3B-C69033838D51"
+path-guid = "35AA52E3-6EAB-4607-B897-96752961A613"
+binary-guid = "E029C37A-4937-4194-B3AD-D24DC55E554F"
+shortcut-guid = "64B9A30D-3D20-4CD6-B7E1-CC24A8FDB9BB"
+product-icon = "assets/icons/icon.ico"
+culture = "ja-JP"
+# perUser 専用のため ICE91 (ALLUSERS 非対応ディレクトリ) を抑制
+linker-args = ["-sice:ICE91"]
 
 [dependencies]
 arboard = "3"
@@ -12,12 +27,19 @@ rayon   = "1"
 rfd     = "0.17.2"
 serde   = { version = "1", features = ["derive"] }
 
-[build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
 [[bin]]
 name = "EdgeCut"
 path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 
 [profile.release]
 opt-level = 3

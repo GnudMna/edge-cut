@@ -1,0 +1,133 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  EdgeCut MSI インストーラー定義 (cargo-wix / WiX Toolset v3)
+
+  インストール先: %LOCALAPPDATA%\edge-cut
+  ブランド画像: wix/Banner.bmp (493x58), wix/Dialog.bmp (493x312, 左装飾+右白)
+                scripts/windows/generate-wix-assets.ps1 で再生成可能
+  ライセンス:   wix/Eula.rtf (同意画面、LICENSE から生成)
+-->
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='EdgeCut'
+        UpgradeCode='72F3B69C-49F4-41F8-BB3B-C69033838D51'
+        Manufacturer='Yuto Hirata'
+        Language='1041'
+        Codepage='932'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='画像の背景余白を自動検出・トリミングする GUI ツール'
+            Manufacturer='Yuto Hirata'
+            InstallerVersion='450'
+            Languages='1041'
+            Compressed='yes'
+            InstallScope='perUser'
+            SummaryCodepage='932'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            AllowSameVersionUpgrades='yes'
+            DowngradeErrorMessage='[ProductName] の新しいバージョンが既にインストールされています。セットアップを終了します。'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='EdgeCut インストール'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='LocalAppDataFolder'>
+                <Directory Id='APPLICATIONFOLDER' Name='edge-cut'>
+
+                    <Component Id='License' Guid='F3A8C1E2-5B4D-4E6A-9C1F-2D5E6A9B0C4D'>
+                        <File Id='LicenseFile' Name='LICENSE' DiskId='1' Source='LICENSE'/>
+                        <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='license' Type='integer' Value='1' KeyPath='yes'/>
+                    </Component>
+
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='Path' Guid='35AA52E3-6EAB-4607-B897-96752961A613'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='no'/>
+                            <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='path' Type='integer' Value='1' KeyPath='yes'/>
+                        </Component>
+                        <Component Id='binary0' Guid='E029C37A-4937-4194-B3AD-D24DC55E554F'>
+                            <File
+                                Id='exe0'
+                                Name='EdgeCut.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\EdgeCut.exe'/>
+                            <RemoveFolder Id='RemoveBinFolder' Directory='Bin' On='uninstall'/>
+                            <RemoveFolder Id='RemoveApplicationFolder' Directory='APPLICATIONFOLDER' On='uninstall'/>
+                            <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='main' Type='integer' Value='1' KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='EdgeCut'/>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id='ApplicationProgramsFolder'>
+            <Component Id='StartMenuShortcut' Guid='64B9A30D-3D20-4CD6-B7E1-CC24A8FDB9BB'>
+                <Shortcut
+                    Id='EdgeCutStartMenuShortcut'
+                    Name='EdgeCut'
+                    Description='画像の背景余白を自動検出・トリミングする GUI ツール'
+                    Target='[Bin]EdgeCut.exe'
+                    WorkingDirectory='Bin'
+                    Icon='ProductICO'/>
+                <RemoveFolder Id='RemoveApplicationProgramsFolder' Directory='ApplicationProgramsFolder' On='uninstall'/>
+                <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='installed' Type='integer' Value='1' KeyPath='yes'/>
+            </Component>
+        </DirectoryRef>
+
+        <Feature
+            Id='Binaries'
+            Title='アプリケーション'
+            Description='実行ファイルをインストールする'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='StartMenuShortcut'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH 環境変数'
+                Description='[ProductName] のインストール先をユーザー PATH 環境変数に追加する。任意の場所から [ProductName] を実行できるようになる'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Icon Id='ProductICO' SourceFile='assets/icons/icon.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='wix\Eula.rtf'/>
+        <WixVariable Id='WixUIBannerBmp' Value='wix\Banner.bmp'/>
+        <WixVariable Id='WixUIDialogBmp' Value='wix\Dialog.bmp'/>
+
+    </Product>
+
+</Wix>
