@@ -156,7 +156,7 @@ impl App {
     fn render_view_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut check_update = false;
         let mut open_bundled = None;
-        ui.menu_button("☰", |ui| {
+        ui.menu_button("≡", |ui| {
             let theme_label = if self.prefs.dark_mode {
                 "☀ ライトテーマ"
             } else {

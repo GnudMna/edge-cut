@@ -6,10 +6,10 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 
 | パス | 責務 |
 | :--- | :--- |
-| `src/trim.rs` | 背景色検出 (四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA)・余白除去のコアロジック |
+| `src/trim/` | 背景色検出・余白除去のコアロジック (下表) |
 | `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映・ICC プロファイルの取得を含む) |
-| `src/image_output.rs` | 出力形式 (`OutputFormat`) の決定・画像保存 (ICC プロファイルの再埋め込み)・出力パス生成 (衝突時は連番サフィックス) |
-| `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
+| `src/image_output/` | 出力形式の決定・画像保存・出力パス生成 (下表) |
+| `src/batch_trim/` | 複数ファイルの一括トリミング (下表) |
 | `src/panic_hook.rs` | panic フック。panic の内容を `%LOCALAPPDATA%\EdgeCut\panic.log` (`LOCALAPPDATA` 未設定時は一時ディレクトリ配下) へ追記し、UI スレッドの panic ではダイアログも表示 |
 | `src/panic_message.rs` | `catch_panic` で処理中の panic を捕捉してメッセージ化 (ワーカーの panic を失敗として扱う) |
 | `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
@@ -19,11 +19,41 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
 | `docs/user/` | 利用者向けドキュメント (mdBook の原稿)。`scripts/common/build-user-docs.ps1` が HTML 化して MSI の `docs\` に同梱する |
 
+`src/trim/` の構成:
+
+| パス | 責務 |
+| :--- | :--- |
+| `background` | 背景色検出。四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA を選ぶ |
+| `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の最小矩形を求める |
+| `crop` | `TrimInfo` に従った切り出しと、範囲外へ拡張する余白の追加 |
+| `types` | `TrimInfo` / `TrimResult` / `TrimBounds` |
+| `mod` | 公開 API の再エクスポートと `trim` / `sample_pixel` |
+
+`src/image_output/` の構成:
+
+| パス | 責務 |
+| :--- | :--- |
+| `format` | 出力形式 (`OutputFormat`) |
+| `save` | 保存オプション (`SaveOptions`)・上書き保存・連番保存 (衝突時は連番サフィックス) |
+| `encode` | 形式に合わせた変換 (JPEG の透過合成など)・エンコード・ICC プロファイルの再埋め込み |
+| `temp_file` | 同じディレクトリへ書いてから置き換える一時ファイル |
+| `path` | 出力ファイル名・パスの生成 |
+| `error` | `SaveError` |
+
+`src/batch_trim/` の構成:
+
+| パス | 責務 |
+| :--- | :--- |
+| `runner` | 一括トリミングの実行 (並列処理・キャンセル・集計) |
+| `memory_budget` | 並列処理するファイル間で共有するメモリ予算 |
+| `result` | 設定 (`BatchTrimParams`)・進捗 (`BatchProgress`)・集計結果 (`BatchTrimResult`) |
+| `error` | `BatchFileError` |
+
 `src/app/` の構成:
 
 | パス | 責務 |
 | :--- | :--- |
-| `state` | アプリの状態 |
+| `state/` | アプリの状態。`App` 本体と、責務ごとの部分構造体 (`settings` / `image_state` / `trim_state` / `io_state` / `batch_state` / `update_state`) |
 | `bundled` | 配布物に同梱した文書 (利用者向けドキュメント・LICENSE・THIRD_PARTY_NOTICES) の探索と、Windows の既定のアプリでの起動。同梱先は実行ファイルの位置から MSI の配布レイアウトに従って求める |
 | `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` に分割 |
 | `actions/` | 操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割 |

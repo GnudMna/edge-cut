@@ -17,6 +17,10 @@ use eframe::egui;
 
 use crate::{consts, panic_hook};
 
+/// 日本語フォントが見つからなかった場合にステータスバーへ表示するメッセージ
+const FONT_MISSING_MESSAGE: &str =
+    "日本語フォントが見つからないため、文字が正しく表示されない場合があります";
+
 // ======================================================================
 // アプリケーション起動
 // ======================================================================
@@ -34,6 +38,9 @@ pub fn run() -> eframe::Result {
     // 過去の更新で残った MSI は、起動を遅らせないようバックグラウンドで削除する
     std::thread::spawn(crate::update::cleanup_stale_update_dirs);
 
+    // 数 MB のフォントファイルの読み込みを、ウィンドウ・GPU の初期化と並行して行う
+    let font_loader = std::thread::spawn(fonts::load_system_fonts);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(consts::APP_NAME)
@@ -47,10 +54,15 @@ pub fn run() -> eframe::Result {
         consts::APP_NAME,
         options,
         Box::new(|cc| {
-            // フォントの追加
-            fonts::register_japanese_font(&cc.egui_ctx);
+            // フォントの追加 (読み込みスレッドが panic した場合は全て未発見として扱う)
+            let fonts = font_loader.join().unwrap_or_default();
+            let font_registered = fonts::register_system_fonts(&cc.egui_ctx, fonts);
 
-            Ok(Box::new(state::App::new(cc.storage)))
+            let mut app = state::App::new(cc.storage);
+            if !font_registered {
+                app.status = FONT_MISSING_MESSAGE.into();
+            }
+            Ok(Box::new(app))
         }),
     )
 }

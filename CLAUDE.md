@@ -6,8 +6,8 @@
 
 lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/main.rs`) の二層構成。`main.rs` は `edge_cut::app::run()` を呼ぶだけ。モジュールごとの責務は [docs/dev/architecture.md](docs/dev/architecture.md) を参照する。
 
-- `src/trim.rs` / `image_load.rs` / `image_output.rs` / `batch_trim.rs` — コアロジック (背景色検出・読み込み・保存・一括処理)。egui に依存させない
-- `src/app/` — egui GUI (`state` / `view/` / `actions/` / 各ワーカースレッド)。egui 依存はここに閉じ込める
+- `src/trim/` / `image_load.rs` / `image_output/` / `batch_trim/` — コアロジック (背景色検出・読み込み・保存・一括処理)。egui に依存させない。800 行を超えるファイルはサブモジュールに分割し、テストは `tests.rs` か各モジュール末尾の `mod tests` に置く
+- `src/app/` — egui GUI (`state/` / `view/` / `actions/` / 各ワーカースレッド)。egui 依存はここに閉じ込める
 - `src/update/` — 更新確認・minisign 署名検証・MSI 適用
 - `tests/` — 公開 API の統合テスト。画像生成ヘルパーは `tests/common/` に置き、`src/test_helpers.rs` が `include!` してユニットテストと共有する
 - `scripts/windows/` — エントリポイント (PowerShell 7)。共通処理は `scripts/common/` に置く

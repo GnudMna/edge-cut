@@ -44,12 +44,27 @@ impl App {
         });
     }
 
+    /// 一括トリミングまたは保存が実行中か
+    ///
+    /// # Returns
+    /// * `bool` - ファイルを書き込むバックグラウンド処理が残っていれば `true`
+    pub(in crate::app) fn has_file_work(&self) -> bool {
+        self.batch.running || self.io.is_saving()
+    }
+
     /// 確認済みの更新をダウンロードして MSI を起動する
+    ///
+    /// 一括トリミングまたは保存の実行中は開始せず、ステータスで理由を知らせる
     ///
     /// # Arguments
     /// * `ctx` - 完了時の再描画に使う egui コンテキスト
     pub(in crate::app) fn start_update_apply(&mut self, ctx: &egui::Context) {
         if self.update.is_busy() {
+            return;
+        }
+        // インストーラー起動後にアプリが終了するため、書き込み中の処理が残る間は適用しない
+        if self.has_file_work() {
+            self.status = "一括トリミングまたは保存の完了後に更新してください".into();
             return;
         }
 
@@ -140,10 +155,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::thread;
 
     use eframe::egui;
 
     use crate::app::state::{App, UpdateUiPhase};
+    use crate::update::AvailableUpdate;
 
     /// 結果の前に送信側が切断されると、更新処理を失敗として扱い再試行できること
     #[test]
@@ -160,5 +177,56 @@ mod tests {
         assert!(matches!(app.update.phase, UpdateUiPhase::Error { .. }));
         assert!(!app.update.is_busy());
         assert_eq!(app.status, "更新処理が異常終了しました");
+    }
+
+    /// 一括トリミングの実行中は更新の適用を開始しないこと
+    #[test]
+    fn start_update_apply_is_blocked_while_batch_running() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.update.phase = UpdateUiPhase::Available(sample_update());
+        app.batch.running = true;
+
+        app.start_update_apply(&ctx);
+
+        assert!(app.update.rx.is_none());
+        assert!(matches!(app.update.phase, UpdateUiPhase::Available(_)));
+        assert_eq!(
+            app.status,
+            "一括トリミングまたは保存の完了後に更新してください"
+        );
+    }
+
+    /// 保存の実行中は更新の適用を開始しないこと
+    #[test]
+    fn start_update_apply_is_blocked_while_saving() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.update.phase = UpdateUiPhase::Available(sample_update());
+        // 解放されるまで終わらない保存スレッドを模す
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        app.io.save_handles.push(thread::spawn(move || {
+            let _ = release_rx.recv();
+        }));
+
+        app.start_update_apply(&ctx);
+
+        assert!(app.update.rx.is_none());
+        assert!(matches!(app.update.phase, UpdateUiPhase::Available(_)));
+
+        // App の破棄で保存スレッドの完了を待つため、先に解放する
+        drop(release_tx);
+    }
+
+    /// 更新確認で得られる更新情報を模す
+    fn sample_update() -> AvailableUpdate {
+        AvailableUpdate {
+            current_version: "1.0.0".into(),
+            latest_version: "1.1.0".into(),
+            tag: "v1.1.0".into(),
+            asset_name: "EdgeCut.msi".into(),
+            size: 1024,
+            sha256: "0".repeat(64),
+        }
     }
 }

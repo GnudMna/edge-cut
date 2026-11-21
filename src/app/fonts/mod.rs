@@ -2,4 +2,5 @@
 mod loader;
 mod registry;
 
-pub use registry::register_japanese_font;
+pub use loader::load_system_fonts;
+pub use registry::register_system_fonts;
