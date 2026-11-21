@@ -1,0 +1,25 @@
+fn main() {
+    // Windowsの場合はexeに情報を追加
+    #[cfg(windows)]
+    {
+        const APP_NAME: &str = "EdgeCut";
+
+        let mut res = winres::WindowsResource::new();
+
+        // アプリ情報
+        res.set("ProductName", APP_NAME);
+        res.set("FileDescription", APP_NAME);
+
+        // バージョン情報
+        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
+        res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
+
+        // 著作権
+        res.set("LegalCopyright", env!("CARGO_PKG_AUTHORS"));
+
+        // アイコン設定
+        res.set_icon("assets/icons/icon.ico");
+
+        res.compile().unwrap();
+    }
+}

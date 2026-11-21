@@ -1,0 +1,6 @@
+*                    text eol=lf
+*.{bat,[bB][aA][tT]} text eol=crlf
+*.ico                binary
+*.png                binary
+*.svg                binary
+*.ttf                binary

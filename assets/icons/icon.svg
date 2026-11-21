@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="contentClip">
+      <rect x="130" y="130" width="252" height="252" rx="14"/>
+    </clipPath>
+  </defs>
+
+  <!-- 背景（純黒） -->
+  <rect width="512" height="512" rx="96" fill="#0a0a0a"/>
+
+  <!-- コンテンツ領域（純白・黒背景に最大コントラスト） -->
+  <rect x="130" y="130" width="252" height="252" rx="14" fill="white"/>
+
+  <!-- 風景シルエット（黒で白地に映える） -->
+  <g clip-path="url(#contentClip)">
+    <!-- 空（薄いグレー） -->
+    <rect x="130" y="130" width="252" height="126" fill="#e8e8e8"/>
+    <!-- 地面（中グレー） -->
+    <rect x="130" y="256" width="252" height="126" fill="#c0c0c0"/>
+    <!-- 山（黒シルエット） -->
+    <polygon points="256,140 356,256 156,256" fill="#1a1a1a"/>
+    <!-- 月（黒抜き円） -->
+    <circle cx="335" cy="168" r="28" fill="#1a1a1a"/>
+  </g>
+
+  <!-- コンテンツ枠（黒・くっきり） -->
+  <rect x="130" y="130" width="252" height="252" rx="14"
+        fill="none" stroke="#1a1a1a" stroke-width="6"/>
+
+  <!-- 四隅のブラケット（白・極太・黒アウトライン付きで黒背景に完全に見える） -->
+  <!-- 左上 -->
+  <path d="M80 162 L80 80 L162 80" fill="none" stroke="#1a1a1a" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M80 162 L80 80 L162 80" fill="none" stroke="white" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 右上 -->
+  <path d="M432 162 L432 80 L350 80" fill="none" stroke="#1a1a1a" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M432 162 L432 80 L350 80" fill="none" stroke="white" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 左下 -->
+  <path d="M80 350 L80 432 L162 432" fill="none" stroke="#1a1a1a" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M80 350 L80 432 L162 432" fill="none" stroke="white" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 右下 -->
+  <path d="M432 350 L432 432 L350 432" fill="none" stroke="#1a1a1a" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M432 350 L432 432 L350 432" fill="none" stroke="white" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

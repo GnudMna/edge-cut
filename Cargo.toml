@@ -1,0 +1,26 @@
+[package]
+name = "edge-cut"
+version = "0.0.1"
+edition = "2024"
+authors = ["y_hirata"]
+
+[dependencies]
+arboard = "3"
+eframe  = "0.34.1"
+image   = "0.25"
+rfd     = "0.17.2"
+
+[build-dependencies]
+winres = "0.1"
+
+[[bin]]
+name = "EdgeCut"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = true
+lto = "fat"
+incremental = false
+codegen-units = 1
