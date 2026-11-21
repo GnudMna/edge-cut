@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo deny check:*)",
+      "Bash(cargo tree:*)",
+      "PowerShell(cargo build:*)",
+      "PowerShell(cargo check:*)",
+      "PowerShell(cargo clippy:*)",
+      "PowerShell(cargo fmt:*)",
+      "PowerShell(cargo test:*)",
+      "PowerShell(cargo doc:*)",
+      "PowerShell(cargo deny check:*)",
+      "PowerShell(cargo tree:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./.env)",
+      "Edit(./.env.*)"
+    ]
+  }
+}

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::error::UpdateError;
 use super::types::{AvailableUpdate, UpdateCheckOutcome, VersionApiAsset, VersionApiResponse};
-use super::verify::{parse_asset_digest, validate_declared_download_size};
+use super::verify::{parse_asset_digest, validate_asset_name, validate_declared_download_size};
 use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, current_app_version};
 
 use semver::Version;
@@ -143,6 +143,9 @@ fn evaluate_update(
         return err.into();
     };
 
+    if let Err(err) = validate_asset_name(&asset.name) {
+        return err.into();
+    }
     let Some(raw_digest) = asset.integrity_raw() else {
         return UpdateError::DigestMissing {
             asset: asset.name.clone(),
@@ -261,6 +264,24 @@ mod tests {
                 assert_eq!(update.asset_name, "edge-cut-0.1.1-x86_64.msi");
                 assert_eq!(update.size, 42);
                 assert_eq!(update.sha256, "a".repeat(64));
+            }
+            other => panic!("想定外: {other:?}"),
+        }
+    }
+
+    /// パスとして解釈されうるアセット名は Available にしないようにすること
+    #[test]
+    fn evaluate_update_errors_when_asset_name_is_path_like() {
+        let current = Version::parse("0.1.0").expect("semver");
+        let response = VersionApiResponse {
+            tag: "v0.1.1".to_string(),
+            assets: vec![asset("../edge-cut-0.1.1-x86_64.msi", 1024)],
+        };
+
+        let outcome = evaluate_update("0.1.0", &current, &response, "x86_64");
+        match outcome {
+            UpdateCheckOutcome::Error { message } => {
+                assert_eq!(message, UpdateError::AssetNameInvalid.to_string());
             }
             other => panic!("想定外: {other:?}"),
         }

@@ -40,6 +40,11 @@ pub const MAX_RGB_SQ_DIST: u64 = 195_075;
 /// 許容度のスケール係数の分母 (許容度 0–100 を `0–MAX_RGB_SQ_DIST` へ変換する際に使用)
 pub const TOL_SCALE_DENOM: u64 = 10_000;
 
+/// 背景色検出で各チャネルを量子化する右シフト量 (3 のときビン幅 8 階調)
+///
+/// 隣接ビンも合算するため、おおむね ±8〜15 階調の揺らぎを同一クラスタとして扱う
+pub const BG_DETECT_QUANT_SHIFT: u32 = 3;
+
 /// 許容度の最小値
 pub const TOL_MIN: u32 = 0;
 
@@ -73,6 +78,15 @@ pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
 
 /// 拡張子が未対応・欠落時の出力フォールバック
 pub const DEFAULT_IMAGE_EXTENSION: &str = "png";
+
+/// JPEG 保存時のエンコード品質 (1–100)
+pub const JPEG_QUALITY: u8 = 95;
+
+/// JPEG 保存時に透過ピクセルを合成する背景色 (RGB)
+pub const JPEG_FLATTEN_BACKGROUND: [u8; 3] = [255, 255, 255];
+
+/// 出力ファイル名の衝突時に付ける連番サフィックスの上限 (`_2` 〜 `_{N}`)
+pub const OUTPUT_SUFFIX_MAX: u32 = 10_000;
 
 /// 拡張子文字列が対応形式かどうか (`ext` は小文字想定)
 #[must_use]
@@ -153,6 +167,12 @@ mod tests {
     #[test]
     fn max_rgb_sq_dist_is_correct() {
         assert_eq!(MAX_RGB_SQ_DIST, 255u64 * 255 * 3);
+    }
+
+    /// JPEG 品質が有効範囲内であることを確認する
+    #[test]
+    fn jpeg_quality_is_in_valid_range() {
+        assert!((1..=100).contains(&JPEG_QUALITY));
     }
 
     /// 画像読み込み上限が正の値であることを確認する

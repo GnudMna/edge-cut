@@ -35,6 +35,8 @@ pub(crate) enum UpdateError {
         /// リリースタグ
         tag: String,
     },
+    /// アセット名が単一のファイル名として安全に扱えない
+    AssetNameInvalid,
     /// アセットに digest / sha256 が無い
     DigestMissing {
         /// アセット名
@@ -96,6 +98,25 @@ pub(crate) enum UpdateError {
     IntegrityFailed,
 
     // ----------------------------------------------------------------------
+    // 署名
+    // ----------------------------------------------------------------------
+    /// 信頼する公開鍵がビルドに埋め込まれていない
+    SignatureKeyMissing,
+    /// 署名ファイル取得の HTTP ステータスエラー
+    SignatureDownloadHttp {
+        /// HTTP ステータスコード
+        status: u16,
+    },
+    /// 署名ファイル取得の一般失敗 (読み取り・サイズ超過含む)
+    SignatureDownloadFailed,
+    /// 署名の形式不正、または内容と一致しない
+    SignatureInvalid,
+    /// 署名鍵が信頼する公開鍵に含まれない
+    SignatureUntrustedKey,
+    /// 信頼コメントの更新先バージョン・アセット名が一致しない
+    SignatureMetadataMismatch,
+
+    // ----------------------------------------------------------------------
     // 適用
     // ----------------------------------------------------------------------
     /// 更新用一時フォルダの作成失敗
@@ -122,6 +143,9 @@ impl fmt::Display for UpdateError {
                 f,
                 "最新リリースにこの CPU ({arch}) 向けの MSI アセットがありません (tag={tag})"
             ),
+            Self::AssetNameInvalid => {
+                write!(f, "最新リリースのアセット名が不正なため更新できません")
+            }
             Self::DigestMissing { asset } => write!(
                 f,
                 "最新リリースにアセットの完全性情報 (digest) がありません (asset={asset})"
@@ -175,6 +199,25 @@ impl fmt::Display for UpdateError {
             Self::IntegrityFailed => write!(
                 f,
                 "更新ファイルの完全性検証 (SHA-256) に失敗しました。再ダウンロードしてください"
+            ),
+            Self::SignatureKeyMissing => write!(
+                f,
+                "このビルドには更新の署名検証用の公開鍵が含まれていないため、更新を適用できません"
+            ),
+            Self::SignatureDownloadHttp { status } => {
+                write!(f, "更新ファイルの署名の取得に失敗しました (HTTP {status})")
+            }
+            Self::SignatureDownloadFailed => write!(f, "更新ファイルの署名の取得に失敗しました"),
+            Self::SignatureInvalid => write!(
+                f,
+                "更新ファイルの署名検証に失敗しました。改ざんされている可能性があります"
+            ),
+            Self::SignatureUntrustedKey => {
+                write!(f, "更新ファイルが信頼できない鍵で署名されています")
+            }
+            Self::SignatureMetadataMismatch => write!(
+                f,
+                "更新ファイルの署名が対象のバージョン・ファイルと一致しません"
             ),
             Self::WorkDirCreate => write!(f, "更新用一時フォルダの作成に失敗しました"),
             Self::MsiPathInvalid => write!(f, "MSI パスに不正な文字が含まれています"),

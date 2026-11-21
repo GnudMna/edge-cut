@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use crate::consts::{
-    ALPHA_TRANSPARENT_THRESHOLD, MAX_RGB_SQ_DIST, TOL_SCALE_DENOM, TRIM_PARALLEL_MIN_PIXELS,
+    ALPHA_TRANSPARENT_THRESHOLD, BG_DETECT_QUANT_SHIFT, MAX_RGB_SQ_DIST, TOL_MAX, TOL_SCALE_DENOM,
+    TRIM_PARALLEL_MIN_PIXELS,
 };
 
 use image::{DynamicImage, RgbaImage};
@@ -49,6 +50,11 @@ pub struct TrimResult {
 /// サンプリングするため、角が丸い素材や隅に異なる色が置かれた画像でも
 /// 誤検出しにくい
 ///
+/// 色を量子化したビンと隣接ビンの合計票で背景の色クラスタを決めるため、
+/// JPEG ノイズや緩いグラデーションで同系色の票が割れても安定して検出する
+/// 返す値はクラスタ内で最も多い実在色とし、ノイズのない画像では完全一致する色になる
+/// ほぼ完全に透明なピクセルは RGB に関係なく 1 つのクラスタとして集計する
+///
 /// # Arguments
 /// * `rgba` - 対象画像の RGBA バッファ
 /// * `w`    - 画像の幅 (px)
@@ -75,9 +81,77 @@ pub fn detect_background_rgba(rgba: &RgbaImage, w: u32, h: u32) -> [u8; 4] {
         *freq.entry(pixel(0, y)).or_default() += 1;
         *freq.entry(pixel(w - 1, y)).or_default() += 1;
     }
+
+    let mut bins: HashMap<[u8; 4], u32> = HashMap::new();
+    for (&color, &count) in &freq {
+        *bins.entry(bg_bin(color)).or_default() += count;
+    }
+
+    // 隣接ビンを含めた票数が最大のビンを背景クラスタとする (同票はキー順で決定的に選ぶ)
+    let Some((_, best_bin)) = bins
+        .keys()
+        .map(|&bin| (neighborhood_votes(&bins, bin), bin))
+        .max()
+    else {
+        return [255, 255, 255, 255];
+    };
+
     freq.into_iter()
-        .max_by_key(|(_, v)| *v)
-        .map_or([255, 255, 255, 255], |(k, _)| k)
+        .filter(|&(color, _)| bins_are_adjacent(bg_bin(color), best_bin))
+        .map(|(color, count)| (count, color))
+        .max()
+        .map_or([255, 255, 255, 255], |(_, color)| color)
+}
+
+/// ほぼ完全に透明なピクセルをまとめるビン (量子化後の値は最大 `255 >> shift` のため衝突しない)
+const TRANSPARENT_BIN: [u8; 4] = [u8::MAX; 4];
+
+/// 背景色検出用に色を量子化したビンを返す
+fn bg_bin(color: [u8; 4]) -> [u8; 4] {
+    if color[3] < ALPHA_TRANSPARENT_THRESHOLD {
+        return TRANSPARENT_BIN;
+    }
+    color.map(|c| c >> BG_DETECT_QUANT_SHIFT)
+}
+
+/// 2 つのビンが同一または各チャネル ±1 以内で隣接しているか
+///
+/// 透明ビンは自身とのみ隣接する
+fn bins_are_adjacent(a: [u8; 4], b: [u8; 4]) -> bool {
+    if a == TRANSPARENT_BIN || b == TRANSPARENT_BIN {
+        return a == b;
+    }
+    a.iter().zip(b).all(|(&x, y)| x.abs_diff(y) <= 1)
+}
+
+/// `bin` と隣接ビンの票数の合計
+fn neighborhood_votes(bins: &HashMap<[u8; 4], u32>, bin: [u8; 4]) -> u32 {
+    if bin == TRANSPARENT_BIN {
+        return bins.get(&bin).copied().unwrap_or(0);
+    }
+    // 各チャネル -1, 0, +1 の 3^4 通りを列挙する
+    let mut total = 0;
+    for code in 0..81u32 {
+        let mut neighbor = bin;
+        let mut rest = code;
+        let mut valid = true;
+        for c in &mut neighbor {
+            let shifted = match rest % 3 {
+                0 => Some(*c),
+                1 => c.checked_sub(1),
+                _ => c.checked_add(1),
+            };
+            rest /= 3;
+            match shifted {
+                Some(v) => *c = v,
+                None => valid = false,
+            }
+        }
+        if valid {
+            total += bins.get(&neighbor).copied().unwrap_or(0);
+        }
+    }
+    total
 }
 
 /// 画像上の指定座標の RGBA 値を取得する
@@ -106,7 +180,9 @@ pub fn sample_pixel(img: &DynamicImage, px: u32, py: u32) -> Option<[u8; 4]> {
 ///
 /// 許容度 `tol` は 0–100 の範囲で指定する
 /// 0 のとき背景色と完全一致するピクセルのみを除去し、
-/// 100 のとき最大 RGB 二乗距離 (195,075) 以内のすべての色を背景とみなす
+/// 100 のときすべての色を背景とみなす
+/// 背景が不透明なときは RGBA 各チャネルの差の二乗和を、
+/// 最大 RGB 二乗距離 (195,075) を基準にした閾値と比較する
 /// `padding` はトリミング後に四辺に追加する余白ピクセル数
 ///
 /// # Arguments
@@ -228,7 +304,8 @@ fn trim_rgba(
     let (w, h) = rgba.dimensions();
     let bg = bg_override.unwrap_or_else(|| detect_background_rgba(rgba, w, h));
 
-    // RGB 各チャネルの差の二乗和がこの値以下なら背景とみなす
+    // RGBA 各チャネルの差の二乗和がこの値以下なら背景とみなす
+    // 尺度は RGB の最大二乗距離基準のままとし、不透明画像の結果を従来と揃える
     let sq_thresh =
         u32::try_from(u64::from(tol) * u64::from(tol) * MAX_RGB_SQ_DIST / TOL_SCALE_DENOM)
             .unwrap_or(u32::MAX);
@@ -239,19 +316,33 @@ fn trim_rgba(
     let is_bg = |x: u32, y: u32| -> bool {
         let i = y as usize * stride + x as usize * 4;
         let p = [raw[i], raw[i + 1], raw[i + 2], raw[i + 3]];
+        // ほぼ完全に透明なピクセル → 背景とみなす
         if p[3] < ALPHA_TRANSPARENT_THRESHOLD {
             return true;
-        } // ほぼ完全に透明なピクセル → 背景とみなす
+        }
+        // ほぼ完全に透明なキャンバス → 透明でないピクセルはすべて内容
         if bg[3] < ALPHA_TRANSPARENT_THRESHOLD {
-            return p[3] < ALPHA_TRANSPARENT_THRESHOLD;
-        } // ほぼ完全に透明なキャンバス → アルファのみで判定
-        let dr = u32::from(p[0]).abs_diff(u32::from(bg[0]));
-        let dg = u32::from(p[1]).abs_diff(u32::from(bg[1]));
-        let db = u32::from(p[2]).abs_diff(u32::from(bg[2]));
-        dr * dr + dg * dg + db * db <= sq_thresh
+            return false;
+        }
+        // 不透明な背景上の半透明ピクセルを背景と誤判定しないようアルファ差も加える
+        let sq_dist: u32 = p
+            .iter()
+            .zip(bg)
+            .map(|(&channel, bg_channel)| {
+                let diff = u32::from(channel.abs_diff(bg_channel));
+                diff * diff
+            })
+            .sum();
+        sq_dist <= sq_thresh
     };
 
-    let Some(bounds) = find_content_bounds(w, h, parallel, is_bg) else {
+    // 許容度最大はアルファ差を含めすべてのピクセルを背景とみなすため走査を省く
+    let bounds = if tol >= TOL_MAX {
+        None
+    } else {
+        find_content_bounds(w, h, parallel, is_bg)
+    };
+    let Some(bounds) = bounds else {
         // 背景しかない → 元画像をそのまま返す
         return TrimResult {
             image: source.clone(),
@@ -513,6 +604,86 @@ mod tests {
         }
         let bg = detect_background_rgba(&buf, 5, 5);
         assert_eq!(bg, [200, 50, 50, 255]);
+    }
+
+    /// JPEG ノイズで同系色の票が割れても、完全一致の多い別色より同系色クラスタが選ばれることを確認する
+    #[test]
+    fn detect_bg_groups_noisy_near_white_edges() {
+        // 辺の約 3 割を完全一致の黒、残りを多数の異なる近似白にする
+        let buf = RgbaImage::from_fn(40, 40, |x, y| {
+            let k = x * 7 + y * 13;
+            if k % 10 < 3 {
+                image::Rgba([0, 0, 0, 255])
+            } else {
+                let r = 248 + u8::try_from(k % 8).unwrap();
+                let g = 248 + u8::try_from(k / 8 % 8).unwrap();
+                let b = 250 + u8::try_from(k % 5).unwrap();
+                image::Rgba([r, g, b, 255])
+            }
+        });
+        let bg = detect_background_rgba(&buf, 40, 40);
+        // 近似白の実在色のいずれかが選ばれる
+        assert!(bg[..3].iter().all(|&c| c >= 248), "bg = {bg:?}");
+        assert_eq!(bg[3], 255);
+    }
+
+    /// クラスタ内では最も多い実在色がそのまま返ることを確認する
+    #[test]
+    fn detect_bg_returns_exact_majority_color_within_cluster() {
+        // 白が多数、近似色 250 が少数 → 平均ではなく白そのものを返す
+        let buf = RgbaImage::from_fn(12, 12, |x, y| {
+            if (x + y) % 4 == 0 {
+                image::Rgba([250, 250, 250, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        });
+        let bg = detect_background_rgba(&buf, 12, 12);
+        assert_eq!(bg, [255, 255, 255, 255]);
+    }
+
+    /// RGB の異なる透明ピクセルが 1 つのクラスタとして集計されることを確認する
+    #[test]
+    fn detect_bg_groups_transparent_pixels_regardless_of_rgb() {
+        // 辺の約 1/3 を不透明な赤、残りを RGB の異なる 3 種の透明色にする
+        let transparent = [[0, 0, 0, 0], [255, 255, 255, 0], [10, 20, 30, 8]];
+        let buf = RgbaImage::from_fn(30, 30, |x, y| {
+            let k = x * 7 + y * 13;
+            if k % 9 < 3 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba(transparent[(k % 3) as usize])
+            }
+        });
+        let bg = detect_background_rgba(&buf, 30, 30);
+        assert!(bg[3] < ALPHA_TRANSPARENT_THRESHOLD, "bg = {bg:?}");
+    }
+
+    // ======================================================================
+    // トリム - 不透明な背景上の半透明ピクセル
+    // ======================================================================
+    /// 不透明な背景と同じ RGB の半透明ピクセルが内容として残ることを確認する
+    #[test]
+    fn trim_semi_transparent_content_on_opaque_bg_is_kept() {
+        // 10x10 / 縁 2px 不透明白 / 中央 6x6 半透明白 (alpha=100)
+        let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [255, 255, 255, 100]);
+        let result = trim(&img, 0, 0, None);
+        assert_eq!(result.background, [255, 255, 255, 255]);
+        assert_eq!(result.info.offset_x, 2);
+        assert_eq!(result.info.offset_y, 2);
+        assert_eq!(result.info.trim_w, 6);
+        assert_eq!(result.info.trim_h, 6);
+    }
+
+    /// 許容度最大ではアルファ差があっても全体を背景とみなすことを確認する
+    #[test]
+    fn trim_max_tolerance_treats_semi_transparent_as_background() {
+        // 不透明白の背景と半透明黒の内容は RGBA 距離が RGB 基準の上限を超えるが、
+        // tol=100 では全体が背景 → サイズ変わらず
+        let img = bordered_rgba(10, 10, 2, [255, 255, 255, 255], [0, 0, 0, 100]);
+        let result = trim(&img, 100, 0, None);
+        assert_eq!(result.info.trim_w, 10);
+        assert_eq!(result.info.trim_h, 10);
     }
 
     /// 手動指定の背景色がトリミング結果に反映されることを確認する

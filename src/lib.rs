@@ -51,5 +51,7 @@ pub use image_load::{
     DimensionLimitKind, LoadError, check_dimensions, check_file_size, open_image,
     validate_clipboard_rgba,
 };
-pub use image_output::{SaveError, batch_trim_output_path, resolve_batch_output_path, save_image};
+pub use image_output::{
+    SaveError, batch_trim_output_path, save_batch_output, save_image, save_image_unique,
+};
 pub use trim::{TrimInfo, TrimResult, detect_background_rgba, sample_pixel, trim};

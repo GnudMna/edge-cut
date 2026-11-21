@@ -30,3 +30,9 @@ wix/*
 
 # cargo-about 生成物 (MSI 作成時に自動生成)
 THIRD_PARTY_NOTICES
+
+# Claude Code (個人設定はリポジトリで管理しない)
+.claude/settings.local.json
+
+# minisign 秘密鍵 (誤って keys/ に置いてもコミットしない)
+*.key

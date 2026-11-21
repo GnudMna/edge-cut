@@ -41,7 +41,7 @@
     <td align="center" width="210">
       <h3>📦</h3>
       <b>一括処理</b><br><br>
-      <sub>複数ファイルをバックグラウンドで<br>並列トリミング。<br>UI をブロックしない</sub>
+      <sub>複数ファイルをバックグラウンドで<br>まとめてトリミング。<br>UI をブロックしない</sub>
     </td>
     <td align="center" width="210">
       <h3>🌍</h3>
@@ -90,7 +90,7 @@ EdgeCut は、画像の四辺から背景色を推定し、余白を除去する
     <td valign="top">
       <br>
       <b>背景色の検出</b><br>
-      画像の上・下・左・右の全辺ピクセルを走査し、最頻出の RGBA 値を背景色とする。四隅のみを参照する方式より、角が丸い素材や隅に異なる色がある画像でも誤検出しにくい
+      画像の上・下・左・右の全辺ピクセルを走査し、量子化した色の近傍で最も票の多いクラスタから、最頻出の RGBA 値を背景色とする。JPEG ノイズなどで同系色の票が割れても安定して検出でき、角が丸い素材や隅に異なる色がある画像でも誤検出しにくい
       <br><br>
     </td>
   </tr>
@@ -103,7 +103,7 @@ EdgeCut は、画像の四辺から背景色を推定し、余白を除去する
     <td valign="top">
       <br>
       <b>余白の判定</b><br>
-      各ピクセルが背景色と「許容度」内で一致するかを RGB の二乗距離で判定する。アルファ値が 16 未満のほぼ完全透明ピクセルも背景として扱う
+      各ピクセルと背景色の RGBA 距離が「許容度」以内なら背景とみなす。許容度 N のしきい値は RGB の最大距離 (黒〜白、約 441.7) の N% で、0 は完全一致、100 はすべてのピクセルを背景とする。アルファ差も距離に含めるため、不透明な背景上の半透明ピクセルは内容として残る。アルファ値が 16 未満のほぼ完全透明ピクセルは常に背景として扱う
       <br><br>
     </td>
   </tr>
@@ -151,7 +151,8 @@ EdgeCut は、画像の四辺から背景色を推定し、余白を除去する
 | クリップボード | 画像の貼り付け読み込み、トリミング結果のコピー |
 | 保存 | ファイルダイアログから任意のパスへ出力 |
 | 自動保存 | 画像を開いた直後に指定フォルダへ自動保存 |
-| 一括トリミング | 複数ファイルをまとめて処理 (`{名前}_trimmed.{拡張子}`) |
+| 一括トリミング | 複数ファイルをまとめて処理 (`{名前}_trimmed.{拡張子}`)。複数ファイルのドラッグ & ドロップでも開始 |
+| EXIF 回転の反映 | スマートフォン写真などの Orientation (回転・反転) を読み込み時に適用 |
 
 </details>
 
@@ -165,6 +166,7 @@ EdgeCut は、画像の四辺から背景色を推定し、余白を除去する
 | コンパクト UI | トリミング後の画像のみを表示する省スペースモード |
 | ダーク / ライト | テーマをワンクリックで切り替え |
 | 設定の永続化 | 許容度・余白・テーマ・自動保存先などを次回起動時に復元 |
+| アプリ更新 (Windows) | 最新リリースを確認し、署名を検証した MSI でアップデート |
 
 </details>
 
@@ -203,13 +205,15 @@ cargo run --release
 <summary>🎨 &nbsp;<b>背景色の調整</b></summary>
 <br>
 
-自動検出で意図とずれる場合は、ツールバー右側の背景色コントロールで上書きできます。
+自動検出で意図とずれる場合は、許容度・余白スライダーの右側にある背景色コントロール (画像の読み込み中のみ表示) で上書きできます。現在の背景色は色見本と `RGBA(r, g, b, a)` で表示され、手動指定中は「手動」と表示されます。
 
 | 操作 | 説明 |
 | ---- | ---- |
-| **自動** | 四辺から背景色を再検出する (手動指定を解除) |
-| **カラーピッカー** | RGBA を直接編集する |
-| **スポイト** | 元画像をクリックしてそのピクセルの色を背景色にする |
+| **カラーピッカー** | 色見本をクリックして RGBA を直接編集する |
+| **スポイト** | 「スポイト」を押してから元画像をクリックし、そのピクセルの色を背景色にする (元画像を表示する標準モードのみ) |
+| **自動** | 四辺から背景色を再検出する (手動指定を解除。手動指定中のみ有効) |
+
+> ⚠️ 手動で指定した背景色は「自動」を押すまで解除されません。以降に開く画像・一括トリミング・次回起動時にもそのまま適用されます。
 
 </details>
 
@@ -219,6 +223,9 @@ cargo run --release
 
 「自動保存」を有効にすると、画像を開いた直後にトリミング結果を保存します。  
 「📁 変更」で保存先フォルダを指定できます。
+
+- 出力ファイル名: `{元ファイル名}_trimmed.png` (クリップボードから貼り付けた画像は `clipboard_trimmed.png`)
+- 同名ファイルがある場合は上書きせず `_2`, `_3`, ... と連番を付ける
 
 | プラットフォーム | デフォルトの保存先 |
 | :--------------: | ------------------ |
@@ -235,8 +242,25 @@ cargo run --release
 
 - 出力ファイル名: `{元ファイル名}_trimmed.{元の拡張子}`
 - 拡張子がない、または未対応の場合は PNG で保存
-- 処理はバックグラウンドで並列実行され、進捗はステータスバーに表示
+- 同名ファイルがある場合は上書きせず `_2`, `_3`, ... と連番を付ける
+- 複数の画像ファイルをウィンドウへドラッグ & ドロップした場合も、出力フォルダを選択して一括トリミングを開始 (未対応の拡張子・フォルダは除外し、除外件数をステータスバーに表示)
+- 処理はバックグラウンドで 1 ファイルずつ実行され、進捗はステータスバーに表示
 - 「⏹ キャンセル」で次のファイル処理前に中止可能
+- 失敗したファイルがあっても残りの処理は続行し、エラーの詳細はステータスバーのホバーで確認できる
+
+</details>
+
+<details>
+<summary>🔄 &nbsp;<b>アプリ更新 (Windows)</b></summary>
+<br>
+
+ツールバー右端の「⋯」メニューから現在のバージョンを確認し、更新を適用できます。
+
+1. 「更新を確認」で最新リリースを問い合わせる
+2. 新しいバージョンがあれば「更新をインストール…」で MSI をダウンロードする
+3. サイズ・SHA-256・minisign 署名をすべて検証できた場合のみインストーラーを起動し、EdgeCut は終了する
+
+検証に失敗した MSI は適用しません。仕組みは [更新署名鍵](#更新署名鍵) を参照してください。
 
 </details>
 
@@ -249,6 +273,7 @@ cargo run --release
 | 🗑 クリア | 読み込んだ画像をクリアして初期状態に戻す |
 | ⊟ コンパクト / ⊞ 標準 | プレビュー表示モードの切り替え |
 | 🌙 ダーク / ☀ ライト | テーマの切り替え |
+| ⋯ | バージョン表示・更新確認 (Windows のみ) |
 
 </details>
 
@@ -264,6 +289,8 @@ cargo run --release
 
 </div>
 
+JPEG で保存する場合、透過部分は白背景に合成され、品質 95 でエンコードされます。
+
 ---
 
 ## 読み込み上限
@@ -276,7 +303,9 @@ cargo run --release
 | 幅・高さ | 各 16,384 px |
 | ピクセル数 | 約 6,400 万 (8,000×8,000 相当) |
 
-上限を超えるファイルは読み込み時にエラーとなり、ステータスバーに理由が表示されます。
+上限を超えるファイルは読み込み時にエラーとなり、ステータスバーに理由が表示されます。クリップボードから貼り付けた画像にも同じ幅・高さ・ピクセル数の上限が適用されます。
+
+プレビューでは長辺 4,096 px を超える画像を縮小して表示しますが、保存・コピーは元の解像度で行います。
 
 ---
 
@@ -362,6 +391,7 @@ cargo build --release
 | `format.ps1` | コードフォーマット |
 | `check.ps1` | CI 向け一括チェック (fmt / clippy / deny / test / doc) |
 | `build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可。`THIRD_PARTY_NOTICES` を自動生成して同梱) |
+| `release.ps1` | リリース一括実行 (バージョン更新 / CHANGELOG / 品質チェック / コミット / MSI 作成 / minisign 署名)。詳細は [リリース](#リリース) |
 
 MSI は `target/wix/` に `{パッケージ名}-{バージョン}-{アーキテクチャ}.msi` として出力されます。インストール先は `%LOCALAPPDATA%\edge-cut` (`THIRD_PARTY_NOTICES` を同梱)。
 
@@ -406,7 +436,7 @@ tar.gz は `target/dist/` に `{パッケージ名}-{バージョン}-{ターゲ
 
 ## 開発
 
-プロジェクトは Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリです。
+プロジェクトは Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリです。lib クレート `edge_cut` (`src/lib.rs`) にコアロジックと GUI を置き、bin クレート `EdgeCut` (`src/main.rs`) は `edge_cut::app::run()` を呼ぶだけのエントリポイントです。
 
 <details open>
 <summary>📁 &nbsp;<b>主要モジュール構成</b></summary>
@@ -414,10 +444,16 @@ tar.gz は `target/dist/` に `{パッケージ名}-{バージョン}-{ターゲ
 
 | パス | 責務 |
 | ---- | ---- |
-| `src/trim.rs` | 背景色検出・余白除去のコアロジック |
-| `src/image_load.rs` | 安全な画像読み込み (サイズ上限チェック) |
-| `src/image_output.rs` | 一括トリミングの出力パス生成 |
-| `src/app/` | UI・状態管理・バックグラウンドワーカー |
+| `src/trim.rs` | 背景色検出 (量子化クラスタの最頻 RGBA)・余白除去のコアロジック |
+| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation の反映を含む) |
+| `src/image_output.rs` | 画像保存・出力パス生成 (衝突時は連番サフィックス) |
+| `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
+| `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
+| `src/app/` | egui GUI。状態管理・描画・操作・プレビュー用ワーカースレッド |
+| `src/update/` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 (Windows のみ) |
+| `tests/` | lib クレートの公開 API に対する統合テスト |
+
+コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存しません。ライブラリとしての使い方は `src/lib.rs` の doc コメント (`cargo doc --open`) を参照してください。
 
 </details>
 
@@ -427,10 +463,58 @@ tar.gz は `target/dist/` に `{パッケージ名}-{バージョン}-{ターゲ
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo deny check
-cargo test
+cargo test --all-targets
+cargo test --doc
 ```
 
+コーディング規約 (コメント・`use` 文の並び) は [`.claude/rules/`](.claude/rules/) にあります。コミットメッセージは `<種別>: <日本語の要約>` 形式で、ユーザー向けの変更は [`CHANGELOG.md`](CHANGELOG.md) の `[Unreleased]` に追記します。
+
+### ブランチ運用
+
+git-flow 形式です。`develop` から `feature/*` / `fix/*` / `docs/*` などを切り、`main` へは `release/vX.Y.Z` 経由でマージします。
+
 [`deny.toml`](deny.toml) で依存関係の脆弱性・ライセンス・取得元を検証する。Windows / Linux / macOS の 3 ターゲット (`x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`) を対象にする。`cargo-deny` は `cargo install cargo-deny --locked` で導入する。
+
+### リリース
+
+`release/v{version}` ブランチ上で `scripts/windows/release.ps1` を実行する。
+
+```powershell
+git checkout -b release/v0.1.3
+./scripts/windows/release.ps1 -Version 0.1.3   # または -Bump Patch。-DryRun で変更内容のみ表示
+```
+
+1. `Cargo.toml` / `Cargo.lock` のバージョンを更新し、`CHANGELOG.md` の `[Unreleased]` 節をリリース見出しへ移す (空だと失敗する)
+2. `check.ps1` で品質チェックを実行し (`-SkipCheck` で省略)、`Release: v{version}` でコミットする (`-NoCommit` で省略)
+3. `build-msi.ps1` で MSI を作成し、`minisign` で `<MSI>.minisig` を作って `keys/update-signing/*.pub` で検証する (`-SkipMsi` で両方省略)
+
+**前提:**
+
+- 環境変数 `EDGE_CUT_KEY` (gh-release-bridge の Worker Secret と同値) と `EDGE_CUT_SIGNING_KEY` (minisign 秘密鍵のパス) を設定しておく。署名の準備はビルド前に確認する
+- 既定では作業ツリーがクリーンであること (`-AllowDirty` で上書き可)
+
+**手動で残る作業:** `release/v{version}` を push し、Gitea 上で `v{version}` タグを付与する。GitHub Release へ MSI と署名ファイル (`*.msi.minisig`) をアップロードしたあと、gh-release-bridge の version API が MSI の `digest` を返し、署名ファイルも同じ URL 形式 (`/{owner}/{repo}/{tag}/{asset}.minisig`) で取得できることを確認する。
+
+### 更新署名鍵
+
+アプリ更新 (Windows) は、version API の digest (SHA-256) に加えて MSI の minisign (Ed25519) 署名を検証してから `msiexec` を起動する。署名の信頼コメント (`edge-cut-update version={version} file={アセット名}`) も照合するため、配信経路や digest を差し替えられても、正規の秘密鍵で署名されていない MSI や別バージョン向けの署名済み MSI は適用しない。
+
+公開鍵は `keys/update-signing/*.pub` に置き、`build.rs` がビルド時にすべて埋め込む。秘密鍵はリポジトリに置かない。
+
+```powershell
+# minisign の導入
+winget install jedisct1.minisign
+
+# 鍵ペアの生成 (秘密鍵はリポジトリ外。パスワード保護を推奨)
+minisign -G -p keys/update-signing/edge-cut-release.pub -s "$env:USERPROFILE\.minisign\edge-cut-release.key"
+
+# release.ps1 で使う秘密鍵のパス
+$env:EDGE_CUT_SIGNING_KEY = "$env:USERPROFILE\.minisign\edge-cut-release.key"
+```
+
+- 公開鍵を追加・変更した版を配布してから、その鍵で署名した更新を出す。利用者の手元のアプリは自分に埋め込まれた公開鍵でしか検証できない
+- 鍵の入れ替えは、新旧の公開鍵を両方置いた版を一度配布し、以降の版で旧鍵を外す。秘密鍵を紛失・漏洩した場合も同じ手順で、旧鍵を外した版は手動で配布する
+- 公開鍵が 1 つも無いビルドは更新を適用しない (開発ビルドでの誤適用を防ぐ)。`release.ps1` は公開鍵が無いと失敗する
 
 ### 第三者ライセンス表示 (`THIRD_PARTY_NOTICES`)
 

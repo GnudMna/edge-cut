@@ -2,7 +2,6 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 
-use super::bridge_download_key;
 use super::error::UpdateError;
 
 use sha2::{Digest, Sha256};
@@ -16,6 +15,13 @@ const SHA256_HEX_LEN: usize = 64;
 ///
 /// MSI の想定サイズを大きく上回る応答でディスクを圧迫しないための上限
 pub(crate) const MAX_UPDATE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+/// アセット名の最大バイト数
+const MAX_ASSET_NAME_LEN: usize = 200;
+/// Windows の予約デバイス名 (拡張子付きでもデバイスとして解釈されうる)
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
 
 // ======================================================================
 // パブリック関数
@@ -50,6 +56,34 @@ pub(crate) fn parse_asset_digest(raw: &str) -> Result<String, UpdateError> {
     Ok(hex.to_ascii_lowercase())
 }
 
+/// アセット名が単一のファイル名として安全に扱えるか検証する
+///
+/// アセット名は作業ディレクトリ配下の保存先パスと bridge のダウンロード URL に
+/// そのまま使うため、ASCII 英数字と `.` `-` `_` だけからなる名前に限る
+/// パス区切り・ドライブ指定・`..`・URL で意味を持つ文字・Windows の予約デバイス名を拒否する
+///
+/// # Arguments
+/// * `name` - version API が報告するアセット名
+///
+/// # Returns
+/// * `Result<(), UpdateError>` - 安全なファイル名なら `Ok(())`
+pub(crate) fn validate_asset_name(name: &str) -> Result<(), UpdateError> {
+    let valid_chars = name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    // 先頭 `.` は `.` / `..` と隠しファイル、末尾 `.` は Windows の名前正規化を避ける
+    let valid = !name.is_empty()
+        && name.len() <= MAX_ASSET_NAME_LEN
+        && valid_chars
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && !is_reserved_device_name(name);
+    if !valid {
+        return Err(UpdateError::AssetNameInvalid);
+    }
+    Ok(())
+}
+
 /// アセットの宣言サイズがダウンロード可能な範囲か検証する
 ///
 /// # Arguments
@@ -69,37 +103,21 @@ pub(crate) fn validate_declared_download_size(expected_size: u64) -> Result<(), 
     Ok(())
 }
 
-/// URL からファイルへダウンロードし、サイズと SHA-256 を検証する
+/// 指定キーで URL からファイルへダウンロードし、サイズと SHA-256 を検証する
 ///
 /// 期待サイズ超過または絶対上限超過の時点で読み取りを打ち切る
 /// 検証に失敗した場合は保存済みファイルを削除する
-/// ビルド埋め込みキーがあれば `Authorization: Bearer` を付与する
 ///
 /// # Arguments
 /// * `url` - ダウンロード URL
 /// * `dest` - 保存先パス
 /// * `expected_size` - 期待バイト数 (0 は拒否)
 /// * `expected_sha256` - 期待する SHA-256 (小文字16進 64 桁)
+/// * `download_key` - bridge ダウンロードキー (`None` なら無認証)
 ///
 /// # Returns
 /// * `Result<(), UpdateError>` - 成功時 `Ok(())`
-pub(crate) fn download_and_verify(
-    url: &str,
-    dest: &Path,
-    expected_size: u64,
-    expected_sha256: &str,
-) -> Result<(), UpdateError> {
-    download_and_verify_with_key(
-        url,
-        dest,
-        expected_size,
-        expected_sha256,
-        bridge_download_key(),
-    )
-}
-
-/// 指定キーで URL からダウンロードし、サイズと SHA-256 を検証する
-fn download_and_verify_with_key(
+pub(crate) fn download_and_verify_with_key(
     url: &str,
     dest: &Path,
     expected_size: u64,
@@ -194,6 +212,14 @@ fn copy_and_hash_limited<R: Read, W: Write>(
     Ok(written)
 }
 
+/// 最初の `.` より前が Windows の予約デバイス名か判定する
+fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    RESERVED_DEVICE_NAMES
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+}
+
 /// バイト列を小文字16進文字列へ変換する
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -213,6 +239,67 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    /// 配布物の命名規約に沿ったアセット名を受け付けること
+    #[test]
+    fn validate_asset_name_accepts_release_names() {
+        for name in [
+            "edge-cut-0.1.3-x86_64.msi",
+            "edge-cut-0.1.3-x86_64.msi.minisig",
+            "EdgeCut_1.0.0.MSI",
+        ] {
+            assert!(validate_asset_name(name).is_ok(), "{name}");
+        }
+    }
+
+    /// パスとして解釈されうるアセット名を拒否すること
+    #[test]
+    fn validate_asset_name_rejects_path_like_names() {
+        let too_long = format!("{}.msi", "a".repeat(MAX_ASSET_NAME_LEN));
+        for name in [
+            "",
+            ".",
+            "..",
+            "../evil.msi",
+            "..\\evil.msi",
+            "sub/evil.msi",
+            "sub\\evil.msi",
+            "C:\\Windows\\evil.msi",
+            "C:evil.msi",
+            "\\\\server\\share\\evil.msi",
+            "evil.msi:stream",
+            ".hidden.msi",
+            "evil.msi.",
+            "evil msi.msi",
+            "evil%2F.msi",
+            "evil.msi?x=1",
+            "evil.msi#frag",
+            "評価.msi",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                validate_asset_name(name),
+                Err(UpdateError::AssetNameInvalid),
+                "{name:?}"
+            );
+        }
+    }
+
+    /// Windows の予約デバイス名を拡張子付きでも拒否すること
+    #[test]
+    fn validate_asset_name_rejects_reserved_device_names() {
+        for name in ["CON", "nul.msi", "Com1.x86_64.msi"] {
+            assert_eq!(
+                validate_asset_name(name),
+                Err(UpdateError::AssetNameInvalid),
+                "{name}"
+            );
+        }
+
+        // 最初の `.` より前が予約名と一致しなければ許可する
+        assert!(validate_asset_name("lpt9-x86_64.msi").is_ok());
+        assert!(validate_asset_name("console.msi").is_ok());
+    }
 
     /// GitHub 形式の `sha256:` 付き digest を正規化できるようにすること
     #[test]

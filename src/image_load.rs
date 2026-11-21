@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::consts::{MAX_IMAGE_FILE_BYTES, MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH};
 
-use image::{DynamicImage, ImageError, ImageReader, Limits};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageError, ImageReader, Limits};
 
 // ======================================================================
 // エラー型
@@ -127,6 +128,7 @@ impl Error for LoadError {
 /// ファイルから画像を安全に読み込む
 ///
 /// ファイルサイズ・ヘッダ上の寸法・デコード時の `image::Limits` を順に検証する
+/// EXIF の Orientation があれば回転・反転を適用し、表示上の向きで返す
 ///
 /// # Errors
 /// ファイルサイズ・寸法が上限を超える、または読み込み・デコードに失敗した場合
@@ -135,7 +137,7 @@ pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
     let file_size = file.metadata()?.len();
     check_file_size(file_size)?;
 
-    let limits = decode_limits();
+    let mut limits = decode_limits();
 
     let mut probe = ImageReader::new(BufReader::new(&file));
     probe.limits(limits.clone());
@@ -144,8 +146,18 @@ pub fn open_image(path: &Path) -> Result<DynamicImage, LoadError> {
 
     file.seek(SeekFrom::Start(0))?;
     let mut reader = ImageReader::new(BufReader::new(&file));
-    reader.limits(limits);
-    Ok(reader.with_guessed_format()?.decode()?)
+    reader.limits(limits.clone());
+    let mut decoder = reader.with_guessed_format()?.into_decoder()?;
+
+    // `ImageReader::decode()` と同様にデコード先バッファ分を上限から差し引く
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+
+    // 壊れた EXIF で読み込み自体を失敗させないよう、取得できなければ無変換とする
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    Ok(image)
 }
 
 /// クリップボード由来の RGBA 画像寸法を検証する
@@ -276,7 +288,10 @@ mod tests {
 
     use super::*;
 
-    use image::{DynamicImage, RgbaImage};
+    use image::codecs::png::PngEncoder;
+    use image::{DynamicImage, ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
+
+    const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
 
     // ======================================================================
     // ヘルパー関数
@@ -293,6 +308,37 @@ mod tests {
     fn write_test_png(path: &Path, width: u32, height: u32) {
         let img = DynamicImage::ImageRgba8(RgbaImage::new(width, height));
         img.save(path).expect("test png write");
+    }
+
+    /// Orientation タグのみを持つ little-endian の EXIF (TIFF 形式) を生成する
+    fn exif_with_orientation(value: u16) -> Vec<u8> {
+        let mut exif = Vec::new();
+        exif.extend_from_slice(b"II");
+        exif.extend_from_slice(&42u16.to_le_bytes());
+        exif.extend_from_slice(&8u32.to_le_bytes());
+        // IFD0: エントリ数 1、Orientation (0x0112) / SHORT / 1 個
+        exif.extend_from_slice(&1u16.to_le_bytes());
+        exif.extend_from_slice(&0x0112u16.to_le_bytes());
+        exif.extend_from_slice(&3u16.to_le_bytes());
+        exif.extend_from_slice(&1u32.to_le_bytes());
+        exif.extend_from_slice(&value.to_le_bytes());
+        exif.extend_from_slice(&[0, 0]);
+        // 次の IFD なし
+        exif.extend_from_slice(&0u32.to_le_bytes());
+        exif
+    }
+
+    /// 左上 1 px だけ赤い 3×2 の PNG を EXIF Orientation 付きで書き出す
+    fn write_png_with_orientation(path: &Path, orientation: u16) {
+        let mut img = RgbaImage::from_pixel(3, 2, Rgba([255, 255, 255, 255]));
+        img.put_pixel(0, 0, RED);
+        let mut encoder = PngEncoder::new(fs::File::create(path).expect("create png"));
+        encoder
+            .set_exif_metadata(exif_with_orientation(orientation))
+            .expect("set exif");
+        encoder
+            .write_image(img.as_raw(), 3, 2, ExtendedColorType::Rgba8)
+            .expect("write png");
     }
 
     // ======================================================================
@@ -397,6 +443,46 @@ mod tests {
         assert_eq!(img.width(), 8);
         assert_eq!(img.height(), 8);
         let _ = fs::remove_file(&path);
+    }
+
+    /// EXIF Orientation が 6 (時計回り 90°) のとき回転して読み込まれることを確認する
+    #[test]
+    fn open_image_applies_exif_rotate90() {
+        let path = temp_path("orient6.png");
+        write_png_with_orientation(&path, 6);
+        let img = open_image(&path).expect("open png").to_rgba8();
+        let _ = fs::remove_file(&path);
+
+        // 幅と高さが入れ替わり、左上の赤が右上へ移る
+        assert_eq!(img.dimensions(), (2, 3));
+        assert_eq!(*img.get_pixel(1, 0), RED);
+        assert_ne!(*img.get_pixel(0, 0), RED);
+    }
+
+    /// EXIF Orientation が 2 (左右反転) のとき反転して読み込まれることを確認する
+    #[test]
+    fn open_image_applies_exif_flip_horizontal() {
+        let path = temp_path("orient2.png");
+        write_png_with_orientation(&path, 2);
+        let img = open_image(&path).expect("open png").to_rgba8();
+        let _ = fs::remove_file(&path);
+
+        // 寸法は変わらず、左上の赤が右上へ移る
+        assert_eq!(img.dimensions(), (3, 2));
+        assert_eq!(*img.get_pixel(2, 0), RED);
+        assert_ne!(*img.get_pixel(0, 0), RED);
+    }
+
+    /// EXIF Orientation が 1 (無変換) のとき元の向きのまま読み込まれることを確認する
+    #[test]
+    fn open_image_keeps_orientation_when_no_transform() {
+        let path = temp_path("orient1.png");
+        write_png_with_orientation(&path, 1);
+        let img = open_image(&path).expect("open png").to_rgba8();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(img.dimensions(), (3, 2));
+        assert_eq!(*img.get_pixel(0, 0), RED);
     }
 
     // ======================================================================

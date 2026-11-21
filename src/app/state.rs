@@ -4,6 +4,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use super::trim_worker::TrimWorkerHandle;
@@ -151,8 +152,10 @@ impl From<&Settings> for AppPreferences {
 pub(super) struct ImageState {
     /// 読み込んだ元画像
     pub original: Option<Arc<DynamicImage>>,
-    /// トリミング後の画像
-    pub trimmed: Option<DynamicImage>,
+    /// 元画像の名前 (拡張子なし)。自動保存のファイル名に使う
+    pub source_stem: Option<String>,
+    /// トリミング後の画像。保存スレッドへ複製なしで渡すため `Arc` で保持する
+    pub trimmed: Option<Arc<DynamicImage>>,
     /// 元画像の GPU テクスチャ
     pub orig_tex: Option<egui::TextureHandle>,
     /// トリミング後画像の GPU テクスチャ
@@ -265,6 +268,85 @@ impl TrimWorkerState {
     }
 }
 
+/// 保存処理の種別
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SaveKind {
+    /// ファイルダイアログからの手動保存
+    Manual,
+    /// 保存先フォルダへの自動保存
+    Auto,
+}
+
+/// 画像ファイル I/O ワーカーからの通知
+pub(super) enum IoMsg {
+    /// 画像読み込みの完了
+    Loaded {
+        /// 読み込み要求 ID。古い結果を無視するために使用する
+        request_id: u64,
+        /// ステータス表示用のファイル名
+        file_name: String,
+        /// 読み込んだ画像、または失敗時のステータスメッセージ
+        result: Result<DynamicImage, String>,
+    },
+    /// 画像保存の完了
+    Saved {
+        /// 保存処理の種別
+        kind: SaveKind,
+        /// 保存先パス、または失敗時のステータスメッセージ
+        result: Result<PathBuf, String>,
+    },
+}
+
+/// 画像の読み込み・保存のバックグラウンド処理
+///
+/// 破棄時は実行中の保存スレッドの完了を待ち、書きかけのファイルが残らないようにする
+pub(super) struct IoState {
+    /// ワーカースレッドへ渡す送信側
+    pub tx: mpsc::Sender<IoMsg>,
+    /// ワーカースレッドからの結果受信チャネル
+    pub rx: mpsc::Receiver<IoMsg>,
+    /// 読み込み要求 ID。新しい読み込み・貼り付け・クリアで更新する
+    pub load_request_id: u64,
+    /// 実行中の保存スレッド
+    pub save_handles: Vec<JoinHandle<()>>,
+    /// 読み込み完了時のステータスに追記する補足 (ドロップ時の除外件数など)
+    pub load_note: Option<String>,
+}
+
+impl Default for IoState {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            tx,
+            rx,
+            load_request_id: 0,
+            save_handles: Vec::new(),
+            load_note: None,
+        }
+    }
+}
+
+impl IoState {
+    /// 進行中の読み込みを打ち切り、古い結果を無視する
+    pub(super) fn abort_load(&mut self) {
+        self.load_request_id = self.load_request_id.wrapping_add(1);
+        self.load_note = None;
+    }
+
+    /// 保存が進行中かどうか
+    pub(super) fn is_saving(&self) -> bool {
+        !self.save_handles.is_empty()
+    }
+}
+
+impl Drop for IoState {
+    fn drop(&mut self) {
+        for handle in self.save_handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// 一括トリミングのバックグラウンド処理
 pub(super) struct BatchState {
     /// バックグラウンドスレッドからの進捗受信チャネル
@@ -275,6 +357,8 @@ pub(super) struct BatchState {
     pub cancel: Arc<AtomicBool>,
     /// 直近バッチのエラー詳細 (ステータスバーは要約のみ、ホバーで全文表示)
     pub last_error_details: Vec<String>,
+    /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
+    pub skipped_inputs: usize,
 }
 
 impl Default for BatchState {
@@ -284,6 +368,7 @@ impl Default for BatchState {
             running: false,
             cancel: Arc::new(AtomicBool::new(false)),
             last_error_details: Vec::new(),
+            skipped_inputs: 0,
         }
     }
 }
@@ -365,6 +450,7 @@ pub struct App {
     pub(super) clipboard: Option<arboard::Clipboard>,
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
+    pub(super) io: IoState,
     /// アプリ更新 (Windows のみ)
     #[cfg(windows)]
     pub(super) update: UpdateState,
@@ -391,6 +477,7 @@ impl App {
             clipboard: None,
             batch: BatchState::default(),
             trim_worker: TrimWorkerState::new(),
+            io: IoState::default(),
             #[cfg(windows)]
             update: UpdateState::default(),
         }
@@ -561,6 +648,10 @@ mod tests {
 
             fn set_string(&mut self, key: &str, value: String) {
                 self.0.insert(key.to_owned(), value);
+            }
+
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
             }
 
             fn flush(&mut self) {}

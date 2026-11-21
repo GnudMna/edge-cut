@@ -2,13 +2,16 @@
 //!
 //! version API の各アセットに GitHub Release Asset の `digest` (`sha256:<hex>`) が
 //! 含まれることを前提とする。ダウンロード中は宣言サイズ超過または絶対上限で打ち切り、
-//! 完了後にサイズと SHA-256 を検証してから MSI を適用する
+//! 完了後にサイズと SHA-256 を検証する
+//! 適用前に `<asset>.minisig` の minisign 署名をビルド時埋め込み公開鍵で検証し、
+//! 配信経路や version API の digest を差し替えられても正規の秘密鍵で署名されていない MSI は適用しない
 //! 保護対象タグのアセット DL にはビルド時埋め込みキー (`EDGE_CUT_KEY`) を
 //! `Authorization: Bearer` で付与する
 
 mod apply;
 mod check;
 mod error;
+mod signature;
 mod types;
 mod verify;
 

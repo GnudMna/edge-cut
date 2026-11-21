@@ -1,9 +1,3 @@
----
-description: Rust ソースコードの use 文の記述規約
-globs: **/*.rs
-alwaysApply: true
----
-
 # use 文規約
 
 `use` 文は次の順序で並べ、**隣接するグループの間に空行を1行入れる。** 存在しないグループは省略する。

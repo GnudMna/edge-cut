@@ -115,10 +115,10 @@ mod tests {
 
         let mut last_id = 0u64;
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
+        // 処理時間に依存しないよう、最新の結果を受け取るか期限切れまで待つ
+        while last_id < 5 && Instant::now() < deadline {
             match result_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(result) => last_id = result.request_id,
-                Err(mpsc::RecvTimeoutError::Timeout) if last_id > 0 => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }

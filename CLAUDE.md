@@ -1,0 +1,58 @@
+# CLAUDE.md
+
+画像の背景余白を自動検出・トリミングする Rust 製デスクトップ GUI ツール (EdgeCut)。eframe / egui ベースで Windows / Linux / macOS に対応する。
+
+## コマンド
+
+```bash
+cargo run                                 # デバッグ実行
+cargo build --release                     # リリースビルド (target/release/EdgeCut)
+cargo fmt --all                           # 整形
+cargo clippy --all-targets -- -D warnings # 静的解析 (警告はエラー扱い)
+cargo test --all-targets                  # ユニット・統合テスト
+cargo test --doc                          # doctest
+cargo test <テスト名>                      # 単一テスト
+cargo deny check                          # 依存の脆弱性・ライセンス監査
+```
+
+一括チェックは `scripts/windows/check.ps1` (Linux / macOS は `scripts/{linux,macos}/check.sh`)。変更後はこれと同等の fmt / clippy / test が通ることを確認する。
+
+- ツールチェーンは `rust-toolchain.toml` で 1.96 固定、edition 2024
+- `clippy::pedantic` を warn で有効化し、`unsafe_code` は forbid
+- rustfmt の `max_width` は 100
+
+## アーキテクチャ
+
+lib クレート `edge_cut` (`src/lib.rs`) と bin クレート `EdgeCut` (`src/main.rs`) の二層構成。`main.rs` はエントリポイントのみで、`edge_cut::app::run()` を呼ぶだけ。
+
+| パス | 責務 |
+| ---- | ---- |
+| `src/trim.rs` | 背景色検出 (四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA)・余白除去のコアロジック |
+| `src/image_load.rs` | サイズ上限付きの安全な画像読み込み (EXIF Orientation を反映) |
+| `src/image_output.rs` | 画像保存・一括処理の出力パス生成 (衝突時は連番サフィックス) |
+| `src/batch_trim.rs` | 複数ファイルの一括トリミング (進捗通知・キャンセル) |
+| `src/consts.rs` | 上限値・対応拡張子・ウィンドウサイズなどの定数 |
+| `src/app/` | egui GUI。`state` (状態)、`view` (描画)、`actions` (操作)、`trim_worker` (プレビュー用ワーカースレッド) |
+| `src/update/` | gh-release-bridge 経由の更新確認・minisign 署名検証・MSI 適用。`#[cfg(windows)]` 限定 |
+| `tests/` | lib クレートの公開 API に対する統合テスト (`tests/common/` に画像生成ヘルパー) |
+
+- コアロジック (`trim` / `image_load` / `image_output` / `batch_trim`) は egui に依存させない。egui 依存は `src/app/` に閉じ込める
+- 重い処理は UI スレッドで行わず、ワーカースレッドへ渡す
+- 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する
+- Windows 専用依存 (`ureq`, `sha2` など) は `cfg(windows)` の中でのみ使う
+- `build.rs` は Windows のアイコン・バージョン情報を埋め込む。更新ダウンロードキーはビルド時環境変数 `EDGE_CUT_KEY` から埋め込む
+- 更新署名の公開鍵 (minisign) は `keys/update-signing/*.pub` を `build.rs` が埋め込む。`src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える
+- リリースは `scripts/windows/release.ps1` で行う (バージョン更新・CHANGELOG・チェック・コミット・MSI 作成・署名)
+
+## コーディング規約
+
+- コメント: [.claude/rules/comments.md](.claude/rules/comments.md)
+- use 文: [.claude/rules/imports.md](.claude/rules/imports.md)
+
+依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認する。`about.toml` の許可リストも同じ内容に揃える。
+
+## Git 運用
+
+- git-flow 形式。`develop` から `feature/*` `fix/*` `docs/*` などを切り、`main` へは `release/vX.Y.Z` 経由でマージする
+- コミットメッセージは `<種別>: <日本語の要約>`。種別は `Feat` / `Update` / `Fix` / `Refactor` / `Perf` / `Test` / `Docs` / `Style` / `Chore` / `Release` / `Add`
+- ユーザー向けの変更は `CHANGELOG.md` の `[Unreleased]` に追記する (Keep a Changelog 形式、日本語)

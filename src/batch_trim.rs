@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::image_load::{LoadError, open_image};
-use crate::image_output::{resolve_batch_output_path, save_image};
+use crate::image_output::save_batch_output;
 use crate::trim::trim;
 
 // ======================================================================
@@ -239,8 +239,7 @@ fn process_one(
 ) -> Result<bool, BatchFileError> {
     let img = open_image(path)?;
     let trimmed = trim(&img, params.tolerance, params.padding, params.bg_override);
-    let (out_path, file_renamed) = resolve_batch_output_path(path, out_dir);
-    save_image(&trimmed.image, &out_path)?;
+    let (_, file_renamed) = save_batch_output(&trimmed.image, path, out_dir)?;
     Ok(file_renamed)
 }
 

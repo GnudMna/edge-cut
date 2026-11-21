@@ -18,6 +18,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_batch_result();
+        self.poll_io(&ctx);
         self.poll_trim_work(&ctx);
         #[cfg(windows)]
         self.poll_update(&ctx);
@@ -36,11 +37,13 @@ impl App {
         egui::Panel::bottom("bottom").show(ui, |ui| {
             ui.add_space(sp);
             ui.horizontal(|ui| {
-                let status = if self.trim_worker.is_busy() {
-                    format!("{} (トリミング中…)", self.status)
-                } else {
-                    self.status.clone()
-                };
+                let mut status = self.status.clone();
+                if self.trim_worker.is_busy() {
+                    status.push_str(" (トリミング中…)");
+                }
+                if self.io.is_saving() {
+                    status.push_str(" (保存中…)");
+                }
                 let status_label =
                     ui.label(egui::RichText::new(status).color(ui.visuals().text_color()));
                 if !self.batch.last_error_details.is_empty() {
@@ -133,7 +136,7 @@ impl App {
                     .on_hover_text("トリミング後の画像を保存")
                     .clicked()
                 {
-                    self.save_image();
+                    self.save_image(ctx);
                 }
             });
 
@@ -164,7 +167,7 @@ impl App {
             ui.add_space(if self.prefs.compact_mode { 8.0 } else { 16.0 });
             ui.separator();
             ui.add_space(if self.prefs.compact_mode { 2.0 } else { 4.0 });
-            self.render_auto_save_controls(ui);
+            self.render_auto_save_controls(ui, ctx);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let icon = if self.prefs.dark_mode {
@@ -298,11 +301,11 @@ impl App {
         });
     }
 
-    fn render_auto_save_controls(&mut self, ui: &mut egui::Ui) {
+    fn render_auto_save_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let prev_auto_save = self.prefs.auto_save;
         ui.checkbox(&mut self.prefs.auto_save, "自動保存");
         if self.prefs.auto_save && !prev_auto_save {
-            self.auto_save_if_enabled();
+            self.auto_save_if_enabled(ctx);
         }
 
         ui.add_space(4.0);
@@ -499,12 +502,10 @@ fn handle_file_drop(app: &mut App, ctx: &egui::Context) {
         i.raw
             .dropped_files
             .iter()
-            .filter_map(|f| f.path.clone())
+            .map(|f| f.path().to_path_buf())
             .collect()
     });
-    if let Some(path) = dropped.into_iter().next() {
-        app.load_image_from_path(ctx, &path);
-    }
+    app.handle_dropped_paths(ctx, dropped);
 }
 
 /// スライダーのレスポンスを受け取り、トリミングを再実行すべきかどうかを返す
