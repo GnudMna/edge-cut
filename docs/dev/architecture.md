@@ -24,6 +24,7 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | パス | 責務 |
 | :--- | :--- |
 | `state` | アプリの状態 |
+| `bundled` | 配布物に同梱した文書 (利用者向けドキュメント・LICENSE・THIRD_PARTY_NOTICES) の探索と、OS の既定のアプリでの起動。同梱先は実行ファイルの位置から OS ごとの配布レイアウトに従って求める |
 | `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` に分割 |
 | `actions/` | 操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割 |
 | `trim_worker` / `clipboard_worker` / `load_worker` | プレビュー用・コピーと貼り付け用・画像読み込み用のワーカースレッド |

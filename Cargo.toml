@@ -1,6 +1,6 @@
 [package]
 name = "edge-cut"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["Yuto Hirata"]
@@ -35,13 +35,13 @@ known-folders = "1.4.2"
 minisign-verify = "0.3.0"
 raw-window-handle = "0.6.2"
 semver = "1.0.28"
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 ureq = { version = "3.4.2", features = ["json"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 minisign = "0.10.0"
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1.12"

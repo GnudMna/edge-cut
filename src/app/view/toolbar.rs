@@ -4,6 +4,7 @@ use eframe::egui;
 
 use super::ERROR_COLOR;
 use super::settings;
+use crate::app::bundled::Bundled;
 use crate::app::shortcuts;
 use crate::app::state::App;
 
@@ -155,6 +156,7 @@ impl App {
     fn render_view_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         #[cfg(windows)]
         let mut check_update = false;
+        let mut open_bundled = None;
         ui.menu_button("☰", |ui| {
             let theme_label = if self.prefs.dark_mode {
                 "☀ ライトテーマ"
@@ -175,6 +177,19 @@ impl App {
                 ui.close();
             }
             ui.separator();
+            for item in Bundled::ALL {
+                // 配布物の外 (cargo run など) では文書が無いため無効にする
+                if ui
+                    .add_enabled(item.locate().is_some(), egui::Button::new(item.label()))
+                    .on_hover_text(item.description())
+                    .on_disabled_hover_text("配布物に同梱されたファイルが見つからない")
+                    .clicked()
+                {
+                    open_bundled = Some(item);
+                    ui.close();
+                }
+            }
+            ui.separator();
             ui.label(egui::RichText::new(format!("EdgeCut v{}", env!("CARGO_PKG_VERSION"))).weak());
             #[cfg(windows)]
             if ui.button("更新を確認…").clicked() {
@@ -183,7 +198,14 @@ impl App {
             }
         })
         .response
-        .on_hover_text("表示切替・バージョン情報");
+        .on_hover_text("表示切替・ドキュメント・ライセンス・バージョン情報");
+
+        if let Some(item) = open_bundled {
+            self.status = match item.open() {
+                Ok(()) => format!("{}を開きました", item.name()),
+                Err(message) => format!("{}を開けませんでした: {message}", item.name()),
+            };
+        }
 
         let panel_open = settings::is_panel_open(ctx);
         if ui

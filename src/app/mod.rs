@@ -1,5 +1,6 @@
 //! アプリケーションモジュール
 mod actions;
+mod bundled;
 mod clipboard_worker;
 mod fonts;
 mod icon;
