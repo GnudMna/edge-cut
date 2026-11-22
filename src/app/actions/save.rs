@@ -351,8 +351,7 @@ mod tests {
 
         // 実際にファイルが生成されていること
         let saved_files: Vec<_> = fs::read_dir(tmp.path())
-            .map(|rd| rd.filter_map(std::result::Result::ok).collect())
-            .unwrap_or_default();
+            .map_or_default(|rd| rd.filter_map(std::result::Result::ok).collect());
         assert!(
             !saved_files.is_empty(),
             "自動保存フォルダにファイルが存在しない"

@@ -29,7 +29,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items # rustdo
 ./scripts/windows/check.ps1
 ```
 
-- ツールチェーンは `rust-toolchain.toml` で 1.96 固定、edition 2024
+- ツールチェーンは `rust-toolchain.toml` で 1.100 固定、edition 2024
 - `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする
 - rustfmt の `max_width` は 100
 
@@ -39,7 +39,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items # rustdo
 - 公開 API を追加・変更した場合は `src/lib.rs` の再エクスポートとモジュール表を更新する
 - 対応 OS は Windows のみ。`cfg(windows)` などの OS 分岐は置かない
 - 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える (差分は `check.ps1` が検出する)
-- `build.rs` は Windows のアイコン・バージョン情報、ビルド時環境変数 `EDGE_CUT_KEY` (更新ダウンロードキー)、`keys/update-signing/*.pub` (minisign 公開鍵) を埋め込む
+- `build.rs` は Windows のアイコン・バージョン情報、環境変数 `EDGE_CUT_KEY_FILE` が指すファイルの更新ダウンロードキー (ChaCha20-Poly1305 で暗号化。キーを直接渡す `EDGE_CUT_KEY` は廃止)、`keys/update-signing/*.pub` (minisign 公開鍵) を埋め込む
 - `src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える
 - リリースは `scripts/windows/release.ps1` で行う ([docs/dev/release.md](docs/dev/release.md))。指示がない限り実行しない
 

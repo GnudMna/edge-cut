@@ -26,10 +26,10 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | :--- | :--- |
 | `background` | 背景色検出。四辺を量子化して近傍で集計し、最多クラスタ内の最頻 RGBA を選ぶ |
 | `detect` | 余白の矩形検出。色形式ごとに生バッファから画素を読み、背景以外の画素が `ignore_pixels` (ノイズ除外) を超える行・列から最小矩形を求め、辺ごとの余白・除去する辺・アスペクト比を適用して `TrimInfo` にする |
-| `aspect` | アスペクト比の固定。範囲外を含む矩形 (`Rect`) を、中央を基準に指定の比率へ広げる・切り詰める |
+| `aspect` | アスペクト比の固定。範囲外を含む矩形 (`Rect`) を、中央を基準に (除去しない辺は動かさず) 指定の比率へ広げる・切り詰める。適用できない場合は `AspectSkip` で理由を返す |
 | `options` | トリミングの設定 (`TrimOptions` / `Margins` / `TrimSides` / `AspectRatio` / `AspectFit`)。プレビューの再計算を省く判定のキーも兼ねる |
 | `crop` | `TrimInfo` に従った切り出しと、範囲外へ拡張する余白の追加 |
-| `types` | `TrimInfo` / `TrimResult` / `TrimBounds` |
+| `types` | `TrimInfo` / `TrimResult` / `TrimBounds` / `AspectSkip` |
 | `mod` | 公開 API の再エクスポートと `trim` / `trim_with_options` / `sample_pixel` |
 
 `src/image_output/` の構成:
@@ -59,13 +59,13 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | :--- | :--- |
 | `state/` | アプリの状態。`App` 本体と、責務ごとの部分構造体 (`settings` / `image_state` / `trim_state` / `io_state` / `batch_state` / `update_state`) |
 | `bundled` | 配布物に同梱した文書 (利用者向けドキュメント・LICENSE・THIRD_PARTY_NOTICES) の探索と、Windows の既定のアプリでの起動。同梱先は実行ファイルの位置から MSI の配布レイアウトに従って求める |
-| `view/` | 描画。`toolbar` / `settings` / `preview` / `input` / `batch_errors` / `update_dialog` / `close_dialog` に分割し、ボタンに添える線画アイコンを `icons` に置く |
+| `view/` | 描画。`toolbar` / `settings` / `footer` (設定パネル下部の結果と保存・コピー) / `preview` / `input` / `batch_errors` / `update_dialog` / `close_dialog` に分割し、ボタンに添える線画アイコンを `icons` に置く |
 | `theme` | ライト / ダークの配色・余白・角丸 (`egui::Style`) と、カードなど共通の枠 |
 | `actions/` | 操作。`dialog` / `load` / `io_result` / `trim` / `save` / `clipboard` / `batch` / `drop` / `app_update` に責務ごとに分割 |
-| `trim_worker` / `clipboard_worker` / `load_worker` | プレビュー用・コピーと貼り付け用・画像読み込み用の常駐ワーカースレッド |
+| `trim_worker` / `clipboard_worker` / `load_worker` | プレビュー用・コピーと貼り付け用・画像読み込み用の常駐ワーカースレッド。`clipboard_worker` はコピー時に ICC プロファイルから sRGB へ変換する (クリップボードはプロファイルを運べないため) |
 | `save_dir` | 自動保存先の既定パスの決定 (Windows の既知のフォルダ) |
 | `shortcuts` | キーボードショートカットの判定 |
-| `image_convert` | プレビュー用テクスチャ変換。長辺が上限を超える画像の縮小と、RGB の ICC プロファイルから sRGB への色変換 (`moxcms`) を行う |
+| `image_convert` | プレビュー用テクスチャ変換。長辺が上限を超える画像の縮小と、RGB / GRAY の ICC プロファイルから sRGB への色変換 (`moxcms`。コピーでも共用) を行う |
 | `fonts/` / `icon` | フォント (`loader` / `registry`)・アイコンの読み込み |
 | `title_bar` | タイトルバーの色を `theme` の配色に合わせる (`unsafe_code` を許可する唯一のモジュール) |
 
@@ -80,7 +80,10 @@ Rust 2024 edition、`eframe` / `egui` によるネイティブ GUI アプリ。l
 | `http` | 全リクエストにタイムアウトを設定した HTTP クライアント |
 | `types` | version API のレスポンス・`AvailableUpdate`・確認と適用の結果 |
 | `error` | `UpdateError` (利用者向けの文言は `Display` に集約) |
-| `mod` | bridge の URL・リリース元・ダウンロードキー (`EDGE_CUT_KEY`) の定義と再エクスポート |
+| `bridge_key` | ビルド時に暗号化して埋め込んだ bridge ダウンロードキー (`EDGE_CUT_KEY_FILE` が指すファイル) の復号 |
+| `bridge_key_obfuscate` | 埋め込みキーの XOR 難読化 (`build.rs` と共有) |
+| `cipher` | ChaCha20-Poly1305 による埋め込みキーの復号 |
+| `mod` | bridge の URL・リリース元の定義と再エクスポート |
 | `tests` | ローカルの HTTP サーバーを使う更新フローの結合テスト |
 
 ## 設計方針

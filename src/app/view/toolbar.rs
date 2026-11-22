@@ -1,4 +1,4 @@
-//! ツールバー (画像の操作ボタン・設定パネルの開閉・表示メニュー) の描画
+//! ツールバー (画像の取り込み・設定パネルの開閉・表示メニュー) の描画
 
 use eframe::egui;
 
@@ -14,8 +14,9 @@ use crate::app::state::App;
 impl App {
     /// ツールバーの行
     ///
-    /// 右端の設定パネル切替・メニューを先に配置し、残りの幅に操作ボタンを並べる
-    /// (幅が足りない場合は操作ボタンを折り返し、右端と重ならないようにする)
+    /// 右端の設定パネル切替・メニューを先に配置し、残りの幅に取り込みのボタンを並べる
+    /// (幅が足りない場合はボタンを折り返し、右端と重ならないようにする)
+    /// 保存・コピーは設定パネル下部に置き、パネルを閉じている間だけ右端に出す
     pub(super) fn render_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // 1 行分の高さの領域に右端のボタンを置き、その左側を操作ボタンの最大幅とする
         let mut row = ui.available_rect_before_wrap();
@@ -37,10 +38,6 @@ impl App {
         // ボタン内の文字ではなくボタン単位で折り返す
         left.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
         self.render_input_buttons(&mut left, ctx);
-        left.separator();
-        self.render_output_buttons(&mut left, ctx);
-        left.separator();
-        self.render_clear_button(&mut left, ctx);
 
         ui.advance_cursor_after_rect(left.min_rect() | right_rect);
     }
@@ -100,54 +97,6 @@ impl App {
         }
     }
 
-    /// トリミング結果を書き出す操作 (保存・コピー)
-    fn render_output_buttons(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // 子 UI で囲むと折り返しが効かないため、`add_enabled` で直接配置する
-        // 再計算の待ち中・処理中は前回の矩形が残っているため無効にする
-        let has_trimmed = self.has_current_trim();
-        if ui
-            .add_enabled(has_trimmed, icons::primary_button(ui, Icon::Save, "保存"))
-            .on_hover_text(shortcuts::with_shortcut(
-                ctx,
-                "トリミング後の画像を保存",
-                shortcuts::SAVE,
-            ))
-            .clicked()
-        {
-            self.save_image(ctx);
-        }
-
-        if ui
-            .add_enabled(has_trimmed, icons::button(Icon::Copy, "コピー"))
-            .on_hover_text(shortcuts::with_shortcut(
-                ctx,
-                "トリミング後の画像をクリップボードへコピー",
-                shortcuts::COPY,
-            ))
-            .clicked()
-        {
-            self.copy_trimmed_to_clipboard(ctx);
-        }
-    }
-
-    fn render_clear_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let has_original = self.image.original.is_some();
-        if ui
-            .add_enabled(
-                has_original,
-                icons::button(Icon::Trash, "クリア").frame_when_inactive(false),
-            )
-            .on_hover_text(shortcuts::with_shortcut(
-                ctx,
-                "画像をクリア",
-                shortcuts::CLEAR,
-            ))
-            .clicked()
-        {
-            self.clear_image();
-        }
-    }
-
     /// 右端の表示メニューと設定パネルの開閉ボタン
     ///
     /// 右から左へ並ぶレイアウトの `ui` に右端から順に配置する
@@ -162,15 +111,6 @@ impl App {
             };
             if ui.button(theme_label).clicked() {
                 self.prefs.dark_mode = !self.prefs.dark_mode;
-                ui.close();
-            }
-            let mut compact = self.prefs.compact_mode;
-            if ui
-                .checkbox(&mut compact, "コンパクト表示")
-                .on_hover_text("プレビューをトリミング後の画像だけにする")
-                .changed()
-            {
-                self.set_compact_mode(compact);
                 ui.close();
             }
             ui.separator();
@@ -215,17 +155,14 @@ impl App {
             settings::set_panel_open(ctx, !panel_open);
         }
 
+        // 保存・コピーは設定パネル下部にあるため、閉じている間だけここに出す
+        if !panel_open {
+            ui.separator();
+            self.render_output_buttons(ui, ctx, false);
+        }
+
         if check_update {
             self.open_update_dialog(ctx);
-        }
-    }
-
-    /// コンパクト表示を切り替える
-    fn set_compact_mode(&mut self, compact: bool) {
-        self.prefs.compact_mode = compact;
-        // コンパクト表示では元画像を表示しないため、スポイトの対象がなくなる
-        if compact {
-            self.background.pick_mode = false;
         }
     }
 }

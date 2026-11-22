@@ -2,7 +2,7 @@
 
 ## 品質チェック
 
-`scripts/windows/check.ps1` で fmt / clippy / doc / 許可リスト同期 / deny / test / doctest を一括実行する。変更後はこれが通ることを確認する。
+`scripts/windows/check.ps1` で fmt / clippy / doc / 許可リスト同期 / deny / test / doctest を一括実行する。変更後はこれが通ることを確認する。cargo のコマンドは `--locked` 付きで実行し、`Cargo.lock` の更新漏れもエラーにする。
 
 個別に実行する場合:
 
@@ -22,9 +22,14 @@ cargo test <テスト名>                      # 単一テスト
 | `windows/test.ps1` | テスト実行 |
 | `windows/clippy.ps1` | Clippy による静的解析 |
 | `windows/format.ps1` | コードフォーマット |
+| `windows/install-hooks.ps1` | push 前に `check.ps1` を実行する Git フック (`.githooks/pre-push`) を有効にする (`core.hooksPath` を設定) |
+| `windows/uninstall-hooks.ps1` | `install-hooks.ps1` で有効にした Git フックを無効にする |
+
+Git フックは任意で有効にする。一時的に省略する場合は `git push --no-verify` を使う。フックは push するコミットではなく作業ツリーの内容を検査する。
 
 - `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする
 - rustfmt の `max_width` は 100
+- doctest は Clippy の対象外のため、`src/lib.rs` の `#![doc(test(attr(deny(warnings))))]` で警告をエラーにする
 
 ## テスト構成
 

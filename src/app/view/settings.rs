@@ -3,14 +3,14 @@
 use eframe::egui;
 
 use super::icons::{self, Icon};
-use crate::app::state::App;
+use crate::app::state::{App, PreviewMode};
 use crate::app::theme;
 use crate::consts::{
     ASPECT_PART_MAX, ASPECT_PART_MIN, JPEG_QUALITY_MAX, JPEG_QUALITY_MIN, PADDING_MAX, PADDING_MIN,
     SPECK_MAX, SPECK_MIN, TOL_MAX, TOL_MIN, WEBP_QUALITY_MAX, WEBP_QUALITY_MIN,
 };
 use crate::image_output::OutputFormat;
-use crate::trim::{AspectFit, Margins};
+use crate::trim::{AspectFit, Margins, TrimSides};
 
 /// 設定パネルの既定の幅
 const PANEL_DEFAULT_WIDTH: f32 = 270.0;
@@ -30,6 +30,9 @@ const SECTION_SPACING: f32 = 10.0;
 /// セクションのカードの内側の余白
 const SECTION_MARGIN: i8 = 12;
 
+/// セクションの見出しの文字サイズ
+const SECTION_TITLE_SIZE: f32 = 14.5;
+
 /// アスペクト比のプリセット (幅, 高さ)
 const ASPECT_PRESETS: [(u32, u32); 7] = [(1, 1), (4, 3), (3, 2), (16, 9), (3, 4), (2, 3), (9, 16)];
 
@@ -40,6 +43,7 @@ impl App {
     /// 右側の設定パネル
     ///
     /// ツールバーの「設定」で開閉し、境界のドラッグで幅を変えられる
+    /// 下端に結果のサイズと保存・コピーを固定し、設定は残りの高さでスクロールする
     pub(super) fn render_settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut open = is_panel_open(ctx);
         let frame = egui::Frame::new()
@@ -51,6 +55,12 @@ impl App {
             .default_size(PANEL_DEFAULT_WIDTH)
             .size_range(PANEL_WIDTH_RANGE)
             .show_collapsible(ui, &mut open, |ui| {
+                egui::Panel::bottom("settings_footer")
+                    .frame(egui::Frame::new().inner_margin(egui::Margin {
+                        top: 10,
+                        ..egui::Margin::ZERO
+                    }))
+                    .show(ui, |ui| self.render_result_footer(ui, ctx));
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -58,11 +68,8 @@ impl App {
                             self.render_trim_settings(ui, ctx);
                         });
                         ui.add_space(SECTION_SPACING);
-                        section(ui, "背景色", |ui| {
-                            self.render_bg_color_controls(ui, ctx);
-                        });
-                        ui.add_space(SECTION_SPACING);
-                        section(ui, "出力", |ui| {
+                        let summary = self.output_summary();
+                        collapsible_section(ui, "出力", &summary, |ui| {
                             self.render_output_settings(ui, ctx);
                         });
                     });
@@ -71,7 +78,7 @@ impl App {
         set_panel_open(ctx, open);
     }
 
-    /// 許容度・ノイズ除外・除去する辺・余白・アスペクト比
+    /// 許容度・余白・背景色と、折りたたんだ詳細設定 (ノイズ除外・除去する辺・アスペクト比)
     fn render_trim_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // 値が変わったときの再実行要求。`Some(true)` はドラッグ中などでデバウンスする
         let mut request = None;
@@ -89,27 +96,69 @@ impl App {
         .or(request);
 
         ui.add_space(6.0);
-        ui.label("ノイズ除外");
-        fit_slider_width(ui);
-        request = trim_slider(
-            ui,
-            ctx,
-            &mut self.prefs.ignore_pixels,
-            (SPECK_MIN, SPECK_MAX),
-            " px",
-            "行・列あたりこの画素数以下の小さなゴミ (スキャンの埃や JPEG ノイズ) を内容とみなさない。0 のとき 1 画素でも内容とする",
-        )
-        .or(request);
+        request = self.render_margin_controls(ui, ctx).or(request);
 
         ui.add_space(6.0);
-        request = self.render_side_controls(ui).or(request);
-        ui.add_space(6.0);
-        request = self.render_margin_controls(ui, ctx).or(request);
-        ui.add_space(6.0);
-        request = self.render_aspect_controls(ui).or(request);
+        self.render_bg_color_controls(ui, ctx);
+
+        ui.add_space(4.0);
+        ui.separator();
+        let summary = self.trim_detail_summary();
+        collapsible(
+            ui,
+            "trim_details",
+            egui::RichText::new("詳細設定"),
+            &summary,
+            |ui| {
+                ui.add_space(4.0);
+                ui.label("ノイズ除外");
+                fit_slider_width(ui);
+                request = trim_slider(
+                    ui,
+                    ctx,
+                    &mut self.prefs.ignore_pixels,
+                    (SPECK_MIN, SPECK_MAX),
+                    " px",
+                    "行・列あたりこの画素数以下の小さなゴミ (スキャンの埃や JPEG ノイズ) を内容とみなさない。0 のとき 1 画素でも内容とする",
+                )
+                .or(request);
+                ui.add_space(6.0);
+                request = self.render_side_controls(ui).or(request);
+                ui.add_space(6.0);
+                request = self.render_aspect_controls(ui).or(request);
+            },
+        );
 
         if let Some(debounce) = request {
             self.schedule_trim(ctx, debounce, false, false);
+        }
+    }
+
+    /// 折りたたんだ詳細設定のうち、既定から変えている項目の要約
+    ///
+    /// 閉じたままでも効いている設定に気づけるよう、見出しの横に表示する
+    fn trim_detail_summary(&self) -> String {
+        let prefs = &self.prefs;
+        let mut items = Vec::new();
+        if prefs.ignore_pixels > 0 {
+            items.push(format!("ノイズ {} px", prefs.ignore_pixels));
+        }
+        if prefs.sides != TrimSides::ALL {
+            items.push("一部の辺を維持".to_owned());
+        }
+        if prefs.aspect_enabled {
+            items.push(aspect_label((prefs.aspect_w, prefs.aspect_h)));
+        }
+        items.join(" · ")
+    }
+
+    /// 出力セクションの見出しに添える要約 (形式と自動保存)
+    fn output_summary(&self) -> String {
+        let format = self.prefs.output_format.label();
+        if self.prefs.auto_save {
+            format!("{format} · 自動保存")
+        } else {
+            format.to_owned()
         }
     }
 
@@ -260,6 +309,7 @@ impl App {
 
     /// 背景色の表示と、手動指定・スポイト・自動検出への切替
     fn render_bg_color_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.label("背景色");
         // 背景色は読み込んだ画像から検出するため、画像がない間は操作を出さない
         let Some(bg) = self
             .background
@@ -270,6 +320,7 @@ impl App {
             return;
         };
 
+        let manual = self.prefs.bg_override.is_some();
         ui.horizontal(|ui| {
             let mut edit_color = bg;
             if ui
@@ -279,48 +330,51 @@ impl App {
             {
                 self.set_manual_bg(ctx, edit_color);
             }
-            let mode = if self.prefs.bg_override.is_some() {
-                "手動指定"
-            } else {
-                "自動検出"
-            };
-            ui.label(mode);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if manual {
+                    ui.label(egui::RichText::new("手動指定").color(ui.visuals().warn_fg_color));
+                } else {
+                    ui.label("自動検出");
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "RGBA({}, {}, {}, {})",
+                        bg[0], bg[1], bg[2], bg[3]
+                    ))
+                    .small()
+                    .weak(),
+                );
+            });
         });
-        ui.label(
-            egui::RichText::new(format!("RGBA({}, {}, {}, {})", bg[0], bg[1], bg[2], bg[3]))
-                .monospace()
-                .weak(),
-        );
 
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
-            let pick_label = if self.background.pick_mode {
+            let picking = self.background.pick_mode;
+            let pick_label = if picking {
                 "スポイト中"
             } else {
                 "スポイト"
             };
-            // コンパクト表示では元画像のペインがなくクリック先がないため無効化する
             if ui
-                .add_enabled(
-                    !self.prefs.compact_mode,
-                    egui::Button::selectable(
-                        self.background.pick_mode,
-                        (Icon::Picker.atom(None), pick_label),
-                    ),
+                .add(
+                    egui::Button::selectable(picking, (Icon::Picker.atom(None), pick_label))
+                        .frame_when_inactive(true),
                 )
                 .on_hover_text("元画像をクリックして背景色を取得する (Esc で解除)")
-                .on_disabled_hover_text("コンパクト表示では元画像を表示しないため使用できない")
                 .clicked()
             {
-                self.background.pick_mode = !self.background.pick_mode;
+                self.background.pick_mode = !picking;
+                // 結果だけの表示では元画像がなくクリック先がないため、範囲の表示へ切り替える
+                if self.background.pick_mode && !self.prefs.preview_mode.shows_original() {
+                    self.prefs.preview_mode = PreviewMode::Range;
+                }
             }
 
             if ui
-                .add_enabled(
-                    self.prefs.bg_override.is_some(),
-                    icons::button(Icon::Reset, "自動に戻す"),
-                )
+                .add_enabled(manual, icons::button(Icon::Reset, "自動に戻す"))
                 .on_hover_text("手動指定を解除し、四辺から背景色を自動検出する")
+                .on_disabled_hover_text("自動検出中")
                 .clicked()
             {
                 self.reset_bg_to_auto(ctx);
@@ -458,10 +512,83 @@ pub(super) fn set_panel_open(ctx: &egui::Context, open: bool) {
 fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     theme::card_frame(ui, SECTION_MARGIN).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(egui::RichText::new(title).strong().size(14.5));
+        ui.label(egui::RichText::new(title).strong().size(SECTION_TITLE_SIZE));
         ui.add_space(6.0);
         add_contents(ui);
     });
+}
+
+/// 見出しをクリックで折りたためるカードでセクションを囲む
+///
+/// 開閉状態は egui のメモリに保持し、次回起動時も引き継ぐ
+///
+/// # Arguments
+/// * `ui` - 描画先
+/// * `title` - セクションの見出し
+/// * `summary` - 見出しの右に添える要約 (閉じていても設定が分かるようにする)
+/// * `add_contents` - セクションの中身を描画する
+fn collapsible_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    summary: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    theme::card_frame(ui, SECTION_MARGIN).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let heading = egui::RichText::new(title).strong().size(SECTION_TITLE_SIZE);
+        collapsible(ui, ("section", title), heading, summary, |ui| {
+            ui.add_space(6.0);
+            add_contents(ui);
+        });
+    });
+}
+
+/// 見出しの行 (矢印・見出し・要約) のどこをクリックしても開閉できる折りたたみ
+///
+/// 開閉状態は egui のメモリに保持し、次回起動時も引き継ぐ (初期状態は閉じる)
+///
+/// # Arguments
+/// * `ui` - 描画先
+/// * `id_salt` - 開閉状態を保持する ID の元
+/// * `title` - 見出し
+/// * `summary` - 見出しの右端に小さく添える要約。空のときは表示しない
+/// * `add_body` - 開いているときの中身を描画する
+fn collapsible(
+    ui: &mut egui::Ui,
+    id_salt: impl egui::AsIdSalt,
+    title: egui::RichText,
+    summary: &str,
+    add_body: impl FnOnce(&mut egui::Ui),
+) {
+    let id = ui.make_persistent_id(id_salt);
+    let mut clicked = false;
+    let mut header =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                // 矢印だけでなく見出しの残りの幅もクリックで開閉できるようにする
+                let row = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                );
+                let response = ui
+                    .interact(row, id.with("header"), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                clicked = response.clicked();
+                ui.add(egui::Label::new(title).selectable(false));
+                if !summary.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(summary).small().weak())
+                                .selectable(false)
+                                .truncate(),
+                        );
+                    });
+                }
+            });
+    if clicked {
+        header.toggle();
+    }
+    header.body_unindented(add_body);
 }
 
 /// スライダーの幅を数値欄を除いたパネル幅に合わせる

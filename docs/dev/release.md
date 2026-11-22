@@ -15,7 +15,7 @@ git checkout -b release/v0.3.0
 
 **前提:**
 
-- 環境変数 `EDGE_CUT_KEY` (gh-release-bridge の Worker Secret と同値) と `EDGE_CUT_SIGNING_KEY` (minisign 秘密鍵のパス) を設定しておく。署名の準備はビルド前に確認する
+- 環境変数 `EDGE_CUT_KEY_FILE` (gh-release-bridge の Worker Secret と同値を保存したファイルのパス。[更新ダウンロードキー](setup.md#更新ダウンロードキー)) と `EDGE_CUT_SIGNING_KEY` (minisign 秘密鍵のパス) を設定しておく。キーファイルと署名の準備はビルド前に確認する
 - MSI 作成には [開発環境とビルド](setup.md#前提条件) と同じ前提 (cargo-wix・cargo-about・mdBook・WiX Toolset v3) が必要。mdBook の未導入や版違いはビルド前に検出して止まる
 - 既定では作業ツリーがクリーンであること (`-AllowDirty` で上書き可)
 

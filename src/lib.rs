@@ -30,6 +30,9 @@
 //! | `panic_message` | panic の捕捉とメッセージ取り出し (クレート内部用) |
 //! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 |
 
+// doctest は Clippy の対象外で警告も表示されないため、警告をエラーにして検出する
+#![doc(test(attr(deny(warnings))))]
+
 pub mod batch_trim;
 pub mod consts;
 pub mod dpi;
@@ -64,7 +67,7 @@ pub use image_output::{
     trimmed_file_stem, trimmed_output_path,
 };
 pub use trim::{
-    AspectFit, AspectRatio, Margins, TrimBounds, TrimInfo, TrimOptions, TrimResult, TrimSides,
-    apply_trim, detect_background_rgba, detect_trim, detect_trim_with_options, sample_pixel, trim,
-    trim_with_options,
+    AspectFit, AspectRatio, AspectSkip, Margins, TrimBounds, TrimInfo, TrimOptions, TrimResult,
+    TrimSides, apply_trim, detect_background_rgba, detect_trim, detect_trim_with_options,
+    sample_pixel, trim, trim_with_options,
 };

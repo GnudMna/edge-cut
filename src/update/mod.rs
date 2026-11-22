@@ -5,11 +5,14 @@
 //! 完了後にサイズと SHA-256 を検証する
 //! 適用前に `<asset>.minisig` の minisign 署名をビルド時埋め込み公開鍵で検証し、
 //! 配信経路や version API の digest を差し替えられても正規の秘密鍵で署名されていない MSI は適用しない
-//! 保護対象タグのアセット DL にはビルド時埋め込みキー (`EDGE_CUT_KEY`) を
-//! `Authorization: Bearer` で付与する
+//! 保護対象タグのアセット DL にはビルド時埋め込みキー (`EDGE_CUT_KEY_FILE` が指すファイル) を
+//! ChaCha20-Poly1305 で暗号化して埋め込み、復号した値を `Authorization: Bearer` で付与する
 
 mod apply;
+mod bridge_key;
+mod bridge_key_obfuscate;
 mod check;
+mod cipher;
 mod error;
 mod http;
 mod signature;
@@ -36,20 +39,6 @@ pub(crate) const RELEASE_REPO: &str = "edge-cut";
 /// * `&'static str` - Cargo パッケージバージョン
 pub(crate) fn current_app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// ビルド時に埋め込まれた bridge ダウンロードキーを返す
-///
-/// 環境変数 `EDGE_CUT_KEY` がビルド時に設定されていればその値
-/// 未設定または空文字のときは `None` (無認証 GET)
-///
-/// # Returns
-/// * `Option<&'static str>` - 埋め込みキー
-pub(crate) fn bridge_download_key() -> Option<&'static str> {
-    match option_env!("EDGE_CUT_KEY") {
-        Some(key) if !key.is_empty() => Some(key),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

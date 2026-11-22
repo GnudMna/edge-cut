@@ -5,7 +5,7 @@ use eframe::egui;
 use super::icons::{self, Icon};
 use crate::app::image_convert::to_preview_fill;
 use crate::app::shortcuts;
-use crate::app::state::{App, PaneView};
+use crate::app::state::{App, PaneView, PreviewMode};
 use crate::app::theme;
 use crate::trim::TrimInfo;
 
@@ -35,6 +35,12 @@ const EMPTY_CONTENT_HEIGHT: f32 = 210.0;
 
 /// 画像がないときのアイコンを囲む円の半径
 const EMPTY_ICON_RADIUS: f32 = 34.0;
+
+/// 表示モードの切り替えの角丸
+const SEGMENT_RADIUS: u8 = 8;
+
+/// 表示モードの切り替えボタンの左右の余白
+const SEGMENT_PADDING: f32 = 14.0;
 
 /// 1 ペイン分の表示内容
 #[derive(Clone, Copy)]
@@ -85,7 +91,6 @@ impl App {
                 return;
             }
 
-            let avail = ui.available_size();
             let orig_dims = self
                 .image
                 .original
@@ -110,6 +115,10 @@ impl App {
                 }
             });
 
+            self.render_preview_header(ui);
+            ui.add_space(8.0);
+            let avail = ui.available_size();
+
             // テクスチャは描画の直前に差し込む (スポイトで状態が変わるため借用を先に作らない)
             let trim_pane = PaneSpec {
                 title: "トリミング後",
@@ -120,43 +129,88 @@ impl App {
                 pick_mode: false,
                 source_size: orig_dims,
             };
+            let orig_pane = PaneSpec {
+                title: if self.background.pick_mode {
+                    "元画像 (クリックで背景色を選択)"
+                } else {
+                    "元画像"
+                },
+                dims: orig_dims,
+                tex: None,
+                crop: trim_uv.map(CropView::Overlay),
+                max_w: avail.x,
+                pick_mode: self.background.pick_mode,
+                source_size: orig_dims,
+            };
+            let ctx = ui.ctx().clone();
 
-            if self.prefs.compact_mode {
-                let pane = PaneSpec {
-                    tex: self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
-                    ..trim_pane
-                };
-                show_panel(ui, &pane, &mut self.image.views[1]);
-            } else {
-                let col_w = (avail.x - 16.0) / 2.0;
-                let ctx = ui.ctx().clone();
-                ui.columns(2, |cols| {
-                    let orig_pane = PaneSpec {
-                        title: if self.background.pick_mode {
-                            "元画像 (クリックで背景色を選択)"
-                        } else {
-                            "元画像"
-                        },
-                        dims: orig_dims,
+            match self.prefs.preview_mode {
+                PreviewMode::Range => {
+                    let pane = PaneSpec {
                         tex: self.image.orig_tex.as_ref(),
-                        crop: trim_uv.map(CropView::Overlay),
-                        max_w: col_w,
-                        pick_mode: self.background.pick_mode,
-                        source_size: orig_dims,
+                        ..orig_pane
                     };
-                    if let Some((x, y)) =
-                        show_panel(&mut cols[0], &orig_pane, &mut self.image.views[0])
-                    {
+                    if let Some((x, y)) = show_panel(ui, &pane, &mut self.image.views[0]) {
                         self.pick_bg_from_pixel(&ctx, x, y);
                     }
+                }
+                PreviewMode::Result => {
                     let pane = PaneSpec {
                         tex: self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
-                        max_w: col_w,
                         ..trim_pane
                     };
-                    show_panel(&mut cols[1], &pane, &mut self.image.views[1]);
-                });
+                    show_panel(ui, &pane, &mut self.image.views[1]);
+                }
+                PreviewMode::SideBySide => {
+                    let col_w = (avail.x - 16.0) / 2.0;
+                    ui.columns(2, |cols| {
+                        let pane = PaneSpec {
+                            tex: self.image.orig_tex.as_ref(),
+                            max_w: col_w,
+                            ..orig_pane
+                        };
+                        if let Some((x, y)) =
+                            show_panel(&mut cols[0], &pane, &mut self.image.views[0])
+                        {
+                            self.pick_bg_from_pixel(&ctx, x, y);
+                        }
+                        let pane = PaneSpec {
+                            tex: self.image.orig_tex.as_ref().filter(|_| trim_uv.is_some()),
+                            max_w: col_w,
+                            ..trim_pane
+                        };
+                        show_panel(&mut cols[1], &pane, &mut self.image.views[1]);
+                    });
+                }
             }
+        });
+    }
+
+    /// プレビューの上の行 (表示モードの切り替えとクリア)
+    fn render_preview_header(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            let mut mode = self.prefs.preview_mode;
+            if segmented(ui, &mut mode, &PreviewMode::ALL) {
+                self.prefs.preview_mode = mode;
+                // 結果だけの表示では元画像がなく、スポイトのクリック先がなくなる
+                if !mode.shows_original() {
+                    self.background.pick_mode = false;
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(icons::button(Icon::Trash, "クリア").frame_when_inactive(false))
+                    .on_hover_text(shortcuts::with_shortcut(
+                        &ctx,
+                        "画像をクリア",
+                        shortcuts::CLEAR,
+                    ))
+                    .clicked()
+                {
+                    self.clear_image();
+                }
+            });
         });
     }
 
@@ -267,6 +321,41 @@ impl App {
             }
         });
     }
+}
+
+/// 表示モードを切り替えるセグメント (1 つだけ選べるボタンの並び)
+///
+/// # Arguments
+/// * `ui` - 描画先
+/// * `current` - 選択中のモード。クリックされたモードへ書き換える
+/// * `modes` - 並べるモード
+///
+/// # Returns
+/// * `bool` - 選択が変わった場合は `true`
+fn segmented(ui: &mut egui::Ui, current: &mut PreviewMode, modes: &[PreviewMode]) -> bool {
+    let p = theme::palette_of(ui);
+    let mut changed = false;
+    egui::Frame::new()
+        .fill(p.card)
+        .stroke(egui::Stroke::new(1.0, p.border))
+        .corner_radius(egui::CornerRadius::same(SEGMENT_RADIUS))
+        .inner_margin(egui::Margin::same(2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().button_padding.x = SEGMENT_PADDING;
+            for &mode in modes {
+                if ui
+                    .add(egui::Button::selectable(*current == mode, mode.label()))
+                    .on_hover_text(mode.description())
+                    .clicked()
+                    && *current != mode
+                {
+                    *current = mode;
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 /// 市松模様のテクスチャを保持する egui の一時データ ID

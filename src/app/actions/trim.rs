@@ -10,7 +10,7 @@ use image::DynamicImage;
 use crate::app::state::App;
 use crate::app::trim_worker::TrimJob;
 use crate::consts::TRIM_DEBOUNCE_MS;
-use crate::trim::TrimInfo;
+use crate::trim::{AspectSkip, TrimInfo};
 
 // ======================================================================
 // トリミング
@@ -116,6 +116,9 @@ impl App {
             self.background.bg_color = Some(preview.background);
             self.image.cache_key = Some(preview.params);
             self.trim_worker.in_flight = false;
+            if let Some(skip) = preview.aspect_skip {
+                self.status = aspect_skip_message(skip).into();
+            }
 
             if self.trim_worker.auto_save_after {
                 self.trim_worker.auto_save_after = false;
@@ -221,6 +224,16 @@ impl App {
             color[0], color[1], color[2], color[3]
         );
         self.schedule_trim(ctx, false, false, false);
+    }
+}
+
+/// アスペクト比の固定が適用されなかった理由をステータス用の文にする
+fn aspect_skip_message(skip: AspectSkip) -> &'static str {
+    match skip {
+        AspectSkip::SizeLimit => "アスペクト比を固定できません: 結果が出力サイズの上限を超えます",
+        AspectSkip::OutsideImage => {
+            "アスペクト比を固定できません: 切り詰めると画像の範囲外になります"
+        }
     }
 }
 

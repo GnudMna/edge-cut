@@ -254,7 +254,7 @@ fn read_tiff(reader: &mut (impl Read + Seek)) -> Option<Dpi> {
     reader.read_exact(&mut entries).ok()?;
 
     let (mut x, mut y, mut unit) = (None, None, 2u16);
-    for entry in entries.chunks_exact(12) {
+    for entry in entries.as_chunks::<12>().0 {
         let (tag, kind) = (endian.u16(&entry[0..2]), endian.u16(&entry[2..4]));
         match tag {
             TAG_X_RESOLUTION | TAG_Y_RESOLUTION if kind == TYPE_RATIONAL => {
@@ -405,13 +405,10 @@ fn try_embed_tiff(tiff: &mut Vec<u8>, dpi: Dpi) -> Option<()> {
 
     // 解像度の既存タグを除いた上で、昇順を保って 3 タグを加える
     let mut all: Vec<(u16, [u8; 12])> = entries
-        .chunks_exact(12)
-        .map(|e| {
-            (
-                endian.u16(&e[0..2]),
-                <[u8; 12]>::try_from(e).unwrap_or([0; 12]),
-            )
-        })
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|e| (endian.u16(&e[0..2]), *e))
         .filter(|(tag, _)| {
             !matches!(
                 *tag,

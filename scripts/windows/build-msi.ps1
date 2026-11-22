@@ -89,17 +89,27 @@ Invoke-ScriptMain {
     $null = Assert-WixToolsetInstalled
 
     # アプリ更新のダウンロードキー (gh-release-bridge) をリリースビルドへ埋め込む
-    $edgeCutKey = [string]$env:EDGE_CUT_KEY
-    if ([string]::IsNullOrWhiteSpace($edgeCutKey)) {
+    # キーの中身は build.rs が検証するので、ここではファイルの有無と空でないことだけ確かめる
+    if ($null -ne [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY')) {
+        throw 'エラー: 環境変数 EDGE_CUT_KEY は廃止しました。キーをファイルに保存して EDGE_CUT_KEY_FILE にそのパスを設定し、EDGE_CUT_KEY は削除してください'
+    }
+    $bridgeKeyFile = [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY_FILE')
+    if ([string]::IsNullOrWhiteSpace($bridgeKeyFile)) {
         throw @"
-エラー: 環境変数 EDGE_CUT_KEY が未設定です。
+エラー: 環境変数 EDGE_CUT_KEY_FILE が未設定です。
 
-アプリ更新のアセットダウンロードに必要な共有キーです。
-gh-release-bridge の Worker Secret EDGE_CUT_KEY と同値を設定してから再実行してください。
+アプリ更新のアセットダウンロードに必要な共有キーを保存したファイルのパスです。
+gh-release-bridge の Worker Secret EDGE_CUT_KEY と同値を UTF-8 のファイルに保存し、そのパスを設定してから再実行してください。
 
-  `$env:EDGE_CUT_KEY = '<key>'
+  `$env:EDGE_CUT_KEY_FILE = "`$HOME\.edge-cut\bridge.key"
   ./scripts/windows/build-msi.ps1
 "@
+    }
+    if (-not (Test-Path -LiteralPath $bridgeKeyFile -PathType Leaf)) {
+        throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが見つかりません: $bridgeKeyFile"
+    }
+    if ((Get-Item -LiteralPath $bridgeKeyFile).Length -eq 0) {
+        throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが空です: $bridgeKeyFile"
     }
 
     # WiX UI 用ブランド画像 (未生成時やデザイン更新時に再作成)
@@ -140,7 +150,7 @@ cargo の終了コード 101 はリリースビルド (cargo build --release) �
   rustc --version
   cargo build --release
 
-Rust 1.96 以上 (rust-toolchain.toml) と Visual Studio Build Tools (C++ ワークロード) が必要です。
+Rust 1.100 以上 (rust-toolchain.toml) と Visual Studio Build Tools (C++ ワークロード) が必要です。
 "@
     }
 

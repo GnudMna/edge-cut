@@ -8,7 +8,7 @@
 
 | 用途 | 必要なもの |
 | :--- | :--- |
-| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.96 (`rust-toolchain.toml` で固定し、rustup が自動で導入する)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード) |
+| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.100 (`rust-toolchain.toml` で固定し、rustup が自動で導入する)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード) |
 | 品質チェック | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) |
 | MSI 作成 | [cargo-about](https://github.com/EmbarkStudios/cargo-about)、[mdBook](https://rust-lang.github.io/mdBook/) ([利用者向けドキュメントの同梱](#利用者向けドキュメントの同梱) の固定版)、[cargo-wix](https://github.com/volks73/cargo-wix)、[WiX Toolset v3.14.1](https://github.com/wixtoolset/wix3/releases) 以上 |
 
@@ -30,6 +30,8 @@ cargo build --release     # リリースビルド
 
 ビルド成果物は `target/release/EdgeCut.exe`。
 
+CRT (C ランタイム) は静的リンクする (`.cargo/config.toml` の `+crt-static`)。配布先に VC++ ランタイムを導入しなくても起動できる。環境変数 `RUSTFLAGS` などを設定すると `.cargo/config.toml` の rustflags は使われず動的リンクになるため、`build.rs` が警告を出す。`RUSTFLAGS` を使う場合は `-C target-feature=+crt-static` も加える。
+
 デバッグビルドでも依存クレートだけは最適化する (`Cargo.toml` の `[profile.dev.package."*"]`)。画像のデコード・エンコードが遅くなるのを避けるための設定で、自作コードは最適化しない。初回のビルドは依存の再コンパイルで時間がかかる。
 
 ## スクリプト
@@ -40,10 +42,14 @@ cargo build --release     # リリースビルド
 
 | スクリプト | 説明 |
 | :--- | :--- |
-| `windows/build.ps1` | デバッグ / リリースビルド (`--release`) |
+| `windows/build.ps1` | デバッグ / リリースビルド (`-Release` / `--release` / `-r`。それ以外の引数はエラー) |
 | `windows/build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可) |
 | `windows/generate-wix-assets.ps1` | MSI 用のバナー・ダイアログ画像 (`wix/*.bmp`) と使用許諾 (`wix/Eula.rtf`) を再生成 |
 | `windows/release.ps1` | リリース一括実行 ([リリース](release.md)) |
+
+## デバッグ (VS Code)
+
+`.vscode/launch.json` に CodeLLDB (`vadimcn.vscode-lldb`。推奨拡張機能に含む) 向けの構成を置く。アプリ本体・ユニットテスト (名前で絞り込み可)・統合テスト (`integration_test`) の起動と、実行中プロセスへのアタッチを選べる。rust-analyzer が標準ライブラリを解析できるよう、`rust-toolchain.toml` で `rust-src` を導入する。
 
 ## 配布パッケージ (MSI)
 
@@ -55,6 +61,20 @@ cargo build --release     # リリースビルド
 | インストール先 | `%LOCALAPPDATA%\edge-cut` (ユーザー単位) |
 | 同梱内容 | `bin\EdgeCut.exe` / `LICENSE` / `THIRD_PARTY_NOTICES` / `docs\` |
 | スタートメニュー | **EdgeCut** と **EdgeCut ドキュメント** を追加 |
+
+### 更新ダウンロードキー
+
+更新アセットのダウンロードに使う認証キー (gh-release-bridge の Worker Secret と同値) を保存したファイルのパスを環境変数 `EDGE_CUT_KEY_FILE` に設定すると、`build.rs` がキーを ChaCha20-Poly1305 で暗号化して実行ファイルへ埋め込む。キーが要るのはビルド時だけで、利用者の環境には要らない。未設定でもビルドは成功するが、保護対象タグの更新アセットは取得できない。`build-msi.ps1` と `release.ps1` (MSI を作る場合) では必須で、ビルド前にファイルの有無と空でないことを確かめる。
+
+```powershell
+$env:EDGE_CUT_KEY_FILE = "$HOME\.edge-cut\bridge.key"
+```
+
+- キーファイルは UTF-8 で保存し、リポジトリの外に置く。先頭の BOM と前後の空白・改行は除く (UTF-16 は不可)
+- 以前の環境変数 `EDGE_CUT_KEY` は廃止した。キーを環境変数で渡すと、Cargo が再ビルドの判定用に値を `target` の fingerprint・dep-info へ平文で書き残すためである。設定されていても埋め込まず (ビルドは警告を出す)、`build-msi.ps1` と `release.ps1` は失敗する
+- 平文キーをソースへ置かない
+
+このキーは漏洩を前提に運用する。復号に使う鍵も同じ実行ファイルに入っているため、配布物を解析すれば取り出せる。暗号化して埋め込むのは、平文のままバイナリや `target` 内の生成ファイルに現れないようにするためで、秘匿のためではない。漏洩した場合は gh-release-bridge の Worker Secret とキーファイルを新しい値へ差し替え、再リリースする。
 
 ## 第三者ライセンス表示 (`THIRD_PARTY_NOTICES`)
 

@@ -61,6 +61,7 @@ pub fn detect_trim_with_options(img: &DynamicImage, opts: &TrimOptions) -> TrimB
         return TrimBounds {
             info: full_info(w, h, background),
             background,
+            aspect_skip: None,
         };
     }
 
@@ -357,13 +358,14 @@ fn detect_trim_with(
     };
     // 背景しかない → 画像全体を対象とする
     let rect = bounds.map_or_else(|| full_rect(w, h), |b| content_rect(&b, w, h, opts));
-    let rect = match opts.aspect {
-        Some(ratio) => fit_aspect(rect, ratio, w, h),
-        None => rect,
+    let (rect, aspect_skip) = match opts.aspect {
+        Some(ratio) => fit_aspect(rect, ratio, opts.sides, w, h),
+        None => (rect, None),
     };
     TrimBounds {
         info: info_from_rect(rect, w, h, fill),
         background: bg,
+        aspect_skip,
     }
 }
 

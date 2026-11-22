@@ -1,7 +1,7 @@
 //! 一括トリミングの開始・キャンセル・結果の受信
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, TryRecvError};
@@ -12,6 +12,26 @@ use eframe::egui;
 use crate::app::state::{App, DialogResult};
 use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
 use crate::consts::SUPPORTED_IMAGE_EXTENSIONS;
+
+/// 保存先フォルダ選択ダイアログの初期位置を決める
+///
+/// 前回の保存先を優先し、なければ先頭の入力ファイルのフォルダを使う
+///
+/// # Arguments
+/// * `last` - 前回の保存先
+/// * `paths` - トリミング対象の画像ファイル
+///
+/// # Returns
+/// * `Option<PathBuf>` - 初期位置。決められない場合は `None`
+fn initial_output_dir(last: Option<&Path>, paths: &[PathBuf]) -> Option<PathBuf> {
+    last.map(Path::to_path_buf).or_else(|| {
+        paths
+            .first()
+            .and_then(|p| p.parent())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    })
+}
 
 // ======================================================================
 // 一括トリミング
@@ -54,8 +74,14 @@ impl App {
         if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
+        let initial = initial_output_dir(self.batch.last_output_dir.as_deref(), &paths);
         self.spawn_dialog(ctx, move |dialog| {
-            let dir = dialog.set_title("保存先フォルダを選択").pick_folder();
+            let dialog = dialog.set_title("保存先フォルダを選択");
+            let dialog = match initial {
+                Some(dir) => dialog.set_directory(dir),
+                None => dialog,
+            };
+            let dir = dialog.pick_folder();
             DialogResult::BatchOutput {
                 paths,
                 skipped,
@@ -93,6 +119,7 @@ impl App {
         self.batch.last_error_details.clear();
         self.batch.errors_open = false;
         self.batch.skipped_inputs = skipped;
+        self.batch.last_output_dir = Some(out_dir.clone());
         self.batch.cancel.store(false, Ordering::Relaxed);
         let cancel_flag = Arc::clone(&self.batch.cancel);
 
@@ -207,14 +234,33 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
 
-    use super::skipped_note;
+    use super::{initial_output_dir, skipped_note};
     use crate::app::state::App;
     use crate::batch_trim::{BatchProgress, BatchTrimResult};
+
+    /// 前回の保存先があれば入力ファイルのフォルダより優先すること
+    #[test]
+    fn initial_output_dir_prefers_last_output() {
+        let last = PathBuf::from("out");
+        let paths = vec![PathBuf::from("in").join("a.png")];
+        assert_eq!(initial_output_dir(Some(&last), &paths), Some(last));
+    }
+
+    /// 前回の保存先がなければ先頭の入力ファイルのフォルダを使うこと
+    ///
+    /// 入力が空、または親フォルダが空のパスでは決めない
+    #[test]
+    fn initial_output_dir_falls_back_to_first_input_parent() {
+        let paths = vec![PathBuf::from("in").join("a.png")];
+        assert_eq!(initial_output_dir(None, &paths), Some(PathBuf::from("in")));
+        assert_eq!(initial_output_dir(None, &[]), None);
+        assert_eq!(initial_output_dir(None, &[PathBuf::from("a.png")]), None);
+    }
 
     /// 除外件数が 0 のときのみ補足文が空になること
     #[test]
     fn skipped_note_is_empty_only_for_zero() {
-        assert!(skipped_note(0).is_empty());
+        assert_eq!(skipped_note(0), "");
         assert!(skipped_note(3).contains("3 件"));
     }
 
@@ -239,7 +285,7 @@ mod tests {
         // 実行中が解除され、再実行できる状態に戻る
         assert!(!app.batch.running);
         assert!(app.batch.rx.is_none());
-        assert!(app.batch.last_error_details.is_empty());
+        assert_eq!(app.batch.last_error_details, Vec::<String>::new());
         assert_eq!(app.status, "一括トリミングが異常終了しました");
     }
 

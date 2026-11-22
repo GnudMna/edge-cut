@@ -61,7 +61,7 @@ pub(super) fn to_preview_fill(fill: [u8; 4], icc_profile: Option<&[u8]>) -> [u8;
 /// # Arguments
 /// * `rgba` - 変換する画像 (その場で書き換える)
 /// * `icc` - 元画像の ICC プロファイル
-fn convert_to_srgb(rgba: &mut RgbaImage, icc: &[u8]) {
+pub(super) fn convert_to_srgb(rgba: &mut RgbaImage, icc: &[u8]) {
     let Ok(src) = ColorProfile::new_from_slice(icc) else {
         return;
     };
@@ -109,12 +109,23 @@ fn convert_gray_to_srgb(rgba: &mut RgbaImage, src: &ColorProfile) {
     ) else {
         return;
     };
-    let gray: Vec<u8> = rgba.as_raw().chunks_exact(4).map(|px| px[0]).collect();
+    let gray: Vec<u8> = rgba
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| px[0])
+        .collect();
     let mut converted = vec![0u8; rgba.as_raw().len()];
     if transform.transform(&gray, &mut converted).is_err() {
         return;
     }
-    for (dst, src) in rgba.chunks_exact_mut(4).zip(converted.chunks_exact(4)) {
+    for (dst, src) in rgba
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(converted.as_chunks::<4>().0)
+    {
         dst[..3].copy_from_slice(&src[..3]);
     }
 }
@@ -130,7 +141,9 @@ fn rgba8_to_color_image(rgba: &RgbaImage) -> ColorImage {
             .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
             .collect()
     } else {
-        raw.chunks_exact(4)
+        raw.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
             .collect()
     };

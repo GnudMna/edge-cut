@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# ========================================================================
+# Script Name : pre-push
+# Description : push 前に品質チェック(check.ps1)を実行する Git フック
+# Usage       : scripts/windows/install-hooks.ps1 で有効にする(一時的に省略する場合は git push --no-verify)
+# ========================================================================
+
+# シェルオプションを設定(エラー時に即終了)
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# push するコミットではなく作業ツリーの内容を検査する
+echo "push 前の品質チェックを実行します (省略する場合は git push --no-verify)"
+echo
+
+# Git for Windows の bash でフックが実行されるため、Windows 向けのスクリプトを呼び出す
+pwsh -NoProfile -File "$HOOK_DIR/../scripts/windows/check.ps1"

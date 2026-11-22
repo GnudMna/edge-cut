@@ -14,6 +14,46 @@ use crate::trim::{AspectFit, AspectRatio, Margins, TrimOptions, TrimSides};
 // ======================================================================
 // 設定
 // ======================================================================
+/// プレビューの表示モード
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::app) enum PreviewMode {
+    /// 元画像にトリミング範囲を重ねて表示する
+    #[default]
+    Range,
+    /// トリミング後の画像だけを表示する
+    Result,
+    /// 元画像とトリミング後の画像を左右に並べる
+    SideBySide,
+}
+
+impl PreviewMode {
+    /// 切り替えの並び順
+    pub const ALL: [Self; 3] = [Self::Range, Self::Result, Self::SideBySide];
+
+    /// 切り替えボタンの表示名
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Range => "範囲",
+            Self::Result => "結果",
+            Self::SideBySide => "並べて",
+        }
+    }
+
+    /// 切り替えボタンの説明
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Range => "元画像に、削られる領域とトリミング範囲を重ねて表示する",
+            Self::Result => "トリミング後の画像だけを表示する",
+            Self::SideBySide => "元画像とトリミング後の画像を左右に並べて表示する",
+        }
+    }
+
+    /// 元画像を表示するか (スポイトで元画像をクリックできるか)
+    pub fn shows_original(self) -> bool {
+        self != Self::Result
+    }
+}
+
 /// 永続化する設定キー
 pub(in crate::app) const SETTINGS_KEY: &str = "settings";
 
@@ -59,8 +99,8 @@ pub(in crate::app) struct Settings {
     pub auto_save: bool,
     /// 自動保存先ディレクトリ
     pub auto_save_dir: PathBuf,
-    /// コンパクト UI モードの有効/無効
-    pub compact_mode: bool,
+    /// プレビューの表示モード
+    pub preview_mode: PreviewMode,
     /// 手動指定の背景色。`None` のとき四辺から自動検出する
     ///
     /// 永続化しない。手動指定の解除を忘れたまま再起動して「自動検出が効かない」と
@@ -91,7 +131,7 @@ impl Default for Settings {
             dark_mode: true,
             auto_save: false,
             auto_save_dir: default_auto_save_dir(),
-            compact_mode: false,
+            preview_mode: PreviewMode::default(),
             bg_override: None,
             output_format: OutputFormat::default(),
             jpeg_quality: JPEG_QUALITY_DEFAULT,

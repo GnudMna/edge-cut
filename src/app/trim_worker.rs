@@ -104,6 +104,7 @@ fn detect_job(job: &TrimJob) -> TrimPreview {
         params: job.options,
         info: bounds.info,
         background: bounds.background,
+        aspect_skip: bounds.aspect_skip,
     }
 }
 

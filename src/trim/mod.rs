@@ -17,7 +17,7 @@ pub use self::background::detect_background_rgba;
 pub use self::crop::apply_trim;
 pub use self::detect::{detect_trim, detect_trim_with_options};
 pub use self::options::{AspectFit, AspectRatio, Margins, TrimOptions, TrimSides};
-pub use self::types::{TrimBounds, TrimInfo, TrimResult};
+pub use self::types::{AspectSkip, TrimBounds, TrimInfo, TrimResult};
 
 // ======================================================================
 // トリミング

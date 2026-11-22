@@ -245,6 +245,7 @@ fn process_one(
             image,
             icc_profile,
             dpi,
+            source_format,
             ..
         },
         mut permit,
@@ -268,6 +269,7 @@ fn process_one(
         path,
         out_dir,
         params.format,
+        source_format,
         params.save_options,
     )?;
     Ok(file_renamed)

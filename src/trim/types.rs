@@ -91,6 +91,15 @@ pub struct TrimResult {
     pub background: [u8; 4],
 }
 
+/// アスペクト比の固定が適用されなかった理由
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AspectSkip {
+    /// 結果が出力サイズの上限 (幅・高さ・画素数) を超える
+    SizeLimit,
+    /// 切り詰めた結果が元画像と重ならない
+    OutsideImage,
+}
+
 /// `detect_trim` の戻り値 (切り出し前のトリミング矩形)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrimBounds {
@@ -98,4 +107,6 @@ pub struct TrimBounds {
     pub info: TrimInfo,
     /// 使用した背景色 (RGBA)
     pub background: [u8; 4],
+    /// アスペクト比の固定が適用されなかった理由。適用した場合・指定がない場合は `None`
+    pub aspect_skip: Option<AspectSkip>,
 }

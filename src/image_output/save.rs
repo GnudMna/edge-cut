@@ -10,7 +10,7 @@ use image::{DynamicImage, ImageFormat};
 
 use super::encode::encode_image;
 use super::error::SaveError;
-use super::format::OutputFormat;
+use super::format::{OutputFormat, sniff_format};
 use super::path::trimmed_file_stem;
 use super::temp_file::TempFile;
 use crate::consts::{
@@ -246,6 +246,7 @@ pub fn save_trimmed_output(
         source,
         out_dir,
         format,
+        sniff_format(source),
         SaveOptions::default(),
     )
 }
@@ -262,6 +263,7 @@ pub fn save_trimmed_output(
 /// * `source`      - 元画像ファイルのパス (名前と `Original` 時の形式に使う)
 /// * `out_dir`     - 出力先ディレクトリ (作成済みであること)
 /// * `format`      - 出力形式
+/// * `source_format` - 読み込み時に判定済みの元画像の形式 (`Original` 時の拡張子に使い、元ファイルは開き直さない)
 /// * `options`     - エンコード設定
 ///
 /// # Returns
@@ -269,6 +271,10 @@ pub fn save_trimmed_output(
 ///
 /// # Errors
 /// エンコードまたは書き込みに失敗した場合
+#[expect(
+    clippy::too_many_arguments,
+    reason = "保存に必要な値を呼び出し側が個別に持つため"
+)]
 pub fn save_trimmed_output_with(
     img: &DynamicImage,
     icc_profile: Option<&[u8]>,
@@ -276,6 +282,7 @@ pub fn save_trimmed_output_with(
     source: &Path,
     out_dir: &Path,
     format: OutputFormat,
+    source_format: Option<OutputFormat>,
     options: SaveOptions,
 ) -> Result<(PathBuf, bool), SaveError> {
     let stem = trimmed_file_stem(source);
@@ -285,7 +292,7 @@ pub fn save_trimmed_output_with(
         dpi,
         out_dir,
         &stem,
-        &format.output_extension(source),
+        &format.resolve_extension(source, source_format),
         options,
     )
 }

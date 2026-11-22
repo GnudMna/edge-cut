@@ -45,7 +45,13 @@ impl App {
         };
         self.status = "クリップボードへコピー中…".into();
         let ctx = ctx.clone();
-        self.submit_clipboard_job(ClipboardJob::Copy { image, info, ctx });
+        let icc_profile = self.image.icc_profile.clone();
+        self.submit_clipboard_job(ClipboardJob::Copy {
+            image,
+            info,
+            icc_profile,
+            ctx,
+        });
     }
 
     /// クリップボードの画像をバックグラウンドで読み込む

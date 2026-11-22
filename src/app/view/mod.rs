@@ -4,6 +4,7 @@
 
 mod batch_errors;
 mod close_dialog;
+mod footer;
 mod icons;
 mod input;
 mod preview;
@@ -15,6 +16,12 @@ use eframe::egui;
 
 use super::state::{App, CloseConfirm};
 use super::theme;
+
+/// ステータスバーの上下の余白
+const STATUS_BAR_SPACING: f32 = 5.0;
+
+/// ツールバーの上下の余白
+const TOOLBAR_SPACING: f32 = 3.0;
 
 // ======================================================================
 // UI 描画
@@ -40,8 +47,7 @@ impl eframe::App for App {
         input::handle_file_drop(self, &ctx);
         self.handle_shortcuts(&ctx);
 
-        let sp = if self.prefs.compact_mode { 2.0 } else { 5.0 };
-        self.render_bottom_panel(ui, sp);
+        self.render_bottom_panel(ui, &ctx);
         self.render_top_panel(ui, &ctx);
         self.render_settings_panel(ui, &ctx);
         self.render_central_panel(ui);
@@ -52,7 +58,12 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn render_bottom_panel(&mut self, ui: &mut egui::Ui, sp: f32) {
+    /// 下端のステータスバー (処理状況・エラー一覧・背景色の手動指定)
+    ///
+    /// トリミング後のサイズは設定パネル下部に出すため、パネルを閉じている間だけここに出す
+    fn render_bottom_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let sp = STATUS_BAR_SPACING;
+        let show_size = !settings::is_panel_open(ctx);
         let frame = panel_frame(ui, 12, 0);
         egui::Panel::bottom("bottom").frame(frame).show(ui, |ui| {
             ui.add_space(sp);
@@ -103,24 +114,12 @@ impl App {
                     )
                     .on_hover_text("設定パネルの「自動に戻す」で解除できる");
                 }
-                if let Some(ref info) = self.image.info {
+                if let Some(info) = self.image.info.filter(|_| show_size) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let detail = if self.prefs.compact_mode {
-                            format!(
-                                "{}×{} → {}×{}",
-                                info.orig_w, info.orig_h, info.trim_w, info.trim_h,
-                            )
-                        } else {
-                            format!(
-                                "元 {}×{}  →  トリム {}×{}  (x={} y={})",
-                                info.orig_w,
-                                info.orig_h,
-                                info.trim_w,
-                                info.trim_h,
-                                info.offset_x,
-                                info.offset_y,
-                            )
-                        };
+                        let detail = format!(
+                            "元 {}×{}  →  トリム {}×{}",
+                            info.orig_w, info.orig_h, info.trim_w, info.trim_h,
+                        );
                         ui.label(egui::RichText::new(detail).small().weak());
                     });
                 }
@@ -130,7 +129,7 @@ impl App {
     }
 
     fn render_top_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let sp = if self.prefs.compact_mode { 0.0 } else { 3.0 };
+        let sp = TOOLBAR_SPACING;
         let frame = panel_frame(ui, 10, 5);
         egui::Panel::top("top").frame(frame).show(ui, |ui| {
             ui.add_space(sp);

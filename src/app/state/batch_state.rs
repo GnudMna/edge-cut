@@ -32,6 +32,8 @@ pub(in crate::app) struct BatchState {
     pub errors_open: bool,
     /// 対象外として除外した入力ファイル数 (完了時の要約に追記する)
     pub skipped_inputs: usize,
+    /// 直近に一括トリミングを開始した保存先 (次回の保存先ダイアログの初期位置にする)
+    pub last_output_dir: Option<std::path::PathBuf>,
     /// 実行中にウィンドウを閉じようとした際の終了確認の状態
     pub close_confirm: CloseConfirm,
     /// 終了時の待機期限 (`IoState` と共有する)
@@ -48,6 +50,7 @@ impl Default for BatchState {
             last_error_details: Vec::new(),
             errors_open: false,
             skipped_inputs: 0,
+            last_output_dir: None,
             close_confirm: CloseConfirm::None,
             shutdown_deadline: super::SharedDeadline::default(),
         }

@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 
 use known_folders::{KnownFolder, get_known_folder_path};
 
+use super::bridge_key::bridge_download_key;
 use super::error::UpdateError;
 use super::signature::{
     download_signature, embedded_signing_keys, signature_asset_name, verify_file_signature,
 };
 use super::types::{AvailableUpdate, UpdateApplyOutcome};
 use super::verify::{download_and_verify_with_key, validate_asset_name};
-use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO, bridge_download_key};
+use super::{BRIDGE_BASE_URL, RELEASE_OWNER, RELEASE_REPO};
 
 // ======================================================================
 // パブリック関数
@@ -73,11 +74,13 @@ pub(crate) fn apply_update_at(
     };
 
     let archive_path = work_dir.join(&update.asset_name);
+    // 復号したキーは破棄時にゼロ化される
+    let download_key = bridge_download_key();
     if let Err(err) = download_verified_asset(
         update,
         base_url,
         &archive_path,
-        bridge_download_key(),
+        download_key.as_ref().map(|key| key.as_str()),
         trusted_keys,
     ) {
         return err.into();

@@ -6,7 +6,7 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::app::trim_worker::TrimWorkerHandle;
-use crate::trim::{TrimInfo, TrimOptions};
+use crate::trim::{AspectSkip, TrimInfo, TrimOptions};
 
 /// トリミング結果を決めるパラメータ (トリミングの設定そのもの)
 pub(in crate::app) type TrimParams = TrimOptions;
@@ -28,6 +28,8 @@ pub(in crate::app) struct TrimPreview {
     pub params: TrimParams,
     pub info: TrimInfo,
     pub background: [u8; 4],
+    /// アスペクト比の固定が適用されなかった理由
+    pub aspect_skip: Option<AspectSkip>,
 }
 
 /// プレビュートリミングのバックグラウンド処理

@@ -176,7 +176,6 @@ pub const MAX_ICC_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(test)]
 #[expect(
     clippy::assertions_on_constants,
-    clippy::float_cmp,
     reason = "定数の値そのものを検証するテストのため"
 )]
 mod tests {
@@ -185,7 +184,7 @@ mod tests {
     /// アプリケーション名が空でないこと
     #[test]
     fn app_name_is_not_empty() {
-        assert!(!APP_NAME.is_empty());
+        assert_ne!(APP_NAME, "");
     }
 
     /// デフォルトのウインドウサイズが最小サイズより大きいこと
@@ -276,7 +275,7 @@ mod tests {
     /// 対応拡張子リストが空でなく、代表形式を含むこと
     #[test]
     fn supported_image_extensions_include_common_formats() {
-        assert!(!SUPPORTED_IMAGE_EXTENSIONS.is_empty());
+        assert_ne!(SUPPORTED_IMAGE_EXTENSIONS, &[] as &[&str]);
         assert!(is_supported_image_extension("png"));
         assert!(is_supported_image_extension("jpeg"));
         assert!(is_supported_image_extension("tiff"));

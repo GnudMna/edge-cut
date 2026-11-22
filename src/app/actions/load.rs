@@ -154,7 +154,7 @@ mod tests {
             ..App::default()
         };
         app.clear_image();
-        assert!(!app.status.is_empty());
+        assert_ne!(app.status, "");
         // デフォルトメッセージに戻っていることを確認
         assert!(app.status.contains("画像を開く"));
     }

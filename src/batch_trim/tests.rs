@@ -309,7 +309,7 @@ fn batch_parallel_saves_all_files_and_reports_progress() {
     );
 
     assert_eq!(result.saved, inputs.len());
-    assert!(result.errors.is_empty());
+    assert_eq!(result.errors.len(), 0, "{:?}", result.errors);
     assert!(!result.cancelled);
     for i in 0..inputs.len() {
         assert!(out.join(format!("img{i}_trimmed.png")).is_file());

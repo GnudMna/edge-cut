@@ -24,7 +24,7 @@ pub(super) use self::image_state::{BackgroundState, ImageState, PaneView};
 pub(super) use self::io_state::{
     AutoSaveKey, DialogResult, IoMsg, IoState, SaveKind, SaveRequest, ScannedDrop,
 };
-pub(super) use self::settings::{SETTINGS_KEY, Settings};
+pub(super) use self::settings::{PreviewMode, SETTINGS_KEY, Settings};
 pub(super) use self::trim_state::{TrimPreview, TrimWorkerResult, TrimWorkerState};
 pub(super) use self::update_state::{UpdateState, UpdateUiPhase, UpdateWorkerMsg};
 

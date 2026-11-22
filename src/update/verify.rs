@@ -373,7 +373,7 @@ mod tests {
 
         let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 4).expect_err("cap");
         assert!(err.to_string().contains("サイズ"));
-        assert!(out.is_empty());
+        assert_eq!(out, b"");
     }
 
     /// 複数チャンクでも累積が上限を超えた時点で打ち切るようにすること

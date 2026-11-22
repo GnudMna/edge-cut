@@ -224,7 +224,7 @@ mod tests {
         let tmp = tempfile::Builder::new().suffix(".png").tempdir().unwrap();
         let (images, skipped) = partition_supported_images(vec![tmp.path().to_path_buf()]);
 
-        assert!(images.is_empty());
+        assert_eq!(images, Vec::<PathBuf>::new());
         assert_eq!(skipped, 1);
     }
 

@@ -8,10 +8,35 @@
 
 #requires -Version 7.0
 
+# pwsh がスクリプトファイル実行用に起動されたか (対話セッションで .\script.ps1 した場合は false)
+function Test-StartedAsFileInvocation {
+    $arguments = @([Environment]::GetCommandLineArgs())
+    if ($arguments.Count -lt 2) {
+        return $false
+    }
+
+    for ($i = 1; $i -lt $arguments.Count; $i++) {
+        $argument = $arguments[$i]
+        if ($argument -match '^-(File|f|Command|c|EncodedCommand)(:.*)?$') {
+            return $true
+        }
+        if ($argument -match '\.ps1$') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 # エクスプローラー経由の起動かどうかを直接の親プロセスで判定する
 # (祖先まで辿ると、スタートメニュー等から起動したターミナル配下でも常に true になる)
 function Test-LaunchedFromExplorer {
     try {
+        # 対話ホスト内での実行は、親が explorer でも待たない
+        if (-not (Test-StartedAsFileInvocation)) {
+            return $false
+        }
+
         $self = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
         if (-not $self -or $self.ParentProcessId -eq 0) {
             return $false
@@ -66,7 +91,12 @@ function Invoke-ScriptMain {
     $isOuterInvocation = $global:EdgeCutScriptMainDepth -eq 1
     $exitCode = 0
 
+    # カレントディレクトリはセッション全体で共有されるため、終了時に呼び出し元へ戻す
+    Push-Location
+
     try {
+        # 直前コマンドの終了コードが混入しないよう、本体の実行前に戻す
+        $global:LASTEXITCODE = 0
         & $Body
 
         if ((Test-Path variable:LASTEXITCODE) -and $LASTEXITCODE -ne 0) {
@@ -74,14 +104,17 @@ function Invoke-ScriptMain {
         }
     } catch {
         $exitCode = 1
-        Write-Host ''
+
+        # Write-Error は $ErrorActionPreference = 'Stop' 下で再スローされるため、stderr へ直接書く
+        [Console]::Error.WriteLine('')
 
         if ($_.Exception.Message) {
-            Write-Host $_.Exception.Message
+            [Console]::Error.WriteLine($_.Exception.Message)
         } else {
-            Write-Host $_
+            [Console]::Error.WriteLine([string]$_)
         }
     } finally {
+        Pop-Location
         $global:EdgeCutScriptMainDepth--
 
         # 他スクリプトから呼ばれた場合は Enter 待ちしない (最外の直接実行時のみ)

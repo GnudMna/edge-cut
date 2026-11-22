@@ -180,7 +180,7 @@ impl OutputFormat {
 ///
 /// # Returns
 /// * `Option<OutputFormat>` - 判定できた形式。読めない・出力非対応の形式は `None`
-fn sniff_format(source: &Path) -> Option<OutputFormat> {
+pub(super) fn sniff_format(source: &Path) -> Option<OutputFormat> {
     let file = std::fs::File::open(source).ok()?;
     let format = ImageReader::new(BufReader::new(file))
         .with_guessed_format()

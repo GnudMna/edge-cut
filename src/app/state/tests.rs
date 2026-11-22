@@ -23,6 +23,22 @@ fn new_default_tolerance_and_padding_are_zero() {
     assert_eq!(app.prefs.padding, 0);
 }
 
+/// 旧バージョンが保存した `compact_mode` があっても、残りの設定を読み込めること
+///
+/// コンパクト表示は表示モードの「結果」に置き換えたため、値は引き継がない
+#[test]
+fn app_new_ignores_legacy_compact_mode() {
+    let mut storage = TestStorage::default();
+    storage.set_string(
+        SETTINGS_KEY,
+        "(tolerance: 7, compact_mode: true)".to_owned(),
+    );
+
+    let app = App::new(Some(&storage));
+    assert_eq!(app.prefs.tolerance, 7);
+    assert_eq!(app.prefs.preview_mode, PreviewMode::Range);
+}
+
 /// `App::default()` がステータスメッセージを適切に初期化すること
 #[test]
 fn new_dark_mode_enabled_by_default() {
@@ -37,18 +53,18 @@ fn new_auto_save_disabled_by_default() {
     assert!(!app.prefs.auto_save);
 }
 
-/// `App::default()` がコンパクトモードをデフォルトで無効にすること
+/// `App::default()` がプレビューを範囲表示から始めること
 #[test]
-fn new_compact_mode_disabled_by_default() {
+fn new_preview_mode_is_range_by_default() {
     let app = App::default();
-    assert!(!app.prefs.compact_mode);
+    assert_eq!(app.prefs.preview_mode, PreviewMode::Range);
 }
 
 /// `App::default()` がステータスメッセージを適切に初期化すること
 #[test]
 fn new_status_message_is_not_empty() {
     let app = App::default();
-    assert!(!app.status.is_empty());
+    assert_ne!(app.status, "");
 }
 
 /// `App::default()` が自動保存ディレクトリを適切に初期化すること
@@ -109,14 +125,14 @@ fn app_new_fills_missing_settings_fields_with_defaults() {
     let mut storage = TestStorage::default();
     storage.set_string(
         SETTINGS_KEY,
-        "(tolerance: 42, compact_mode: true)".to_owned(),
+        "(tolerance: 42, preview_mode: Result)".to_owned(),
     );
 
     let app = App::new(Some(&storage));
     let defaults = Settings::default();
     // 保存データにあるフィールドは復元される
     assert_eq!(app.prefs.tolerance, 42);
-    assert!(app.prefs.compact_mode);
+    assert_eq!(app.prefs.preview_mode, PreviewMode::Result);
     // 無いフィールドは既定値になる
     assert_eq!(app.prefs.padding, defaults.padding);
     assert_eq!(app.prefs.dark_mode, defaults.dark_mode);

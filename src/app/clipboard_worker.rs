@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use eframe::egui;
 use image::DynamicImage;
 
+use super::image_convert::convert_to_srgb;
 use super::state::IoMsg;
 use crate::image_load::{check_dimensions, validate_clipboard_rgba};
 use crate::panic_message::catch_panic;
@@ -30,6 +31,8 @@ pub(super) enum ClipboardJob {
         image: Arc<DynamicImage>,
         /// 切り出すトリミング矩形
         info: TrimInfo,
+        /// 元画像の ICC プロファイル。あれば sRGB へ変換してからコピーする
+        icc_profile: Option<Arc<[u8]>>,
         ctx: egui::Context,
     },
     /// クリップボードの画像を取得し、完了を `IoMsg::Pasted` で通知する
@@ -67,11 +70,16 @@ impl ClipboardWorkerHandle {
             let mut clipboard: Option<arboard::Clipboard> = None;
             while let Ok(job) = job_rx.recv() {
                 match job {
-                    ClipboardJob::Copy { image, info, ctx } => {
+                    ClipboardJob::Copy {
+                        image,
+                        info,
+                        icc_profile,
+                        ctx,
+                    } => {
                         let result = run_guarded("コピー", &mut clipboard, |clipboard| {
                             let trimmed = apply_trim(&image, &info);
                             get_clipboard(clipboard).and_then(|cb| {
-                                cb.set_image(to_clipboard_data(&trimmed))
+                                cb.set_image(to_clipboard_data(&trimmed, icc_profile.as_deref()))
                                     .map_err(|e| format!("コピーエラー: {e}"))
                             })
                         });
@@ -284,13 +292,23 @@ fn dib_dimensions(header: &[u8]) -> Option<(u32, u32)> {
 // ======================================================================
 /// 画像をクリップボード転送用の RGBA データへ変換する
 ///
+/// クリップボードには ICC プロファイルを載せられないため、RGB / GRAY のプロファイルがあれば
+/// sRGB へ変換して、貼り付け先でもプレビューと同じ色に見えるようにする
+///
 /// # Arguments
 /// * `image` - コピーする画像
+/// * `icc_profile` - 元画像の ICC プロファイル。`None` や変換できないプロファイルは sRGB として扱う
 ///
 /// # Returns
 /// * `arboard::ImageData<'static>` - RGBA8 のバッファを所有する画像データ
-fn to_clipboard_data(image: &DynamicImage) -> arboard::ImageData<'static> {
-    let rgba = image.to_rgba8();
+fn to_clipboard_data(
+    image: &DynamicImage,
+    icc_profile: Option<&[u8]>,
+) -> arboard::ImageData<'static> {
+    let mut rgba = image.to_rgba8();
+    if let Some(icc) = icc_profile {
+        convert_to_srgb(&mut rgba, icc);
+    }
     let (w, h) = rgba.dimensions();
     arboard::ImageData {
         width: w as usize,
@@ -366,7 +384,7 @@ mod tests {
         let buf: Vec<u8> = (0u8..2 * 3 * 4).collect();
         let original = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 3, buf).unwrap());
 
-        let data = to_clipboard_data(&original);
+        let data = to_clipboard_data(&original, None);
         assert_eq!((data.width, data.height), (2, 3));
 
         let restored = from_clipboard_data(data).unwrap();
@@ -377,9 +395,32 @@ mod tests {
     #[test]
     fn to_clipboard_data_converts_rgb_to_rgba() {
         let rgb = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])));
-        let data = to_clipboard_data(&rgb);
+        let data = to_clipboard_data(&rgb, None);
         assert_eq!(data.bytes.len(), 2 * 2 * 4);
         assert_eq!(&data.bytes[..4], &[1, 2, 3, 255]);
+    }
+
+    /// ICC プロファイルがあるとコピーするデータが sRGB へ変換されること
+    ///
+    /// プロファイルなしや壊れたプロファイルでは画素を変更しない
+    #[test]
+    fn to_clipboard_data_converts_icc_profile_to_srgb() {
+        let icc = moxcms::ColorProfile::new_display_p3().encode().unwrap();
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([200, 100, 50, 128]),
+        ));
+
+        let plain = to_clipboard_data(&img, None);
+        let converted = to_clipboard_data(&img, Some(&icc));
+        // 色は変わり、アルファは保たれる
+        assert_ne!(&converted.bytes[..3], &plain.bytes[..3]);
+        assert_eq!(converted.bytes[3], 128);
+
+        // 壊れたプロファイルは無視する
+        let broken = to_clipboard_data(&img, Some(&[1, 2, 3]));
+        assert_eq!(broken.bytes, plain.bytes);
     }
 
     /// PNG の `IHDR` から幅と高さを取り出し、PNG でないデータは `None` になること

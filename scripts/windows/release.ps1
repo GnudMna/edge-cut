@@ -7,7 +7,8 @@
 # Requires    : PowerShell 7.0+, Git
 #
 # 前提:
-#   - 環境変数 EDGE_CUT_KEY を設定すること (gh-release-bridge ダウンロードキー。ビルド時埋め込み)
+#   - 環境変数 EDGE_CUT_KEY_FILE に gh-release-bridge ダウンロードキーを保存したファイルのパスを設定すること (ビルド時埋め込み)
+#     (廃止した EDGE_CUT_KEY は設定しないこと)
 #   - 環境変数 EDGE_CUT_SIGNING_KEY に更新署名用 minisign 秘密鍵のパスを設定すること
 #     (keys/update-signing/*.pub に対応する公開鍵があり、minisign コマンドが使えること)
 #   - mdBook (MSI に同梱する利用者向けドキュメントの生成。版は scripts/common/build-user-docs.ps1 に固定)
@@ -64,12 +65,22 @@ Invoke-ScriptMain {
         throw 'エラー: -Version と -Bump は同時に指定できません'
     }
 
-    # MSI を作る場合のみビルド前に前提を確認する (build-msi.ps1 も EDGE_CUT_KEY を検証する)
+    # MSI を作る場合のみビルド前に前提を確認する (build-msi.ps1 も EDGE_CUT_KEY_FILE を検証する)
     $signingSecretKey = $null
     if (-not $SkipMsi) {
-        $bridgeDownloadKey = [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY')
-        if ([string]::IsNullOrWhiteSpace($bridgeDownloadKey)) {
-            throw 'エラー: 環境変数 EDGE_CUT_KEY が未設定または空です (gh-release-bridge のダウンロードキー。ビルド時に埋め込まれます)'
+        # キーの中身は build.rs が検証するので、ここではファイルの有無と空でないことだけ確かめる
+        if ($null -ne [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY')) {
+            throw 'エラー: 環境変数 EDGE_CUT_KEY は廃止しました。キーをファイルに保存して EDGE_CUT_KEY_FILE にそのパスを設定し、EDGE_CUT_KEY は削除してください'
+        }
+        $bridgeKeyFile = [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY_FILE')
+        if ([string]::IsNullOrWhiteSpace($bridgeKeyFile)) {
+            throw 'エラー: 環境変数 EDGE_CUT_KEY_FILE が未設定です (gh-release-bridge のダウンロードキーを保存したファイルのパス。ビルド時に埋め込まれます)'
+        }
+        if (-not (Test-Path -LiteralPath $bridgeKeyFile -PathType Leaf)) {
+            throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが見つかりません: $bridgeKeyFile"
+        }
+        if ((Get-Item -LiteralPath $bridgeKeyFile).Length -eq 0) {
+            throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが空です: $bridgeKeyFile"
         }
 
         # 署名なしのアセットはアプリが適用しないため、ビルド前に署名の準備を確認する

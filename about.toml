@@ -30,7 +30,7 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 
-# 本体 (publish = false) は独自ライセンスで SPDX 式を持たず、LICENSE が MPL-2.0 と誤判定されるため対象外にする
+# 本体 (publish = false) は第三者ソフトウェアではないため対象外にする
 # 本体の利用条件は LICENSE を参照する旨をテンプレートに記載している
 private = { ignore = true }
 
