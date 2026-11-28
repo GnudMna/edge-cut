@@ -109,6 +109,8 @@ impl TempFile {
 
         cleanup_stale_once(dir);
 
+        // 全ての名前で権限エラーになった場合に、衝突ではなく本来の原因を返すため保持する
+        let mut denied = None;
         for n in 0..TEMP_FILE_ATTEMPTS {
             // 保存名が長くても 255 文字の制限を超えないよう、保存名を含めない固定長の名前にする
             let path = dir.join(format!("{TEMP_PREFIX}{}-{n}{TEMP_SUFFIX}", process::id()));
@@ -116,6 +118,12 @@ impl TempFile {
             let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                // Windows は別スレッドが削除中 (削除保留) の同名ファイルに対し、
+                // 衝突ではなくアクセス拒否を返すため、次の名前を試す
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    denied = Some(e);
+                    continue;
+                }
                 Err(e) => return Err(e),
             };
             // 保存先へ移した後に中身が欠けないよう、移す前にディスクへ反映させる
@@ -128,7 +136,7 @@ impl TempFile {
             };
             return written.map(|()| temp);
         }
-        Err(io::Error::from(io::ErrorKind::AlreadyExists))
+        Err(denied.unwrap_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists)))
     }
 
     /// 一時ファイルを `target` へ rename して置き換える (既存ファイルは上書き)
@@ -193,6 +201,26 @@ impl Drop for TempFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 複数スレッドが同じフォルダで一時ファイルの作成と削除を繰り返しても失敗しないこと
+    ///
+    /// Windows では削除中の同名ファイルを作ろうとするとアクセス拒否になるため、次の名前を試す
+    #[test]
+    fn temp_file_write_succeeds_while_other_threads_drop_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.png");
+
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..200 {
+                        let temp = TempFile::write(&target, b"data").unwrap();
+                        drop(temp);
+                    }
+                });
+            }
+        });
+    }
 
     /// ハードリンク非対応時の代替経路で、既存ファイルを上書きせずに新規作成できること
     #[test]

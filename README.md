@@ -1,28 +1,18 @@
 <div align="center">
   <br>
   <img src="assets/icons/icon.png" alt="EdgeCut" width="120" />
-  <h1>✂️ EdgeCut</h1>
+  <h1>EdgeCut</h1>
   <p><b>画像の背景余白を自動検出・トリミングするデスクトップ GUI ツール</b></p>
   <p>
-    <sub>Rust 製 &nbsp;·&nbsp; egui によるリアルタイムプレビュー &nbsp;·&nbsp; Windows 専用</sub>
+    <a href="https://github.com/GnudMna/edge-cut/releases/latest"><img src="https://img.shields.io/github/v/release/GnudMna/edge-cut?label=release&color=2563EB&style=flat-square" alt="最新リリース"></a>
+    <img src="https://img.shields.io/badge/platform-Windows_10%2B-0078D4?logo=windows&logoColor=white&style=flat-square" alt="platform: Windows 10+">
+    <img src="https://img.shields.io/badge/runtime-WebView2-0F766E?logo=microsoftedge&logoColor=white&style=flat-square" alt="runtime: WebView2">
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.100-CE422B?logo=rust&logoColor=white&style=flat-square" alt="Rust 1.100"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square" alt="license: MIT"></a>
   </p>
-  <br>
-  <a href="https://www.rust-lang.org/">
-    <img src="https://img.shields.io/badge/Rust-2024_edition-CE422B?logo=rust&logoColor=white&style=for-the-badge" alt="Rust">
-  </a>
-  <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiIHJvbGU9ImltZyI%2BPHRpdGxlPkNvcHlyaWdodDwvdGl0bGU%2BPHBhdGggZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwem0wIDJhOCA4IDAgMSAxIDAgMTYgOCA4IDAgMCAxIDAtMTZ6bS0xIDQuNWMtMi4yIDAtMy41IDEuNi0zLjUgMy41czEuMyAzLjUgMy41IDMuNWMxLjEgMCAyLS41IDIuNi0xLjJsLTEuMi0xLjJjLS40LjUtMSAuOC0xLjYuOC0xLjIgMC0yLS45LTItMnMuOC0yIDItMmMuNiAwIDEuMS4yIDEuNS42bDEuMi0xLjJjLS43LS43LTEuNy0xLjEtMi45LTEuMXoiLz48L3N2Zz4%3D&logoColor=white" alt="MIT License">
-  </a>
-  <img src="https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white&style=for-the-badge" alt="Windows">
-  <a href="https://github.com/emilk/egui">
-    <img src="https://img.shields.io/badge/GUI-egui%20%2F%20eframe-7C3AED?style=for-the-badge" alt="egui">
-  </a>
-  <br><br>
 </div>
 
 ---
-
-<br>
 
 <table align="center">
   <tr>
@@ -55,7 +45,7 @@
 
 ## 主な機能
 
-上の 4 点に加えて、次の機能がある。
+上の 4 点のほかに、次の機能がある。
 
 | 機能 | 概要 |
 | :--- | :--- |
@@ -73,19 +63,30 @@
 
 ## 動作要件とインストール
 
-- **対応 OS:** Windows 10 以降のみ。Linux / macOS は非対応
-- **インストール:** MSI インストーラーで、ユーザー単位で `%LOCALAPPDATA%\edge-cut` へインストールする。管理者権限は不要
-  - スタートメニューに **EdgeCut** と **EdgeCut ドキュメント** が追加される
-  - インストーラーではユーザー `PATH` への追加も選択できる
+### 動作要件
 
-ソースからビルドする場合は [開発環境とビルド](docs/dev/setup.md) を参照。
+| 項目 | 要件 |
+| :--- | :--- |
+| OS | Windows 10 以降 (Linux / macOS は非対応) |
+| ランタイム | Microsoft Edge WebView2 ランタイム (Windows 11 には標準で入っている。Windows 10 で起動できない場合は Microsoft のサイトから導入する) |
+
+### インストール
+
+[最新のリリース](https://github.com/GnudMna/edge-cut/releases/latest) から、次のどちらかを入手する。
+
+| 配布形態 | ファイル | 使い方 |
+| :--- | :--- | :--- |
+| MSI インストーラー | `edge-cut-{バージョン}-x86_64.msi` | 実行すると `%LOCALAPPDATA%\edge-cut` へユーザー単位でインストールされる (管理者権限は不要)。スタートメニューに **EdgeCut** と **EdgeCut ドキュメント** が追加され、ユーザー `PATH` への追加も選べる |
+| ポータブル版 | `edge-cut-{バージョン}-x86_64-portable.zip` | インストール不要。展開したフォルダの `EdgeCut.exe` を起動する。設定などはそのフォルダの `data` に保存する |
+
+どちらもメニューの「更新を確認…」で新しい版に更新できる ([アプリ更新](docs/user/usage.md#アプリ更新))。ソースからビルドする場合は [開発環境とビルド](docs/dev/setup.md) を参照。
 
 ---
 
 ## クイックスタート
 
 1. EdgeCut を起動し、「開く」で画像を選ぶか、画像をウィンドウへドラッグ & ドロップする
-2. 背景色が自動で検出され、元画像とトリミング後が左右に並んで表示される
+2. 背景色が自動で検出され、元画像にトリミング範囲が重ねて表示される (「結果」「並べて」で表示を切り替えられる)
 3. 右側の設定パネルにある「許容度」「余白」のスライダーで仕上がりを調整する
 4. 「保存」(<kbd>Ctrl</kbd> + <kbd>S</kbd>) でファイルへ書き出すか、「コピー」(<kbd>Ctrl</kbd> + <kbd>C</kbd>) でクリップボードへコピーする
 
@@ -107,7 +108,7 @@
 | [トラブルシューティング](docs/user/troubleshooting.md) | 症状別の確認事項 |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 
-利用者向けドキュメントは、MSI に HTML で同梱している。
+利用者向けドキュメントは、MSI とポータブル版に HTML で同梱している。
 
 ### 開発者向け
 

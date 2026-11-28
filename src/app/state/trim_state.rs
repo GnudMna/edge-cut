@@ -3,7 +3,7 @@
 use std::sync::mpsc;
 use std::time::Instant;
 
-use eframe::egui;
+use image::RgbaImage;
 
 use crate::app::trim_worker::TrimWorkerHandle;
 use crate::trim::{AspectSkip, TrimInfo, TrimOptions};
@@ -19,7 +19,7 @@ pub(in crate::app) struct TrimWorkerResult {
     /// 元画像のプレビュー画像。要求があり生成できた場合のみ `Some`
     ///
     /// 検出が失敗した場合でも元画像を表示できるよう、`outcome` とは独立して返す
-    pub orig_color: Option<egui::ColorImage>,
+    pub orig_color: Option<RgbaImage>,
 }
 
 /// プレビュートリミングの検出結果

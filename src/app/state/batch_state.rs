@@ -22,6 +22,8 @@ pub(in crate::app) struct BatchState {
     pub rx: Option<std::sync::mpsc::Receiver<crate::batch_trim::BatchProgress>>,
     /// 処理が実行中かどうか
     pub running: bool,
+    /// 進捗 (処理済みの件数, 全件数)。UI の進捗表示に使う
+    pub progress: (usize, usize),
     /// キャンセルフラグ。`true` にセットすると次のファイル処理前に停止する
     pub cancel: Arc<AtomicBool>,
     /// 実行中の一括トリミングスレッド。終了時に完了を待つ
@@ -45,6 +47,7 @@ impl Default for BatchState {
         Self {
             rx: None,
             running: false,
+            progress: (0, 0),
             cancel: Arc::new(AtomicBool::new(false)),
             handle: None,
             last_error_details: Vec::new(),

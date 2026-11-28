@@ -1,7 +1,5 @@
 //! クリップボードへのコピー・貼り付け
 
-use eframe::egui;
-
 use crate::app::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
 use crate::app::state::App;
 
@@ -38,19 +36,18 @@ impl App {
     /// 完了後は `poll_io` でステータスを更新する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn copy_trimmed_to_clipboard(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn copy_trimmed_to_clipboard(&mut self) {
         let Some((image, info)) = self.current_trim_target() else {
             return;
         };
         self.status = "クリップボードへコピー中…".into();
-        let ctx = ctx.clone();
+        let waker = self.waker.clone();
         let icc_profile = self.image.icc_profile.clone();
         self.submit_clipboard_job(ClipboardJob::Copy {
             image,
             info,
             icc_profile,
-            ctx,
+            waker,
         });
     }
 
@@ -61,12 +58,13 @@ impl App {
     /// 貼り付けが失敗した場合 (クリップボードが空など) は読み込みを継続する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn paste_from_clipboard(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn paste_from_clipboard(&mut self) {
         let request_id = self.io.load_request_id;
         self.status = "クリップボードから貼り付け中…".into();
-        let ctx = ctx.clone();
-        self.submit_clipboard_job(ClipboardJob::Paste { request_id, ctx });
+        self.submit_clipboard_job(ClipboardJob::Paste {
+            request_id,
+            waker: self.waker.clone(),
+        });
     }
 }
 
@@ -75,16 +73,14 @@ impl App {
 // ======================================================================
 #[cfg(test)]
 mod tests {
-    use eframe::egui;
-
     use crate::app::actions::test_helpers::{poll_io_until, trimmed_image_state};
     use crate::app::clipboard_worker::{ClipboardJob, ClipboardWorkerHandle};
     use crate::app::state::App;
+    use crate::app::waker::Waker;
 
     /// 再計算のデバウンス待ち中は前回の矩形でコピーしないこと
     #[test]
     fn copy_is_ignored_while_trim_is_pending() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: trimmed_image_state(),
             ..App::default()
@@ -94,12 +90,12 @@ mod tests {
 
         // スライダー操作直後 (デバウンス待ち) の状態にする
         app.prefs.tolerance = 1;
-        app.schedule_trim(&ctx, true, false, false);
+        app.schedule_trim(true, false, false);
         assert!(!app.has_current_trim());
         assert!(app.current_trim_target().is_none());
 
         // コピーは開始されずステータスも変わらない
-        app.copy_trimmed_to_clipboard(&ctx);
+        app.copy_trimmed_to_clipboard();
         assert_eq!(app.status, "初期");
         assert!(app.clipboard.is_none());
     }
@@ -109,18 +105,19 @@ mod tests {
     /// 実クリップボードに依存しないよう、固定結果を返す `Probe` ジョブを使う
     #[test]
     fn submit_clipboard_job_restarts_terminated_worker() {
-        let ctx = egui::Context::default();
         let mut app = App {
             status: "初期".into(),
             clipboard: Some(ClipboardWorkerHandle::terminated()),
             ..App::default()
         };
 
-        app.submit_clipboard_job(ClipboardJob::Probe { ctx: ctx.clone() });
+        app.submit_clipboard_job(ClipboardJob::Probe {
+            waker: Waker::noop(),
+        });
 
         // 失敗扱いにならず、起動し直したワーカーが結果を返す
         assert_ne!(app.status, "クリップボード処理が異常終了しました");
-        let done = poll_io_until(&mut app, &ctx, |a| a.status != "初期");
+        let done = poll_io_until(&mut app, |a| a.status != "初期");
         assert!(done, "再送されたジョブの結果を期待したが: {}", app.status);
         assert_eq!(app.status, "クリップボードへコピーしました");
     }

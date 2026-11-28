@@ -5,8 +5,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::thread;
 
-use eframe::egui;
-
 use crate::app::state::{App, AutoSaveKey, DialogResult, IoMsg, SaveKind, SaveRequest};
 use crate::consts::is_supported_image_extension;
 use crate::image_output::{self, OutputFormat, SaveOptions};
@@ -25,8 +23,7 @@ impl App {
     /// 元画像の切り出しも保存スレッドで行う
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn save_image(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn save_image(&mut self) {
         if self.reject_file_work_while_updating() {
             return;
         }
@@ -38,6 +35,7 @@ impl App {
         // 形式は読み込み時に判定済みのものを使い、UI スレッドでファイルを開かない
         let ext = format.resolve_extension(&source, self.image.source_format);
         let file_name = format!("{}.{ext}", image_output::trimmed_file_stem(&source));
+        let source_dir = self.image.source_dir.clone();
         let request = SaveRequest {
             original,
             info,
@@ -45,8 +43,12 @@ impl App {
             dpi: self.image.dpi,
             ext,
         };
-        self.spawn_dialog(ctx, move |dialog| {
+        self.spawn_dialog(move |dialog| {
             let mut dialog = dialog.set_file_name(file_name);
+            // 元画像のフォルダが分かる場合はそこを初期位置にする
+            if let Some(dir) = source_dir {
+                dialog = dialog.set_directory(dir);
+            }
             for f in save_dialog_formats(OutputFormat::from_extension(&request.ext)) {
                 dialog = dialog.add_filter(f.label(), f.extensions());
             }
@@ -58,22 +60,16 @@ impl App {
     /// 選択された保存先へトリミング後の画像をバックグラウンドで保存する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     /// * `request` - 保存対象
     /// * `path` - ダイアログで選択された保存先
-    pub(super) fn start_manual_save(
-        &mut self,
-        ctx: &egui::Context,
-        request: SaveRequest,
-        path: PathBuf,
-    ) {
+    pub(super) fn start_manual_save(&mut self, request: SaveRequest, path: PathBuf) {
         // ダイアログを開いたまま更新の適用が始まった場合もここで止める
         if self.reject_file_work_while_updating() {
             return;
         }
         let path = with_default_extension(path, &request.ext);
         let options = self.save_options();
-        self.spawn_save(ctx, SaveKind::Manual, move || {
+        self.spawn_save(SaveKind::Manual, move || {
             let img = apply_trim(&request.original, &request.info);
             image_output::save_image_with(
                 &img,
@@ -92,18 +88,18 @@ impl App {
         SaveOptions {
             jpeg_quality: self.prefs.jpeg_quality,
             webp_quality: self.prefs.webp_quality,
+            overwrite: self.prefs.overwrite_output,
         }
     }
 
     /// 自動保存が有効な場合にトリミング後の画像を保存先フォルダへバックグラウンドで保存する
     ///
-    /// ファイル名は `{元画像名}_trimmed.{出力形式の拡張子}` とし、既存ファイルは上書きせず連番で回避する
+    /// ファイル名は `{元画像名}_trimmed.{出力形式の拡張子}` とし、既存ファイルは連番で回避する (上書き設定が有効なときは上書きする)
     /// 直前の自動保存と同じ画像・矩形・形式・保存先なら保存しない
     /// 成功時は既存のステータスメッセージに追記し、エラー時のみ上書きする
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(super) fn auto_save_if_enabled(&mut self, ctx: &egui::Context) {
+    pub(super) fn auto_save_if_enabled(&mut self) {
         // 更新の適用中は手動保存と同じく書き込みを始めない (自動実行のためステータスは変えない)
         if !self.prefs.auto_save || self.update.is_applying() {
             return;
@@ -119,13 +115,15 @@ impl App {
             format,
             jpeg_quality: self.prefs.jpeg_quality,
             webp_quality: self.prefs.webp_quality,
+            overwrite: self.prefs.overwrite_output,
             dir: dir.clone(),
         };
         // 自動保存の OFF→ON などで同じ結果を連番ファイルとして増やさない
         if self.io.last_auto_save.as_ref() == Some(&key) {
             return;
         }
-        self.io.last_auto_save = Some(key);
+        // 実行中の重複保存を防ぐため開始時に記録し、失敗時は結果の受信側で消す
+        self.io.last_auto_save = Some(key.clone());
         let icc_profile = self.image.icc_profile.clone();
         let dpi = self.image.dpi;
         let source = self.image.source_name.clone().unwrap_or_default();
@@ -133,7 +131,7 @@ impl App {
         // 形式は読み込み時に判定済みのものを使い、保存時にファイルを開き直さない
         let ext = format.resolve_extension(&source, self.image.source_format);
         let options = self.save_options();
-        self.spawn_save(ctx, SaveKind::Auto, move || {
+        self.spawn_save(SaveKind::Auto(key), move || {
             fs::create_dir_all(&dir).map_err(|e| format!("自動保存フォルダの作成に失敗: {e}"))?;
             let img = apply_trim(&original, &info);
             let (path, _) = image_output::save_image_unique_with(
@@ -160,10 +158,9 @@ impl App {
     /// ダイアログは現在の保存先を初期位置にして別スレッドで開き、選択後は `poll_io` で設定を更新する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn pick_auto_save_dir(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn pick_auto_save_dir(&mut self) {
         let current = self.prefs.auto_save_dir.clone();
-        self.spawn_dialog(ctx, move |dialog| {
+        self.spawn_dialog(move |dialog| {
             let dir = dialog.set_directory(current).pick_folder();
             DialogResult::AutoSaveDir(dir)
         });
@@ -172,12 +169,11 @@ impl App {
     /// 自動保存を要求する。再計算の待ち中・処理中なら完了後に保存する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn request_auto_save(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn request_auto_save(&mut self) {
         if self.trim_worker.is_busy() {
             self.trim_worker.auto_save_after = true;
         } else {
-            self.auto_save_if_enabled(ctx);
+            self.auto_save_if_enabled();
         }
     }
 
@@ -186,20 +182,19 @@ impl App {
     /// 保存処理が panic した場合も失敗として通知する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     /// * `kind` - 保存処理の種別
     /// * `job` - 保存先パス、または失敗時のステータスメッセージを返す保存処理
-    fn spawn_save<F>(&mut self, ctx: &egui::Context, kind: SaveKind, job: F)
+    fn spawn_save<F>(&mut self, kind: SaveKind, job: F)
     where
         F: FnOnce() -> Result<PathBuf, String> + Send + 'static,
     {
         let tx = self.io.tx.clone();
-        let ctx_clone = ctx.clone();
+        let waker = self.waker.clone();
         let handle = thread::spawn(move || {
             let result = catch_panic(job)
                 .unwrap_or_else(|msg| Err(format!("保存中にエラーが発生しました: {msg}")));
             let _ = tx.send(IoMsg::Saved { kind, result });
-            ctx_clone.request_repaint();
+            waker.wake();
         });
         self.io.save_handles.push(handle);
     }
@@ -256,8 +251,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use eframe::egui;
-
     use super::{save_dialog_formats, with_default_extension};
     use crate::app::actions::test_helpers::{
         poll_io_until, poll_trim_until_idle, trimmed_image_state,
@@ -271,7 +264,6 @@ mod tests {
     /// `auto_save_if_enabled()` が自動保存が無効な場合に何もしないこと
     #[test]
     fn auto_save_skips_when_disabled() {
-        let ctx = egui::Context::default();
         let mut app = App {
             prefs: Settings {
                 auto_save: false,
@@ -281,7 +273,7 @@ mod tests {
             ..App::default()
         };
         let status_before = app.status.clone();
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         // 保存スレッドを起動しないこと
         assert!(!app.io.is_saving());
         assert_eq!(app.status, status_before);
@@ -290,7 +282,6 @@ mod tests {
     /// `auto_save_if_enabled()` が更新の適用中に保存を開始しないこと
     #[test]
     fn auto_save_skips_while_updating() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -301,10 +292,10 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.update.phase = UpdateUiPhase::MsiStarted;
+        app.update.phase = UpdateUiPhase::Exiting;
         let status_before = app.status.clone();
 
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
 
         // 保存スレッドを起動せず、ステータスも変えないこと
         assert!(!app.io.is_saving());
@@ -315,7 +306,6 @@ mod tests {
     /// `auto_save_if_enabled()` がトリミング後の画像がない場合に何もしないこと
     #[test]
     fn auto_save_skips_when_no_trimmed_image() {
-        let ctx = egui::Context::default();
         let mut app = App {
             prefs: Settings {
                 auto_save: true,
@@ -324,7 +314,7 @@ mod tests {
             ..App::default()
         };
         let status_before = app.status.clone();
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         assert!(!app.io.is_saving());
         assert_eq!(app.status, status_before);
     }
@@ -332,7 +322,6 @@ mod tests {
     /// `auto_save_if_enabled()` が自動保存が有効でトリミング後の画像がある場合に PNG ファイルを保存すること
     #[test]
     fn auto_save_writes_png_file_to_dir() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -343,10 +332,10 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
 
         // ステータスが自動保存パスを含むこと
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("自動保存"));
+        let done = poll_io_until(&mut app, |a| a.status.contains("自動保存"));
         assert!(done, "status = {}", app.status);
 
         // 実際にファイルが生成されていること
@@ -361,7 +350,6 @@ mod tests {
     /// 自動保存が元画像名でファイルを作成し、2 回目は上書きせず連番を付けること
     #[test]
     fn auto_save_uses_source_name_and_avoids_overwrite() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -377,22 +365,21 @@ mod tests {
         };
 
         // 1 回目は `{元画像名}_trimmed.png`
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         let first = tmp.path().join("photo_trimmed.png");
-        assert!(poll_io_until(&mut app, &ctx, |_| first.is_file()));
+        assert!(poll_io_until(&mut app, |_| first.is_file()));
 
         // 別の画像を同名で読み込んだ場合は既存ファイルを残したまま連番で保存する
         app.io.abort_load();
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         let second = tmp.path().join("photo_trimmed_2.png");
-        assert!(poll_io_until(&mut app, &ctx, |_| second.is_file()));
+        assert!(poll_io_until(&mut app, |_| second.is_file()));
         assert!(first.is_file());
     }
 
     /// 自動保存が出力形式の設定に従い、`Original` では元画像の形式を維持すること
     #[test]
     fn auto_save_follows_output_format() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -408,15 +395,15 @@ mod tests {
         };
 
         // `Original` は元の拡張子 (小文字化) で保存する
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         let original = tmp.path().join("photo_trimmed.jpg");
-        assert!(poll_io_until(&mut app, &ctx, |_| original.is_file()));
+        assert!(poll_io_until(&mut app, |_| original.is_file()));
 
         // 形式を指定するとその形式で保存する
         app.prefs.output_format = OutputFormat::Webp;
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         let webp = tmp.path().join("photo_trimmed.webp");
-        assert!(poll_io_until(&mut app, &ctx, |_| webp.is_file()));
+        assert!(poll_io_until(&mut app, |_| webp.is_file()));
     }
 
     /// 自動保存が `Original` で、読み込み時に判定した形式が拡張子と食い違う場合は判定した形式で保存すること
@@ -424,7 +411,6 @@ mod tests {
     /// `source_name` はファイル名だけで、カレントディレクトリに実ファイルは存在しない
     #[test]
     fn auto_save_original_uses_detected_source_format() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -440,16 +426,15 @@ mod tests {
             ..App::default()
         };
 
-        app.auto_save_if_enabled(&ctx);
+        app.auto_save_if_enabled();
         let saved = tmp.path().join("photo_trimmed.png");
-        assert!(poll_io_until(&mut app, &ctx, |_| saved.is_file()));
+        assert!(poll_io_until(&mut app, |_| saved.is_file()));
         assert!(!tmp.path().join("photo_trimmed.jpg").exists());
     }
 
     /// `auto_save_if_enabled()` がディレクトリ作成に失敗した場合にエラーステータスを設定すること
     #[test]
     fn auto_save_error_status_when_dir_creation_fails() {
-        let ctx = egui::Context::default();
         // 既存ファイルをディレクトリとして扱おうとすると create_dir_all が失敗する
         let blocker = tempfile::NamedTempFile::new().expect("テスト用ファイルの作成に失敗");
         let existing_file = blocker.path();
@@ -464,25 +449,47 @@ mod tests {
             image: trimmed_image_state(),
             ..App::default()
         };
-        app.auto_save_if_enabled(&ctx);
-        let done = poll_io_until(&mut app, &ctx, |a| {
+        app.auto_save_if_enabled();
+        let done = poll_io_until(&mut app, |a| {
             a.status.contains("失敗") || a.status.contains("エラー")
         });
 
         assert!(done, "エラーメッセージを期待したが: {}", app.status);
     }
 
+    /// 自動保存に失敗した後は、同じ条件でも再度保存できること
+    #[test]
+    fn auto_save_retries_same_key_after_failure() {
+        let blocker = tempfile::NamedTempFile::new().expect("テスト用ファイルの作成に失敗");
+        let mut app = App {
+            prefs: Settings {
+                auto_save: true,
+                auto_save_dir: blocker.path().join("subdir_cannot_exist"),
+                ..Settings::default()
+            },
+            image: trimmed_image_state(),
+            ..App::default()
+        };
+        app.auto_save_if_enabled();
+        assert!(poll_io_until(&mut app, |a| a.status.contains("失敗")
+            || a.status.contains("エラー")));
+
+        // 失敗した内容は記録に残らず、同じ条件で再度保存を始めること
+        assert!(app.io.last_auto_save.is_none());
+        app.auto_save_if_enabled();
+        assert!(app.io.last_auto_save.is_some());
+    }
+
     /// `spawn_save()` が保存処理の panic を失敗として通知すること
     #[test]
     fn spawn_save_reports_panic_as_failure() {
-        let ctx = egui::Context::default();
         let mut app = App {
             status: "初期".into(),
             ..App::default()
         };
 
-        app.spawn_save(&ctx, SaveKind::Manual, || panic!("テスト用の panic"));
-        let done = poll_io_until(&mut app, &ctx, |a| a.status != "初期");
+        app.spawn_save(SaveKind::Manual, || panic!("テスト用の panic"));
+        let done = poll_io_until(&mut app, |a| a.status != "初期");
 
         assert!(done, "失敗の通知を期待したが: {}", app.status);
         assert!(app.status.contains("保存中にエラー"), "{}", app.status);
@@ -492,7 +499,6 @@ mod tests {
     /// 再計算の待ち中に自動保存を有効にした場合、完了後の結果で保存すること
     #[test]
     fn request_auto_save_waits_for_pending_trim() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -505,17 +511,17 @@ mod tests {
         };
         app.image.cache_key = Some(app.prefs.trim_options());
         app.prefs.tolerance = 1;
-        app.schedule_trim(&ctx, true, false, false);
+        app.schedule_trim(true, false, false);
 
         // 待ち中は保存せず、完了後の保存として予約する
-        app.request_auto_save(&ctx);
+        app.request_auto_save();
         assert!(!app.io.is_saving());
         assert!(app.trim_worker.auto_save_after);
 
         // 完了後に新しい設定の結果で保存される
-        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert!(poll_trim_until_idle(&mut app));
         assert_eq!(app.image.cache_key, Some(app.prefs.trim_options()));
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("自動保存"));
+        let done = poll_io_until(&mut app, |a| a.status.contains("自動保存"));
         assert!(done, "status = {}", app.status);
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
@@ -523,7 +529,6 @@ mod tests {
     /// 同じ結果で自動保存を繰り返し要求しても、連番ファイルを増やさないこと
     #[test]
     fn auto_save_skips_same_result() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -536,14 +541,12 @@ mod tests {
         };
         app.status = "読み込み完了: a.png".into();
 
-        app.request_auto_save(&ctx);
-        assert!(poll_io_until(&mut app, &ctx, |a| a
-            .status
-            .contains("自動保存")));
+        app.request_auto_save();
+        assert!(poll_io_until(&mut app, |a| a.status.contains("自動保存")));
         let status_after_first = app.status.clone();
 
         // 2 回目は保存を開始せず、ステータスも変えない
-        app.request_auto_save(&ctx);
+        app.request_auto_save();
         assert!(!app.io.is_saving());
         assert_eq!(app.status, status_after_first);
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
@@ -552,7 +555,6 @@ mod tests {
     /// 自動保存を繰り返しても、ステータスへの追記が重ならないこと
     #[test]
     fn auto_save_status_does_not_accumulate() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App {
             prefs: Settings {
@@ -565,17 +567,13 @@ mod tests {
         };
         app.status = "読み込み完了: a.png".into();
 
-        app.auto_save_if_enabled(&ctx);
-        assert!(poll_io_until(&mut app, &ctx, |a| a
-            .status
-            .contains("自動保存")));
+        app.auto_save_if_enabled();
+        assert!(poll_io_until(&mut app, |a| a.status.contains("自動保存")));
 
         // 形式を変えて再保存すると、前回の追記を置き換える
         app.prefs.output_format = OutputFormat::Webp;
-        app.auto_save_if_enabled(&ctx);
-        assert!(poll_io_until(&mut app, &ctx, |a| a
-            .status
-            .contains(".webp")));
+        app.auto_save_if_enabled();
+        assert!(poll_io_until(&mut app, |a| a.status.contains(".webp")));
         assert!(app.status.starts_with("読み込み完了: a.png  (自動保存: "));
         assert_eq!(
             app.status.matches("自動保存").count(),
@@ -587,10 +585,8 @@ mod tests {
         // 別のメッセージが表示された後は、そのメッセージに追記する
         app.status = "クリップボードへコピーしました".into();
         app.prefs.output_format = OutputFormat::Png;
-        app.auto_save_if_enabled(&ctx);
-        assert!(poll_io_until(&mut app, &ctx, |a| a
-            .status
-            .contains("自動保存")));
+        app.auto_save_if_enabled();
+        assert!(poll_io_until(&mut app, |a| a.status.contains("自動保存")));
         assert!(
             app.status
                 .starts_with("クリップボードへコピーしました  (自動保存: ")

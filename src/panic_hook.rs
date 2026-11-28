@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::consts;
+use crate::install_layout;
 use crate::panic_message::panic_message;
 
 /// ログファイル名
@@ -61,14 +62,14 @@ fn report(info: &PanicHookInfo<'_>) {
 // ======================================================================
 /// ログファイルのパスを返す
 ///
-/// `%LOCALAPPDATA%\EdgeCut\panic.log`。`LOCALAPPDATA` が未設定の場合は一時ディレクトリ配下
+/// `%LOCALAPPDATA%\EdgeCut\panic.log` (ポータブル版は `<実行フォルダ>\data\panic.log`)
+/// 保存先を決められない場合は一時ディレクトリ配下
 ///
 /// # Returns
 /// * `PathBuf` - ログファイルのパス
 fn log_path() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map_or_else(std::env::temp_dir, PathBuf::from)
-        .join(consts::APP_NAME)
+    install_layout::local_data_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join(consts::APP_NAME))
         .join(LOG_FILE_NAME)
 }
 

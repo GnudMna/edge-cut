@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
-use eframe::egui;
 use image::DynamicImage;
 
 use crate::app::state::App;
@@ -19,13 +18,11 @@ impl App {
     /// プレビュートリミングをスケジュールする
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (再描画リクエストに使用)
     /// * `debounce` - `true` のとき短い待機後に実行 (スライダー連続操作向け)
     /// * `refresh_orig_tex` - `true` のとき元画像テクスチャもバックグラウンドで再生成する
     /// * `auto_save_after` - `true` のとき完了後に自動保存を試みる
     pub(in crate::app) fn schedule_trim(
         &mut self,
-        ctx: &egui::Context,
         debounce: bool,
         refresh_orig_tex: bool,
         auto_save_after: bool,
@@ -43,7 +40,7 @@ impl App {
             && !refresh_orig_tex
         {
             if auto_save_after {
-                self.auto_save_if_enabled(ctx);
+                self.auto_save_if_enabled();
             }
             return;
         }
@@ -57,23 +54,22 @@ impl App {
                 Some(Instant::now() + Duration::from_millis(TRIM_DEBOUNCE_MS));
         } else {
             self.trim_worker.debounce_until = None;
-            self.start_trim_worker(ctx);
+            self.start_trim_worker();
         }
-        ctx.request_repaint();
     }
 
     /// デバウンス待ちとバックグラウンド結果を毎フレーム処理する
     ///
     /// ジョブが panic した場合やワーカーが終了した場合は失敗として処理中の状態を解除し、
     /// 古い結果で保存・コピーしないようトリミング結果も破棄する
-    pub(in crate::app) fn poll_trim_work(&mut self, ctx: &egui::Context) {
-        if let Some(until) = self.trim_worker.debounce_until {
-            if Instant::now() >= until {
-                self.trim_worker.debounce_until = None;
-                self.start_trim_worker(ctx);
-            } else {
-                ctx.request_repaint();
-            }
+    pub(in crate::app) fn poll_trim_work(&mut self) {
+        if self
+            .trim_worker
+            .debounce_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.trim_worker.debounce_until = None;
+            self.start_trim_worker();
         }
 
         loop {
@@ -91,16 +87,9 @@ impl App {
                 continue;
             }
 
-            // 検出が失敗しても元画像は表示できるよう、先にテクスチャを反映する
+            // 検出が失敗しても元画像は表示できるよう、先にプレビュー画像を反映する
             if let Some(orig) = result.orig_color {
-                // 縮小表示時のちらつきを抑えるためミップマップを使う
-                // 拡大時は画素を滲ませず、トリミング境界を画素単位で確認できるようにする
-                let options = egui::TextureOptions {
-                    magnification: egui::TextureFilter::Nearest,
-                    ..egui::TextureOptions::LINEAR
-                }
-                .with_mipmap_mode(Some(egui::TextureFilter::Linear));
-                self.image.orig_tex = Some(ctx.load_texture("orig", orig, options));
+                self.image.set_preview(orig);
                 self.trim_worker.refresh_orig_tex = false;
             }
 
@@ -122,7 +111,7 @@ impl App {
 
             if self.trim_worker.auto_save_after {
                 self.trim_worker.auto_save_after = false;
-                self.auto_save_if_enabled(ctx);
+                self.auto_save_if_enabled();
             }
         }
     }
@@ -159,7 +148,7 @@ impl App {
         self.image.info.is_some() && !self.trim_worker.is_busy()
     }
 
-    fn start_trim_worker(&mut self, ctx: &egui::Context) {
+    fn start_trim_worker(&mut self) {
         let Some(original) = self.image.original.clone() else {
             return;
         };
@@ -177,7 +166,7 @@ impl App {
             icc_profile: self.image.icc_profile.clone(),
             options,
             refresh_orig_tex,
-            ctx: ctx.clone(),
+            waker: self.waker.clone(),
         });
     }
 }
@@ -187,27 +176,27 @@ impl App {
 // ======================================================================
 impl App {
     /// 背景色を自動検出モードに戻す
-    pub(in crate::app) fn reset_bg_to_auto(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn reset_bg_to_auto(&mut self) {
         if self.prefs.bg_override.is_none() {
             return;
         }
         self.prefs.bg_override = None;
         self.background.pick_mode = false;
         self.image.invalidate_cache();
-        self.schedule_trim(ctx, false, false, false);
+        self.schedule_trim(false, false, false);
     }
 
     /// 背景色を手動で設定する
-    pub(in crate::app) fn set_manual_bg(&mut self, ctx: &egui::Context, color: [u8; 4]) {
+    pub(in crate::app) fn set_manual_bg(&mut self, color: [u8; 4]) {
         self.prefs.bg_override = Some(color);
         self.background.bg_color = Some(color);
         self.background.pick_mode = false;
         self.image.invalidate_cache();
-        self.schedule_trim(ctx, false, false, false);
+        self.schedule_trim(false, false, false);
     }
 
     /// 元画像の指定座標から背景色をスポイトする
-    pub(in crate::app) fn pick_bg_from_pixel(&mut self, ctx: &egui::Context, x: u32, y: u32) {
+    pub(in crate::app) fn pick_bg_from_pixel(&mut self, x: u32, y: u32) {
         let Some(ref original) = self.image.original else {
             return;
         };
@@ -223,7 +212,7 @@ impl App {
             "背景色を設定: RGBA({}, {}, {}, {})",
             color[0], color[1], color[2], color[3]
         );
-        self.schedule_trim(ctx, false, false, false);
+        self.schedule_trim(false, false, false);
     }
 }
 
@@ -247,8 +236,6 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use eframe::egui;
-
     use crate::app::actions::test_helpers::{
         make_test_image, poll_trim_until_idle, trimmed_image_state,
     };
@@ -262,7 +249,6 @@ mod tests {
     /// `schedule_trim()` がバックグラウンドでトリミング結果を UI へ反映すること
     #[test]
     fn schedule_trim_applies_result_in_background() {
-        let ctx = eframe::egui::Context::default();
         let mut app = App {
             image: ImageState {
                 original: Some(Arc::new(make_test_image())),
@@ -270,10 +256,10 @@ mod tests {
             },
             ..App::default()
         };
-        app.schedule_trim(&ctx, false, true, false);
+        app.schedule_trim(false, true, false);
 
         for _ in 0..50 {
-            app.poll_trim_work(&ctx);
+            app.poll_trim_work();
             if app.image.info.is_some() {
                 break;
             }
@@ -284,14 +270,13 @@ mod tests {
             app.image.trim_target().is_some(),
             "トリミング結果が反映されませんでした"
         );
-        assert!(app.image.orig_tex.is_some());
+        assert!(app.image.preview.is_some());
         assert!(!app.trim_worker.in_flight);
     }
 
     /// 読み込み直後のトリミング中にパラメータを変えても元画像テクスチャが失われないこと
     #[test]
     fn schedule_trim_keeps_orig_tex_refresh_when_superseded() {
-        let ctx = eframe::egui::Context::default();
         let mut app = App {
             image: ImageState {
                 original: Some(Arc::new(make_test_image())),
@@ -300,12 +285,12 @@ mod tests {
             ..App::default()
         };
         // 読み込み時のテクスチャ再生成付き要求を、結果の受信前に別の要求で置き換える
-        app.schedule_trim(&ctx, false, true, false);
+        app.schedule_trim(false, true, false);
         app.prefs.tolerance = 10;
-        app.schedule_trim(&ctx, false, false, false);
+        app.schedule_trim(false, false, false);
 
         for _ in 0..50 {
-            app.poll_trim_work(&ctx);
+            app.poll_trim_work();
             if app.image.info.is_some() {
                 break;
             }
@@ -314,14 +299,13 @@ mod tests {
 
         // 最新の要求の結果でテクスチャが反映され、再生成要求は解除される
         assert!(app.image.info.is_some());
-        assert!(app.image.orig_tex.is_some(), "元画像テクスチャが失われた");
+        assert!(app.image.preview.is_some(), "元画像テクスチャが失われた");
         assert!(!app.trim_worker.refresh_orig_tex);
     }
 
     /// 処理中のジョブと異なる値へ戻した場合、完了済みの結果と一致してもスキップせず再計算すること
     #[test]
     fn schedule_trim_reruns_when_reverted_during_in_flight_job() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: ImageState {
                 original: Some(Arc::new(make_test_image())),
@@ -329,27 +313,26 @@ mod tests {
             },
             ..App::default()
         };
-        app.schedule_trim(&ctx, false, true, false);
-        assert!(poll_trim_until_idle(&mut app, &ctx));
+        app.schedule_trim(false, true, false);
+        assert!(poll_trim_until_idle(&mut app));
         assert_eq!(app.image.cache_key, Some(TrimOptions::default()));
 
         // tol=1 のジョブの結果が届く前に tol=0 へ戻す
         app.prefs.tolerance = 1;
-        app.schedule_trim(&ctx, false, false, false);
+        app.schedule_trim(false, false, false);
         let in_flight_id = app.trim_worker.request_id;
         app.prefs.tolerance = 0;
-        app.schedule_trim(&ctx, false, false, false);
+        app.schedule_trim(false, false, false);
 
         // tol=1 の結果を無効化する新しい要求が出ていること
         assert_ne!(app.trim_worker.request_id, in_flight_id);
-        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert!(poll_trim_until_idle(&mut app));
         assert_eq!(app.image.cache_key, Some(TrimOptions::default()));
     }
 
     /// `cache_key` に受信時点の UI の値ではなく、ジョブで使った値を記録すること
     #[test]
     fn poll_trim_work_records_job_params_as_cache_key() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: ImageState {
                 original: Some(Arc::new(make_test_image())),
@@ -358,18 +341,17 @@ mod tests {
             ..App::default()
         };
         app.prefs.tolerance = 1;
-        app.schedule_trim(&ctx, false, true, false);
+        app.schedule_trim(false, true, false);
         // 再スケジュールせずに UI の値だけ変える
         app.prefs.tolerance = 0;
 
-        assert!(poll_trim_until_idle(&mut app, &ctx));
+        assert!(poll_trim_until_idle(&mut app));
         assert_eq!(app.image.cache_key, Some(TrimOptions::new(1, 0, None)));
     }
 
     /// ジョブの panic による失敗結果を受け取ると、処理中を解除して古い結果を破棄すること
     #[test]
     fn poll_trim_work_recovers_from_failed_job() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: trimmed_image_state(),
             ..App::default()
@@ -386,7 +368,7 @@ mod tests {
         })
         .unwrap();
 
-        app.poll_trim_work(&ctx);
+        app.poll_trim_work();
 
         // 処理中が解除され、古い結果では保存・コピーできない
         assert!(!app.trim_worker.is_busy());
@@ -400,7 +382,6 @@ mod tests {
     /// 検出が失敗しても、同じ結果で届いた元画像テクスチャは反映すること
     #[test]
     fn poll_trim_work_keeps_orig_tex_when_detection_fails() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: ImageState {
                 original: Some(Arc::new(make_test_image())),
@@ -415,14 +396,14 @@ mod tests {
         tx.send(TrimWorkerResult {
             request_id: app.trim_worker.request_id,
             outcome: Err("boom".into()),
-            orig_color: Some(egui::ColorImage::example()),
+            orig_color: Some(image::RgbaImage::new(1, 1)),
         })
         .unwrap();
 
-        app.poll_trim_work(&ctx);
+        app.poll_trim_work();
 
         // 元画像は表示でき、トリミング結果は未確定のまま
-        assert!(app.image.orig_tex.is_some());
+        assert!(app.image.preview.is_some());
         assert!(!app.trim_worker.refresh_orig_tex);
         assert!(app.image.info.is_none());
         assert!(!app.trim_worker.is_busy());
@@ -431,7 +412,6 @@ mod tests {
     /// ワーカーが終了して結果チャネルが切断されると、処理中を解除してワーカーを再起動すること
     #[test]
     fn poll_trim_work_restarts_disconnected_worker() {
-        let ctx = egui::Context::default();
         let mut app = App {
             image: trimmed_image_state(),
             ..App::default()
@@ -441,14 +421,14 @@ mod tests {
         app.trim_worker.result_rx = rx;
         app.trim_worker.in_flight = true;
 
-        app.poll_trim_work(&ctx);
+        app.poll_trim_work();
         assert!(!app.trim_worker.is_busy());
         assert!(app.image.info.is_none());
         assert_eq!(app.status, "トリミング処理が異常終了しました");
 
         // 再起動したワーカーで再びトリミングできる
-        app.schedule_trim(&ctx, false, false, false);
-        assert!(poll_trim_until_idle(&mut app, &ctx));
+        app.schedule_trim(false, false, false);
+        assert!(poll_trim_until_idle(&mut app));
         assert!(app.image.info.is_some());
     }
 }

@@ -17,14 +17,16 @@ use std::time::{Duration, Instant};
 
 use super::clipboard_worker::ClipboardWorkerHandle;
 use super::load_worker::LoadWorkerHandle;
-use super::shortcuts::ShortcutTracker;
+use super::waker::Waker;
 
 pub(super) use self::batch_state::{BatchState, CloseConfirm};
-pub(super) use self::image_state::{BackgroundState, ImageState, PaneView};
+pub(super) use self::image_state::{BackgroundState, ImageState};
 pub(super) use self::io_state::{
     AutoSaveKey, DialogResult, IoMsg, IoState, SaveKind, SaveRequest, ScannedDrop,
 };
-pub(super) use self::settings::{PreviewMode, SETTINGS_KEY, Settings};
+pub(super) use self::settings::{
+    PANEL_WIDTH_MAX, PANEL_WIDTH_MIN, PreviewMode, Settings, ThemeMode, WindowGeometry,
+};
 pub(super) use self::trim_state::{TrimPreview, TrimWorkerResult, TrimWorkerState};
 pub(super) use self::update_state::{UpdateState, UpdateUiPhase, UpdateWorkerMsg};
 
@@ -96,10 +98,12 @@ pub struct App {
     pub(super) batch: BatchState,
     pub(super) trim_worker: TrimWorkerState,
     pub(super) io: IoState,
-    /// キーボードショートカットの判定状態
-    pub(super) shortcuts: ShortcutTracker,
     /// アプリ更新
     pub(super) update: UpdateState,
+    /// ワーカースレッドの完了時にイベントループを起こす通知
+    pub(super) waker: Waker,
+    /// ウィンドウを閉じる要求 (更新の適用後など)。イベントループが確認して閉じる
+    pub(super) close_requested: bool,
 }
 
 // ======================================================================
@@ -109,15 +113,13 @@ impl App {
     /// アプリケーションの初期状態を生成する
     ///
     /// # Arguments
-    /// * `storage` - eframe の永続化ストレージ。保存済みの設定があれば復元する
+    /// * `prefs` - 保存済みの設定 (範囲外の値はここで正規化する)
+    /// * `waker` - ワーカースレッドの完了時にイベントループを起こす通知
     ///
     /// # Returns
     /// * `Self` - 初期化済みの `App`
-    pub fn new(storage: Option<&dyn eframe::Storage>) -> Self {
-        let s = storage
-            .and_then(|st| eframe::get_value::<Settings>(st, SETTINGS_KEY))
-            .unwrap_or_default()
-            .normalize();
+    pub(super) fn new(prefs: Settings, waker: Waker) -> Self {
+        let s = prefs.normalize();
         // 破棄順 (batch → io) をまたいで 1 つの期限を共有する
         let batch = BatchState::default();
         let mut io = IoState::default();
@@ -132,20 +134,24 @@ impl App {
             batch,
             trim_worker: TrimWorkerState::new(),
             io,
-            shortcuts: ShortcutTracker::default(),
             update: UpdateState::default(),
+            waker,
+            close_requested: false,
         }
     }
 
-    /// 現在の設定をストレージに保存する
-    pub(super) fn save_settings(&self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, SETTINGS_KEY, &self.prefs.clone().normalize());
+    /// 保存する設定を返す (範囲外の値は正規化する)
+    ///
+    /// # Returns
+    /// * `Settings` - ファイルへ書き出す設定
+    pub(super) fn settings_to_save(&self) -> Settings {
+        self.prefs.clone().normalize()
     }
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(Settings::default(), Waker::noop())
     }
 }
 

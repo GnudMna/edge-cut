@@ -66,24 +66,18 @@ pub(crate) fn expected_trusted_comment(version: &str, asset_name: &str) -> Strin
 ///
 /// # Arguments
 /// * `url` - 署名ファイルの URL
-/// * `download_key` - bridge ダウンロードキー (`None` なら無認証)
 ///
 /// # Returns
 /// * `Result<String, UpdateError>` - 署名ファイルの内容
-pub(crate) fn download_signature(
-    url: &str,
-    download_key: Option<&str>,
-) -> Result<String, UpdateError> {
-    let mut request = http::small_request_agent().get(url);
-    if let Some(key) = download_key {
-        request = request.header("Authorization", &format!("Bearer {key}"));
-    }
-    let mut response = request.call().map_err(|err| match err {
-        ureq::Error::StatusCode(401) => UpdateError::DownloadUnauthorized,
-        ureq::Error::StatusCode(status) => UpdateError::SignatureDownloadHttp { status },
-        err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
-        _ => UpdateError::SignatureDownloadFailed,
-    })?;
+pub(crate) fn download_signature(url: &str) -> Result<String, UpdateError> {
+    let mut response = http::small_request_agent(url)
+        .get(url)
+        .call()
+        .map_err(|err| match err {
+            ureq::Error::StatusCode(status) => UpdateError::SignatureDownloadHttp { status },
+            err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
+            _ => UpdateError::SignatureDownloadFailed,
+        })?;
 
     response
         .body_mut()

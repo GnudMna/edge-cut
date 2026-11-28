@@ -12,9 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use eframe::egui;
-
 use super::state::IoMsg;
+use super::waker::Waker;
 use crate::image_load::{LoadedImage, open_image_with_icc};
 use crate::panic_message::catch_panic;
 
@@ -29,7 +28,9 @@ pub(super) struct LoadJob {
     pub path: PathBuf,
     /// ステータス表示用のファイル名
     pub file_name: String,
-    pub ctx: egui::Context,
+    /// 元画像のあるフォルダ
+    pub source_dir: Option<PathBuf>,
+    pub waker: Waker,
 }
 
 // ======================================================================
@@ -57,9 +58,10 @@ impl LoadWorkerHandle {
                 let _ = result_tx.send(IoMsg::Loaded {
                     request_id: job.request_id,
                     file_name: job.file_name,
+                    source_dir: job.source_dir,
                     result,
                 });
-                job.ctx.request_repaint();
+                job.waker.wake();
             }
         });
         Self {
@@ -115,30 +117,30 @@ mod tests {
 
     use super::*;
 
-    fn job(request_id: u64, ctx: &egui::Context) -> LoadJob {
+    fn job(request_id: u64) -> LoadJob {
         LoadJob {
             request_id,
             path: PathBuf::from(format!("missing_{request_id}.png")),
             file_name: format!("missing_{request_id}.png"),
-            ctx: ctx.clone(),
+            source_dir: None,
+            waker: Waker::noop(),
         }
     }
 
     /// キューに溜まったジョブのうち最新のものだけが残ること
     #[test]
     fn take_latest_keeps_only_newest_job() {
-        let ctx = egui::Context::default();
         let (tx, rx) = mpsc::channel();
-        tx.send(job(2, &ctx)).unwrap();
-        tx.send(job(3, &ctx)).unwrap();
+        tx.send(job(2)).unwrap();
+        tx.send(job(3)).unwrap();
 
         // 受信済みの 1 件より後続が優先される
-        let latest = take_latest(job(1, &ctx), &rx);
+        let latest = take_latest(job(1), &rx);
         assert_eq!(latest.request_id, 3);
         assert!(rx.try_recv().is_err());
 
         // 後続がなければ受信済みのジョブをそのまま返す
-        let latest = take_latest(job(4, &ctx), &rx);
+        let latest = take_latest(job(4), &rx);
         assert_eq!(latest.request_id, 4);
     }
 
@@ -155,10 +157,9 @@ mod tests {
     fn worker_always_returns_latest_result() {
         let (result_tx, result_rx) = mpsc::channel();
         let handle = LoadWorkerHandle::spawn(result_tx);
-        let ctx = egui::Context::default();
 
         for id in 1..=5 {
-            handle.submit(job(id, &ctx));
+            handle.submit(job(id));
         }
 
         let mut ids = Vec::new();

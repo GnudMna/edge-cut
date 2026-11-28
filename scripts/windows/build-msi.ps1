@@ -1,20 +1,21 @@
 # ========================================================================
 # Script Name : build-msi.ps1
 # Description : Windows 向け MSI インストーラー作成スクリプト (cargo-wix)
-# Usage       : ./build-msi.ps1 [-SkipBuild]
+# Usage       : ./build-msi.ps1 [-SkipBuild] [-SkipVerify]
 # Requires    : PowerShell 7.0+, cargo-wix, WiX Toolset v3.14.1+, mdBook
 #
 # 前提:
 #   - cargo install cargo-wix --locked
 #   - cargo install mdbook --locked --version <scripts/common/build-user-docs.ps1 の固定版>
 #   - winget install WiXToolset.WiXToolset  (WiX v3。コード署名は不要)
-#   - wix/main.wxs, wix/Banner.bmp, wix/Dialog.bmp, wix/Eula.rtf が存在すること
-#     (画像・Eula.rtf は scripts/windows/generate-wix-assets.ps1 で再生成可能)
+#   - wix/main.wxs が存在すること (wix/Banner.bmp, wix/Dialog.bmp は
+#     scripts/windows/generate-wix-assets.ps1 で再生成する)
 #   - cargo-about (THIRD_PARTY_NOTICES 生成。build 時に自動実行)
 #   - Cargo.toml の culture = "ja-JP" でインストーラー UI を日本語化
 #
 # 出力:
 #   target/wix/{パッケージ名}-{バージョン}-{アーキテクチャ}.msi
+#   作成後に scripts/common/verify-msi.ps1 で内容を検証する (-SkipVerify で省略)
 # ========================================================================
 
 #requires -Version 7.0
@@ -22,7 +23,10 @@
 [CmdletBinding()]
 param(
     # リリースビルドをスキップし、既存の target/release/*.exe から MSI のみ作成する
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    # MSI 作成後の内容検証 (verify-msi.ps1) をスキップする
+    [switch]$SkipVerify
 )
 
 # シェルオプションを設定(エラー時に即終了)
@@ -88,30 +92,6 @@ Invoke-ScriptMain {
     $null = Assert-CargoWixInstalled
     $null = Assert-WixToolsetInstalled
 
-    # アプリ更新のダウンロードキー (gh-release-bridge) をリリースビルドへ埋め込む
-    # キーの中身は build.rs が検証するので、ここではファイルの有無と空でないことだけ確かめる
-    if ($null -ne [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY')) {
-        throw 'エラー: 環境変数 EDGE_CUT_KEY は廃止しました。キーをファイルに保存して EDGE_CUT_KEY_FILE にそのパスを設定し、EDGE_CUT_KEY は削除してください'
-    }
-    $bridgeKeyFile = [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY_FILE')
-    if ([string]::IsNullOrWhiteSpace($bridgeKeyFile)) {
-        throw @"
-エラー: 環境変数 EDGE_CUT_KEY_FILE が未設定です。
-
-アプリ更新のアセットダウンロードに必要な共有キーを保存したファイルのパスです。
-gh-release-bridge の Worker Secret EDGE_CUT_KEY と同値を UTF-8 のファイルに保存し、そのパスを設定してから再実行してください。
-
-  `$env:EDGE_CUT_KEY_FILE = "`$HOME\.edge-cut\bridge.key"
-  ./scripts/windows/build-msi.ps1
-"@
-    }
-    if (-not (Test-Path -LiteralPath $bridgeKeyFile -PathType Leaf)) {
-        throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが見つかりません: $bridgeKeyFile"
-    }
-    if ((Get-Item -LiteralPath $bridgeKeyFile).Length -eq 0) {
-        throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが空です: $bridgeKeyFile"
-    }
-
     # WiX UI 用ブランド画像 (未生成時やデザイン更新時に再作成)
     $GenerateAssetsScript = Join-Path $PSScriptRoot 'generate-wix-assets.ps1'
     & $GenerateAssetsScript
@@ -157,4 +137,13 @@ Rust 1.100 以上 (rust-toolchain.toml) と Visual Studio Build Tools (C++ ワ�
     Write-Host ''
     Write-Host 'MSI の作成が完了しました:'
     Write-Host "  $(Join-Path $ProjectRoot 'target\wix')"
+    Write-Host ''
+
+    # 作成した MSI の画面・同梱物・メタデータを検証する
+    if ($SkipVerify) {
+        Write-Host 'MSI の検証をスキップしました (-SkipVerify)'
+    } else {
+        . (Join-Path $PSScriptRoot '..\common\verify-msi.ps1')
+        Invoke-MsiPackageVerification -ProjectRoot $ProjectRoot
+    }
 }

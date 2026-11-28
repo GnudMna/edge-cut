@@ -1,6 +1,6 @@
 # 開発環境とビルド
 
-前提条件・ビルド・配布パッケージ (MSI) の作成をまとめる。
+前提条件・ビルド・配布パッケージ (MSI・ポータブル版) の作成をまとめる。
 
 ## 前提条件
 
@@ -8,11 +8,12 @@
 
 | 用途 | 必要なもの |
 | :--- | :--- |
-| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.100 (`rust-toolchain.toml` で固定し、rustup が自動で導入する)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード) |
+| ビルド | [Rust ツールチェーン](https://rustup.rs/) 1.100 (`rust-toolchain.toml` で固定し、rustup が自動で導入する)、Visual Studio Build Tools など MSVC ツールチェーン (C++ ワークロード)、[Node.js](https://nodejs.org/) と [pnpm](https://pnpm.io/) (UI のビルド) |
+| 実行 | Microsoft Edge WebView2 ランタイム (Windows 11 は標準で導入済み) |
 | 品質チェック | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) |
-| MSI 作成 | [cargo-about](https://github.com/EmbarkStudios/cargo-about)、[mdBook](https://rust-lang.github.io/mdBook/) ([利用者向けドキュメントの同梱](#利用者向けドキュメントの同梱) の固定版)、[cargo-wix](https://github.com/volks73/cargo-wix)、[WiX Toolset v3.14.1](https://github.com/wixtoolset/wix3/releases) 以上 |
+| 配布パッケージ作成 | MSI・ポータブル版の共通: [cargo-about](https://github.com/EmbarkStudios/cargo-about)、[mdBook](https://rust-lang.github.io/mdBook/) ([利用者向けドキュメントの同梱](#利用者向けドキュメントの同梱) の固定版)。MSI のみ: [cargo-wix](https://github.com/volks73/cargo-wix)、[WiX Toolset v3.14.1](https://github.com/wixtoolset/wix3/releases) 以上 |
 
-`cargo build` だけなら `cargo-deny`・MSI 作成用のツールは不要。mdBook は固定版が必要で、未導入や版違いのときは MSI 作成スクリプトが導入コマンドを表示して止まる。
+`cargo build` だけなら `cargo-deny`・配布パッケージ作成用のツールは不要だが、Node.js と pnpm は必要 (UI のビルドを `build.rs` が行うため)。mdBook は固定版が必要で、未導入や版違いのときはパッケージ作成スクリプトが導入コマンドを表示して止まる。
 
 ```powershell
 cargo install cargo-deny --locked
@@ -30,6 +31,21 @@ cargo build --release     # リリースビルド
 
 ビルド成果物は `target/release/EdgeCut.exe`。
 
+### UI (TypeScript)
+
+UI は `ui/` の React + TypeScript で、Vite でビルドする。`build.rs` が `ui/` で `pnpm run build` を実行し、出力を `OUT_DIR` に置いて実行ファイルへ埋め込む (`ui/node_modules` が無ければ先に `pnpm install --frozen-lockfile` を実行する)。`ui/src` などを変更すると `cargo build` で UI も作り直す。
+
+| 環境変数 | 説明 |
+| :--- | :--- |
+| `EDGECUT_UI_DIST` | ビルド済みの UI のディレクトリ。指定すると pnpm でのビルドを省き、そのディレクトリを埋め込む |
+
+```bash
+pnpm --dir ui install      # UI の依存を導入する (ロックファイルを更新する場合)
+pnpm --dir ui run build    # UI だけをビルドする (出力は ui/dist/)
+```
+
+デバッグビルドでは `WebView2` の開発者ツールと右クリックメニューを有効にする (リリースビルドでは無効)。
+
 CRT (C ランタイム) は静的リンクする (`.cargo/config.toml` の `+crt-static`)。配布先に VC++ ランタイムを導入しなくても起動できる。環境変数 `RUSTFLAGS` などを設定すると `.cargo/config.toml` の rustflags は使われず動的リンクになるため、`build.rs` が警告を出す。`RUSTFLAGS` を使う場合は `-C target-feature=+crt-static` も加える。
 
 デバッグビルドでも依存クレートだけは最適化する (`Cargo.toml` の `[profile.dev.package."*"]`)。画像のデコード・エンコードが遅くなるのを避けるための設定で、自作コードは最適化しない。初回のビルドは依存の再コンパイルで時間がかかる。
@@ -43,8 +59,10 @@ CRT (C ランタイム) は静的リンクする (`.cargo/config.toml` の `+crt
 | スクリプト | 説明 |
 | :--- | :--- |
 | `windows/build.ps1` | デバッグ / リリースビルド (`-Release` / `--release` / `-r`。それ以外の引数はエラー) |
-| `windows/build-msi.ps1` | MSI インストーラー作成 (`-SkipBuild` でビルド省略可) |
-| `windows/generate-wix-assets.ps1` | MSI 用のバナー・ダイアログ画像 (`wix/*.bmp`) と使用許諾 (`wix/Eula.rtf`) を再生成 |
+| `windows/build-msi.ps1` | MSI インストーラー作成と、作成後の内容検証 (`-SkipBuild` でビルド、`-SkipVerify` で検証を省略可) |
+| `windows/build-portable.ps1` | ポータブル版の ZIP 作成 (`-SkipBuild` でビルドを省略可。[配布パッケージ (ポータブル版)](#配布パッケージ-ポータブル版)) |
+| `windows/verify-msi.ps1` | ビルド済み MSI の内容検証 (`-MsiPath` で対象を指定、`-SkipExtract` で展開を省略可。[MSI の検証](#msi-の検証)) |
+| `windows/generate-wix-assets.ps1` | MSI 用のバナー・ダイアログ画像 (`wix/*.bmp`) を再生成 |
 | `windows/release.ps1` | リリース一括実行 ([リリース](release.md)) |
 
 ## デバッグ (VS Code)
@@ -59,22 +77,31 @@ CRT (C ランタイム) は静的リンクする (`.cargo/config.toml` の `+crt
 | :--- | :--- |
 | 出力 | `target/wix/{パッケージ名}-{バージョン}-{アーキテクチャ}.msi` |
 | インストール先 | `%LOCALAPPDATA%\edge-cut` (ユーザー単位) |
-| 同梱内容 | `bin\EdgeCut.exe` / `LICENSE` / `THIRD_PARTY_NOTICES` / `docs\` |
+| 同梱内容 | `bin\EdgeCut.exe` / `bin\EdgeCutUpdater.exe` / `LICENSE` / `THIRD_PARTY_NOTICES` / `docs\` |
 | スタートメニュー | **EdgeCut** と **EdgeCut ドキュメント** を追加 |
+| 画面 | `WixUI_FeatureTree` からライセンス同意画面を除いた独自 UI (`wix/main.wxs`)。完了画面の「EdgeCut を起動する」チェックボックスは既定でオン。更新プログラムの無人インストール (`msiexec /qn`) では画面を出さない |
 
-### 更新ダウンロードキー
+### MSI の検証
 
-更新アセットのダウンロードに使う認証キー (gh-release-bridge の Worker Secret と同値) を保存したファイルのパスを環境変数 `EDGE_CUT_KEY_FILE` に設定すると、`build.rs` がキーを ChaCha20-Poly1305 で暗号化して実行ファイルへ埋め込む。キーが要るのはビルド時だけで、利用者の環境には要らない。未設定でもビルドは成功するが、保護対象タグの更新アセットは取得できない。`build-msi.ps1` と `release.ps1` (MSI を作る場合) では必須で、ビルド前にファイルの有無と空でないことを確かめる。
+`build-msi.ps1` は MSI の作成後に `scripts/common/verify-msi.ps1` で次を検証し、満たさなければ失敗する。単体では `verify-msi.ps1` で実行できる。
 
-```powershell
-$env:EDGE_CUT_KEY_FILE = "$HOME\.edge-cut\bridge.key"
-```
+| 対象 | 内容 |
+| :--- | :--- |
+| メタデータ | `Cargo.toml` の `upgrade-guid` と `wix/main.wxs` の `UpgradeCode` の一致、ProductName・ProductVersion (`Cargo.toml` の version)・Manufacturer・言語・Platform (x64)・per-user (`ALLUSERS`) |
+| 収録内容 | 必須ファイル (`EdgeCut.exe`・`EdgeCutUpdater.exe`・`LICENSE`・`THIRD_PARTY_NOTICES`・`docs\index.html`) と Feature (`Binaries`・`Environment`) |
+| 画面 | ライセンス同意画面 (`LicenseAgreementDlg`) が無く、完了画面に起動のチェックボックスと起動処理がある |
+| 展開した内容 | 管理インストール (`msiexec /a`) で一時フォルダへ展開し、実行ファイルのサイズと PE アーキテクチャ (x64)、`THIRD_PARTY_NOTICES` のヘッダーとビルド時の生成物との一致、`docs/user/SUMMARY.md` の各ページの HTML を確かめる |
 
-- キーファイルは UTF-8 で保存し、リポジトリの外に置く。先頭の BOM と前後の空白・改行は除く (UTF-16 は不可)
-- 以前の環境変数 `EDGE_CUT_KEY` は廃止した。キーを環境変数で渡すと、Cargo が再ビルドの判定用に値を `target` の fingerprint・dep-info へ平文で書き残すためである。設定されていても埋め込まず (ビルドは警告を出す)、`build-msi.ps1` と `release.ps1` は失敗する
-- 平文キーをソースへ置かない
+## 配布パッケージ (ポータブル版)
 
-このキーは漏洩を前提に運用する。復号に使う鍵も同じ実行ファイルに入っているため、配布物を解析すれば取り出せる。暗号化して埋め込むのは、平文のままバイナリや `target` 内の生成ファイルに現れないようにするためで、秘匿のためではない。漏洩した場合は gh-release-bridge の Worker Secret とキーファイルを新しい値へ差し替え、再リリースする。
+`build-portable.ps1` は、MSI と同じく `THIRD_PARTY_NOTICES` と利用者向けドキュメントを生成してから ZIP にまとめる。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| 出力 | `target/portable/edge-cut-{バージョン}-x86_64-portable.zip` (展開すると同名のフォルダ 1 つにまとまる。ZIP にする前のフォルダも同じ場所に残る) |
+| 同梱内容 | `EdgeCut.exe` / `EdgeCutUpdater.exe` / `LICENSE` / `THIRD_PARTY_NOTICES` / `docs\` / `portable` (空ファイル) / `PORTABLE.txt` (利用者向けの説明) |
+| 判定 | 実行ファイルの隣に `portable` があるとポータブル版として動き、設定・`WebView2` のデータ・ログを実行フォルダの `data\` に保存する (`src/install_layout.rs`)。`portable` を消すと MSI 版と同じ保存先を使う |
+| 更新 | 更新プログラムが ZIP を展開し、実行フォルダのファイルを差し替える (`data\` は残す) |
 
 ## 第三者ライセンス表示 (`THIRD_PARTY_NOTICES`)
 
@@ -82,7 +109,7 @@ $env:EDGE_CUT_KEY_FILE = "$HOME\.edge-cut\bridge.key"
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 生成ツール | cargo-about |
+| 生成ツール | cargo-about (Rust の依存)、`ui/scripts/third-party-notices.mjs` (UI に同梱する npm パッケージ) |
 | 設定 | [`about.toml`](../../about.toml)、テンプレート [`scripts/templates/third-party-notices.hbs`](../../scripts/templates/third-party-notices.hbs) |
 | 手動生成 | `scripts/common/generate-third-party-notices.ps1` |
 | 出力 | リポジトリルートの `THIRD_PARTY_NOTICES` (`.gitignore` 対象。パッケージ作成時に自動生成) |
@@ -90,7 +117,7 @@ $env:EDGE_CUT_KEY_FILE = "$HOME\.edge-cut\bridge.key"
 
 ## 利用者向けドキュメントの同梱
 
-[`docs/user/`](../user/) を原稿とする mdBook の本を HTML にし、MSI の `docs\` に同梱する。
+[`docs/user/`](../user/) を原稿とする mdBook の本を HTML にし、MSI とポータブル版の `docs\` に同梱する。
 
 | 項目 | 内容 |
 | :--- | :--- |

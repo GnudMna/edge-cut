@@ -7,8 +7,6 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 
-use eframe::egui;
-
 use crate::app::state::{App, DialogResult};
 use crate::batch_trim::{BatchProgress, BatchTrimParams, BatchTrimResult, run_batch_trim};
 use crate::consts::SUPPORTED_IMAGE_EXTENSIONS;
@@ -44,12 +42,11 @@ impl App {
     /// 完了後は `poll_batch_result` でステータスを更新する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (再描画リクエストに使用)
-    pub(in crate::app) fn batch_trim(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn batch_trim(&mut self) {
         if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
-        self.spawn_dialog(ctx, |dialog| {
+        self.spawn_dialog(|dialog| {
             let paths = dialog
                 .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
                 .pick_files();
@@ -62,20 +59,14 @@ impl App {
     /// フォルダ選択後は `poll_io` 経由で `spawn_batch_trim` を呼ぶ
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (再描画リクエストに使用)
     /// * `paths` - トリミング対象の画像ファイル
     /// * `skipped` - 呼び出し側で対象外として除外した件数 (完了時の要約に追記する)
-    pub(super) fn start_batch_trim(
-        &mut self,
-        ctx: &egui::Context,
-        paths: Vec<PathBuf>,
-        skipped: usize,
-    ) {
+    pub(super) fn start_batch_trim(&mut self, paths: Vec<PathBuf>, skipped: usize) {
         if self.batch.running || self.reject_file_work_while_updating() {
             return;
         }
         let initial = initial_output_dir(self.batch.last_output_dir.as_deref(), &paths);
-        self.spawn_dialog(ctx, move |dialog| {
+        self.spawn_dialog(move |dialog| {
             let dialog = dialog.set_title("保存先フォルダを選択");
             let dialog = match initial {
                 Some(dir) => dialog.set_directory(dir),
@@ -93,13 +84,11 @@ impl App {
     /// 指定ファイルの一括トリミングをバックグラウンドで開始する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (再描画リクエストに使用)
     /// * `paths` - トリミング対象の画像ファイル
     /// * `skipped` - 呼び出し側で対象外として除外した件数 (完了時の要約に追記する)
     /// * `out_dir` - 保存先フォルダ
     pub(super) fn spawn_batch_trim(
         &mut self,
-        ctx: &egui::Context,
         paths: Vec<PathBuf>,
         skipped: usize,
         out_dir: PathBuf,
@@ -113,7 +102,7 @@ impl App {
         let trim = self.prefs.trim_options();
         let format = self.prefs.output_format;
         let save_options = self.save_options();
-        let ctx_clone = ctx.clone();
+        let waker = self.waker.clone();
         let total = paths.len();
 
         self.batch.last_error_details.clear();
@@ -126,6 +115,7 @@ impl App {
         let (tx, rx) = mpsc::channel::<BatchProgress>();
         self.batch.rx = Some(rx);
         self.batch.running = true;
+        self.batch.progress = (0, total);
         self.status = format!("一括トリミング中... (0/{total})");
 
         let handle = thread::spawn(move || {
@@ -133,7 +123,7 @@ impl App {
                 let result =
                     BatchTrimResult::fatal(out_dir, format!("出力フォルダの作成に失敗: {e}"));
                 let _ = tx.send(BatchProgress::Finished(result));
-                ctx_clone.request_repaint();
+                waker.wake();
                 return;
             }
 
@@ -151,12 +141,12 @@ impl App {
                         processed,
                         total: batch_total,
                     });
-                    ctx_clone.request_repaint();
+                    waker.wake();
                 },
             );
 
             let _ = tx.send(BatchProgress::Finished(result));
-            ctx_clone.request_repaint();
+            waker.wake();
         });
         self.batch.handle = Some(handle);
     }
@@ -190,6 +180,7 @@ impl App {
                     break;
                 }
                 Ok(BatchProgress::Working { processed, total }) => {
+                    self.batch.progress = (processed, total);
                     self.status = format!("一括トリミング中... ({processed}/{total})");
                 }
                 Err(TryRecvError::Empty) => break,

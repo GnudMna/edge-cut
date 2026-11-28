@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui;
-use image::DynamicImage;
+use image::{DynamicImage, RgbaImage};
 
 use super::trim_state::TrimParams;
 use crate::dpi::Dpi;
@@ -14,15 +13,6 @@ use crate::trim::TrimInfo;
 // ======================================================================
 // 状態の部分構造体
 // ======================================================================
-/// プレビュー 1 ペイン分のズームとパンの状態
-#[derive(Clone, Copy, Default)]
-pub(in crate::app) struct PaneView {
-    /// 画像 1 px あたりの物理 px 数。`None` のときはペインに収まる倍率 (最大 1.0) に追従する
-    pub zoom: Option<f32>,
-    /// 画像の中心がペインの中心からずれている量 (画面 px)
-    pub offset: egui::Vec2,
-}
-
 /// 読み込み画像とプレビュー表示
 #[derive(Default)]
 pub(in crate::app) struct ImageState {
@@ -32,6 +22,10 @@ pub(in crate::app) struct ImageState {
     ///
     /// 出力ファイル名と、出力形式が `Original` のときの形式の決定に使う
     pub source_name: Option<PathBuf>,
+    /// 元画像のあるフォルダ。手動保存ダイアログの初期位置に使う
+    ///
+    /// クリップボード由来や親フォルダを特定できない場合は `None`
+    pub source_dir: Option<PathBuf>,
     /// 読み込み時にファイルの中身から判定した元画像の形式
     ///
     /// 出力形式が `Original` のときの形式の決定に使う。クリップボード由来・判定不能は `None`
@@ -40,12 +34,14 @@ pub(in crate::app) struct ImageState {
     pub icc_profile: Option<Arc<[u8]>>,
     /// 元画像の解像度。保存時に書き込む
     pub dpi: Option<Dpi>,
-    /// 元画像の GPU テクスチャ。トリミング後のプレビューも UV で切り出して共用する
-    pub orig_tex: Option<egui::TextureHandle>,
+    /// 元画像のプレビュー画像 (sRGB の RGBA)。トリミング後のプレビューも UI 側で切り出して共用する
+    ///
+    /// UI はカスタムプロトコル経由で `preview_id` ごとに取得する
+    pub preview: Option<Arc<RgbaImage>>,
+    /// プレビュー画像の識別子。差し替えるたびに増やし、UI に再取得を促す
+    pub preview_id: u64,
     /// 余白の塗り色の ICC 変換結果 (変換前の色, 変換後の色)。描画のたびにプロファイルを解析しないための保持
     pub preview_fill: Option<([u8; 4], [u8; 4])>,
-    /// プレビューのズームとパン。`[0]` が元画像、`[1]` がトリミング後のペイン
-    pub views: [PaneView; 2],
     /// 直近のトリミング情報。切り抜き画像は保持せず、保存・コピー時にこの矩形で切り出す
     pub info: Option<TrimInfo>,
     /// 直近のトリミング実行時のトリミング設定。同じ値なら再実行をスキップする
@@ -55,9 +51,8 @@ pub(in crate::app) struct ImageState {
 impl ImageState {
     /// 新しい画像読み込み前にプレビュー関連の状態をリセットする
     pub(in crate::app) fn prepare_for_load(&mut self) {
-        self.orig_tex = None;
+        self.preview = None;
         self.preview_fill = None;
-        self.views = [PaneView::default(); 2];
         self.info = None;
         self.cache_key = None;
     }
@@ -76,9 +71,24 @@ impl ImageState {
         self.cache_key = None;
     }
 
+    /// 元画像のプレビュー画像を差し替える
+    ///
+    /// # Arguments
+    /// * `preview` - 新しいプレビュー画像
+    pub(in crate::app) fn set_preview(&mut self, preview: RgbaImage) {
+        self.preview = Some(Arc::new(preview));
+        self.preview_id = self.preview_id.wrapping_add(1);
+    }
+
     /// 画像とプレビューをすべてクリアする
+    ///
+    /// プレビュー画像の識別子は引き継ぎ、クリア前の画像を UI が取り違えないようにする
     pub(in crate::app) fn clear(&mut self) {
-        *self = Self::default();
+        let preview_id = self.preview_id.wrapping_add(1);
+        *self = Self {
+            preview_id,
+            ..Self::default()
+        };
     }
 }
 

@@ -12,5 +12,5 @@ mod io_result;
 mod load;
 mod save;
 #[cfg(test)]
-mod test_helpers;
+pub(super) mod test_helpers;
 mod trim;

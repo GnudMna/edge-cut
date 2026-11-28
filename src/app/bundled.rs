@@ -11,6 +11,8 @@ use std::thread;
 
 use known_folders::{KnownFolder, get_known_folder_path};
 
+use crate::install_layout;
+
 // ======================================================================
 // 同梱文書
 // ======================================================================
@@ -26,26 +28,9 @@ pub(super) enum Bundled {
 }
 
 impl Bundled {
-    /// メニューに並べる順
+    /// すべての同梱文書
+    #[cfg(test)]
     pub(super) const ALL: [Self; 3] = [Self::Docs, Self::License, Self::ThirdPartyNotices];
-
-    /// メニューの表示名
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Docs => "📖 ドキュメント",
-            Self::License => "📄 ライセンス",
-            Self::ThirdPartyNotices => "📄 第三者ライセンス",
-        }
-    }
-
-    /// ホバー時の説明
-    pub(super) fn description(self) -> &'static str {
-        match self {
-            Self::Docs => "利用者向けドキュメントを既定のブラウザで開く",
-            Self::License => "このアプリのライセンスを開く",
-            Self::ThirdPartyNotices => "使用しているオープンソースソフトウェアのライセンスを開く",
-        }
-    }
 
     /// 状態表示などで使う、記号を除いた名前
     pub(super) fn name(self) -> &'static str {
@@ -124,7 +109,8 @@ impl Bundled {
 // ======================================================================
 /// 実行ファイルのあるディレクトリから、文書の同梱先ディレクトリを求める
 ///
-/// `<インストール先>\bin\EdgeCut.exe` に対する `<インストール先>` を返す
+/// MSI 版は `<インストール先>\bin\EdgeCut.exe` に対する `<インストール先>`、
+/// ポータブル版は実行フォルダそのものを返す
 ///
 /// # Arguments
 /// * `exe_dir` - 実行ファイルのあるディレクトリ
@@ -132,6 +118,9 @@ impl Bundled {
 /// # Returns
 /// * `Option<PathBuf>` - 同梱先ディレクトリ。親ディレクトリを辿れない場合は `None`
 fn resource_dir(exe_dir: &Path) -> Option<PathBuf> {
+    if install_layout::is_portable_dir(exe_dir) {
+        return Some(exe_dir.to_path_buf());
+    }
     exe_dir.parent().map(Path::to_path_buf)
 }
 

@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use eframe::egui;
-
 use crate::app::load_worker::{LoadJob, LoadWorkerHandle};
 use crate::app::state::{App, DialogResult};
 use crate::consts::SUPPORTED_IMAGE_EXTENSIONS;
@@ -17,9 +15,8 @@ impl App {
     /// ダイアログは別スレッドで開き、選択後は `poll_io` 経由で読み込みを開始する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
-    pub(in crate::app) fn open_image(&mut self, ctx: &egui::Context) {
-        self.spawn_dialog(ctx, |dialog| {
+    pub(in crate::app) fn open_image(&mut self) {
+        self.spawn_dialog(|dialog| {
             let path = dialog
                 .add_filter("画像", SUPPORTED_IMAGE_EXTENSIONS)
                 .pick_file();
@@ -33,11 +30,11 @@ impl App {
     /// 読み込み中も直前の画像は表示したままにする
     ///
     /// # Arguments
-    /// * `ctx`  - egui のコンテキスト (完了時の再描画に使用)
     /// * `path` - 読み込む画像ファイルのパス
-    pub(super) fn load_image_from_path(&mut self, ctx: &egui::Context, path: &Path) {
+    pub(super) fn load_image_from_path(&mut self, path: &Path) {
         self.io.abort_load();
         let request_id = self.io.load_request_id;
+        self.io.loading = true;
         let file_name = path
             .file_name()
             .unwrap_or_default()
@@ -49,7 +46,12 @@ impl App {
             request_id,
             path: path.to_path_buf(),
             file_name,
-            ctx: ctx.clone(),
+            // 親が空パス (相対のファイル名のみ) の場合はフォルダを特定できない
+            source_dir: path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf),
+            waker: self.waker.clone(),
         };
         self.load_worker().submit(job);
     }
@@ -85,8 +87,6 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
-
-    use eframe::egui;
 
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until, trimmed_image_state};
     use crate::app::state::{App, ImageState};
@@ -175,39 +175,36 @@ mod tests {
     /// `load_image_from_path()` が存在しないファイルを指定した場合にエラーステータスを設定すること
     #[test]
     fn load_image_from_path_sets_error_status_for_missing_file() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         let bad_path = Path::new("/nonexistent/path/image.png");
-        app.load_image_from_path(&ctx, bad_path);
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("読み込みエラー"));
+        app.load_image_from_path(bad_path);
+        let done = poll_io_until(&mut app, |a| a.status.contains("読み込みエラー"));
         assert!(done, "status = {}", app.status);
     }
 
     /// `load_image_from_path()` がエラー時に元画像を設定しないこと
     #[test]
     fn load_image_from_path_does_not_set_original_on_error() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         let bad_path = Path::new("/nonexistent/path/image.png");
-        app.load_image_from_path(&ctx, bad_path);
-        poll_io_until(&mut app, &ctx, |a| a.status.contains("読み込みエラー"));
+        app.load_image_from_path(bad_path);
+        poll_io_until(&mut app, |a| a.status.contains("読み込みエラー"));
         assert!(app.image.original.is_none());
     }
 
     /// `load_image_from_path()` がバックグラウンドで読み込んだ画像を元画像に設定すること
     #[test]
     fn load_image_from_path_sets_original_in_background() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
-        app.load_image_from_path(&ctx, &path);
+        app.load_image_from_path(&path);
         // 呼び出し直後は読み込み中であること
         assert!(app.status.contains("読み込み中"), "status = {}", app.status);
 
-        let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
+        let done = poll_io_until(&mut app, |a| a.image.original.is_some());
 
         assert!(done, "元画像が設定されなかった: {}", app.status);
         assert!(
@@ -220,18 +217,17 @@ mod tests {
     /// 読み込み中に `clear_image()` した場合、遅れて届いた読み込み結果を無視すること
     #[test]
     fn clear_image_discards_pending_load_result() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
-        app.load_image_from_path(&ctx, &path);
+        app.load_image_from_path(&path);
         app.clear_image();
 
         // 読み込みスレッドの完了を待ってから結果を受信する
         thread::sleep(Duration::from_millis(300));
-        app.poll_io(&ctx);
+        app.poll_io();
 
         assert!(app.image.original.is_none());
         assert!(app.status.contains("画像を開く"), "status = {}", app.status);

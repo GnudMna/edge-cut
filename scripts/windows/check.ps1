@@ -1,6 +1,6 @@
 # ========================================================================
 # Script Name : check.ps1
-# Description : Windows用の品質チェックスクリプト(fmt / clippy / doc / 許可リスト同期 / deny / test / doctest)
+# Description : Windows用の品質チェックスクリプト(UI の型・静的解析・テスト・ライセンス・監査 / fmt / clippy / doc / 許可リスト同期 / deny / test / doctest)
 # Usage       : ./check.ps1
 # Requires    : PowerShell 7.0+
 # ========================================================================
@@ -23,6 +23,24 @@ Invoke-ScriptMain {
 
     # 品質チェックを開始(--locked で Cargo.lock の更新漏れもエラーにする)
     Write-Host '品質チェックを実行しています...'
+    Write-Host ''
+
+    # UI (TypeScript) の依存をロックファイルどおりに揃える (build.rs のビルドもこれを使う)
+    Write-Host 'UI の依存をインストール中...'
+    Invoke-Native pnpm --dir ui install --frozen-lockfile
+    Write-Host ''
+
+    # UI の型検査・静的解析・テスト
+    Write-Host 'UI の型検査・静的解析・テストを実行中...'
+    Invoke-Native pnpm --dir ui run typecheck
+    Invoke-Native pnpm --dir ui run lint
+    Invoke-Native pnpm --dir ui test
+    Write-Host ''
+
+    # UI に同梱する npm パッケージのライセンスと脆弱性を検証
+    Write-Host 'UI の依存のライセンスと脆弱性を検証中...'
+    Invoke-Native pnpm --dir ui run licenses:check
+    Invoke-Native pnpm --dir ui audit --prod
     Write-Host ''
 
     # コード整形を検証

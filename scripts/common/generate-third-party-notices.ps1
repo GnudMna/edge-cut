@@ -1,6 +1,6 @@
 # ========================================================================
 # Script Name : generate-third-party-notices.ps1
-# Description : THIRD_PARTY_NOTICES を cargo-about で生成し、利用者向けドキュメントの素材表示を追記する
+# Description : THIRD_PARTY_NOTICES を cargo-about で生成し、UI (npm パッケージ) と利用者向けドキュメントの素材表示を追記する
 # Usage       : . (Join-Path $PSScriptRoot 'generate-third-party-notices.ps1') [-Target TARGET_TRIPLE]
 # Requires    : PowerShell 7.0+
 # ========================================================================
@@ -56,8 +56,24 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # cargo-about は Rust の依存だけを扱うため、利用者向けドキュメント (mdBook の HTML) に含まれる素材の表示を追記する
+# UI に同梱する npm パッケージのライセンス表記を生成する
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw 'エラー: Node.js が見つかりません (UI のライセンス表記の生成に必要)'
+}
+$npmNotices = Join-Path ([System.IO.Path]::GetTempPath()) "edgecut-npm-notices-$PID.txt"
+try {
+    node (Join-Path $ProjectRoot 'ui\scripts\third-party-notices.mjs') $npmNotices
+    if ($LASTEXITCODE -ne 0) {
+        throw "エラー: UI のライセンス表記の生成が終了コード $LASTEXITCODE で失敗しました"
+    }
+    $npmText = Get-Content -LiteralPath $npmNotices -Raw -Encoding utf8
+} finally {
+    Remove-Item -LiteralPath $npmNotices -ErrorAction SilentlyContinue
+}
+
 $userDocsNotices = Join-Path $ProjectRoot 'scripts\templates\user-docs-notices.txt'
 $notices = (Get-Content -LiteralPath $OutputFile -Raw -Encoding utf8).TrimEnd() + "`n`n" +
+    $npmText.TrimEnd() + "`n`n" +
     (Get-Content -LiteralPath $userDocsNotices -Raw -Encoding utf8)
 Set-Content -LiteralPath $OutputFile -Value $notices -Encoding utf8 -NoNewline
 

@@ -1,7 +1,8 @@
 //! `EdgeCut` のコアライブラリ
 //!
 //! 画像の背景余白検出・トリミング、安全な読み込み、一括処理を提供する。
-//! デスクトップ GUI は [`app`] モジュール、バイナリは `EdgeCut` クレート名で配布する。
+//! デスクトップ GUI は [`app`] モジュール (UI 本体は `ui/` の TypeScript)、バイナリは `EdgeCut` (本体) と
+//! `EdgeCutUpdater` (更新プログラム) で配布する。
 //!
 //! # クイックスタート
 //!
@@ -25,10 +26,11 @@
 //! | [`dpi`] | 解像度 (DPI) の型と、PNG / JPEG / TIFF からの読み取り・書き込み |
 //! | [`batch_trim`] | 複数ファイルの一括トリミング |
 //! | [`consts`] | 上限値・対応拡張子などの定数 |
-//! | [`app`] | egui ベースの GUI (`app::run`) |
+//! | [`app`] | wry / tao と React (TypeScript) による GUI (本体 `app::run`、更新プログラム `app::run_updater`) |
 //! | `panic_hook` | panic のログ記録と UI スレッドでのダイアログ通知 (クレート内部用) |
 //! | `panic_message` | panic の捕捉とメッセージ取り出し (クレート内部用) |
-//! | `update` | gh-release-bridge 経由の更新確認・署名検証・MSI 適用 |
+//! | `update` | GitHub Releases による更新確認・署名検証、更新プログラムの進行・無人インストール・ポータブル版の差し替え |
+//! | `install_layout` | 配布形態 (MSI / ポータブル) ごとの実行ファイル・データの配置 (クレート内部用) |
 
 // doctest は Clippy の対象外で警告も表示されないため、警告をエラーにして検出する
 #![doc(test(attr(deny(warnings))))]
@@ -42,6 +44,7 @@ pub mod trim;
 
 pub mod app;
 
+mod install_layout;
 mod panic_hook;
 mod panic_message;
 

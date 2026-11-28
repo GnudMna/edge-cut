@@ -39,9 +39,6 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "BSL-1.0",
-    # egui 同梱フォント (epaint_default_fonts)
-    "OFL-1.1",
-    "Ubuntu-font-1.0",
     # webpki-roots (ureq / rustls 経由) の CA バンドル用データライセンス
     "CDLA-Permissive-2.0",
 ]

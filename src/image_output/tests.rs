@@ -442,6 +442,35 @@ fn save_unique_appends_suffix_without_overwriting() {
     assert_eq!(fs::read(&existing).expect("read"), b"x");
 }
 
+/// 上書き設定が有効なときは連番を付けず既存ファイルを置き換えること
+#[test]
+fn save_unique_overwrites_when_enabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let existing = dir.join("photo.png");
+    fs::write(&existing, b"x").expect("placeholder");
+
+    let options = SaveOptions {
+        overwrite: true,
+        ..SaveOptions::default()
+    };
+    let (path, renamed) = save_image_unique_with(
+        &half_transparent_image(),
+        None,
+        None,
+        dir,
+        "photo",
+        "png",
+        options,
+    )
+    .expect("保存");
+    assert_eq!(path, existing);
+    assert!(!renamed);
+    // 中身が画像に置き換わり、連番ファイルや一時ファイルは増えない
+    assert_ne!(fs::read(&existing).expect("read"), b"x");
+    assert_eq!(fs::read_dir(dir).expect("read_dir").count(), 1);
+}
+
 /// 連番で回避した場合も一時ファイルを残さないこと
 #[test]
 fn save_unique_leaves_no_temp_file() {

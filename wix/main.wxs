@@ -5,7 +5,7 @@
   インストール先: %LOCALAPPDATA%\edge-cut
   ブランド画像: wix/Banner.bmp (493x58), wix/Dialog.bmp (493x312, 左装飾+右白)
                 scripts/windows/generate-wix-assets.ps1 で再生成可能
-  ライセンス:   wix/Eula.rtf (同意画面、LICENSE から生成)
+  画面:         WixUI_FeatureTree からライセンス同意画面を除いた独自 UI (MIT License は同意を要しない)
   同梱文書:     THIRD_PARTY_NOTICES (scripts/common/generate-third-party-notices.* で生成)
                 docs\ 利用者向けドキュメント (mdBook の HTML。ComponentGroup UserDocs は
                 scripts/common/build-user-docs.ps1 が target/wix/user-docs.wxs に生成する)
@@ -79,6 +79,15 @@
                             <RemoveFolder Id='RemoveApplicationFolder' Directory='APPLICATIONFOLDER' On='uninstall'/>
                             <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='main' Type='integer' Value='1' KeyPath='yes'/>
                         </Component>
+                        <!-- 更新プログラム。本体が %TEMP% へコピーして起動し、無人インストールと再起動を行う -->
+                        <Component Id='binary1' Guid='EADD4DF7-A7BD-4CBF-B2E6-90D38FAE0C14'>
+                            <File
+                                Id='exe1'
+                                Name='EdgeCutUpdater.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\EdgeCutUpdater.exe'/>
+                            <RegistryValue Root='HKCU' Key='Software\Yuto Hirata\edge-cut' Name='updater' Type='integer' Value='1' KeyPath='yes'/>
+                        </Component>
                     </Directory>
                 </Directory>
             </Directory>
@@ -121,6 +130,7 @@
             Absent='disallow'>
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='binary1'/>
             <ComponentRef Id='License'/>
             <ComponentRef Id='ThirdPartyNotices'/>
             <ComponentRef Id='StartMenuShortcut'/>
@@ -142,11 +152,62 @@
         <Icon Id='ProductICO' SourceFile='assets/icons/icon.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
-        <UI>
-            <UIRef Id='WixUI_FeatureTree'/>
-        </UI>
+        <!-- 完了画面の「起動する」チェックボックス (既定でオン)。手動で更新したあとアプリが終了したままにならないようにする -->
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='EdgeCut を起動する'/>
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOX' Value='1'/>
+        <CustomAction
+            Id='LaunchApplication'
+            FileKey='exe0'
+            ExeCommand=''
+            Execute='immediate'
+            Impersonate='yes'
+            Return='asyncNoWait'/>
 
-        <WixVariable Id='WixUILicenseRtf' Value='wix\Eula.rtf'/>
+        <!--
+          WixUI_FeatureTree (WiX v3.14 SDK/wixui/WixUI_FeatureTree.wxs) から LicenseAgreementDlg を除いたもの。
+          初回インストールは WelcomeDlg → CustomizeDlg → VerifyReadyDlg の順に進む。
+          更新プログラムの無人インストール (msiexec /qn) では画面を出さないため、起動は更新プログラムが行う
+        -->
+        <UI Id='EdgeCutUI_FeatureTree'>
+            <TextStyle Id='WixUI_Font_Normal' FaceName='Tahoma' Size='8'/>
+            <TextStyle Id='WixUI_Font_Bigger' FaceName='Tahoma' Size='12'/>
+            <TextStyle Id='WixUI_Font_Title' FaceName='Tahoma' Size='9' Bold='yes'/>
+
+            <Property Id='DefaultUIFont' Value='WixUI_Font_Normal'/>
+            <Property Id='WixUI_Mode' Value='FeatureTree'/>
+
+            <DialogRef Id='ErrorDlg'/>
+            <DialogRef Id='FatalError'/>
+            <DialogRef Id='FilesInUse'/>
+            <DialogRef Id='MsiRMFilesInUse'/>
+            <DialogRef Id='PrepareDlg'/>
+            <DialogRef Id='ProgressDlg'/>
+            <DialogRef Id='ResumeDlg'/>
+            <DialogRef Id='UserExit'/>
+
+            <Publish Dialog='ExitDialog' Control='Finish' Event='EndDialog' Value='Return' Order='999'>1</Publish>
+            <Publish Dialog='ExitDialog' Control='Finish' Event='DoAction' Value='LaunchApplication' Order='999'>WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg'>NOT Installed</Publish>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='VerifyReadyDlg'>Installed AND PATCH</Publish>
+
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='MaintenanceTypeDlg' Order='1'>Installed</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='2'>NOT Installed</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Next' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='CustomizeDlg' Order='1'>NOT Installed OR WixUI_InstallMode = "Change"</Publish>
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='MaintenanceTypeDlg' Order='2'>Installed AND NOT PATCH</Publish>
+            <Publish Dialog='VerifyReadyDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='3'>Installed AND PATCH</Publish>
+
+            <Publish Dialog='MaintenanceWelcomeDlg' Control='Next' Event='NewDialog' Value='MaintenanceTypeDlg'>1</Publish>
+
+            <Publish Dialog='MaintenanceTypeDlg' Control='ChangeButton' Event='NewDialog' Value='CustomizeDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='RepairButton' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='RemoveButton' Event='NewDialog' Value='VerifyReadyDlg'>1</Publish>
+            <Publish Dialog='MaintenanceTypeDlg' Control='Back' Event='NewDialog' Value='MaintenanceWelcomeDlg'>1</Publish>
+        </UI>
+        <UIRef Id='WixUI_Common'/>
+
         <WixVariable Id='WixUIBannerBmp' Value='wix\Banner.bmp'/>
         <WixVariable Id='WixUIDialogBmp' Value='wix\Dialog.bmp'/>
 

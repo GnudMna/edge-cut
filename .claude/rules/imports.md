@@ -20,7 +20,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-use eframe::egui;
+use serde::Deserialize;
 
 use crate::app::state::{App, DialogResult, IoMsg};
 use crate::image_output::{self, OutputFormat, SaveOptions};
@@ -34,8 +34,8 @@ use crate::trim::apply_trim;
 ```rust
 use std::sync::mpsc;
 
-use eframe::egui;
 use rayon::prelude::*;
+use serde::Deserialize;
 
 use super::state::App;
 ```

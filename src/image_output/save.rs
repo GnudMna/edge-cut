@@ -24,7 +24,8 @@ use crate::dpi::Dpi;
 // ======================================================================
 /// 保存時のエンコード設定
 ///
-/// `Default` は既定値 (JPEG 品質 `JPEG_QUALITY_DEFAULT`、WebP 品質 `WEBP_QUALITY_DEFAULT`) を表す
+/// `Default` は既定値 (JPEG 品質 `JPEG_QUALITY_DEFAULT`、WebP 品質 `WEBP_QUALITY_DEFAULT`、
+/// 既存ファイルは上書きしない) を表す
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaveOptions {
     /// JPEG のエンコード品質。`JPEG_QUALITY_MIN` 〜 `JPEG_QUALITY_MAX` に丸めて使う
@@ -33,6 +34,10 @@ pub struct SaveOptions {
     ///
     /// `WEBP_QUALITY_MAX` のときだけロスレスで保存する
     pub webp_quality: u8,
+    /// 同名の既存ファイルを連番で避けず上書きする
+    ///
+    /// `save_image_unique_with` と `save_trimmed_output_with` だけが参照する
+    pub overwrite: bool,
 }
 
 impl Default for SaveOptions {
@@ -40,6 +45,7 @@ impl Default for SaveOptions {
         Self {
             jpeg_quality: JPEG_QUALITY_DEFAULT,
             webp_quality: WEBP_QUALITY_DEFAULT,
+            overwrite: false,
         }
     }
 }
@@ -154,9 +160,10 @@ pub fn save_image_unique(
     )
 }
 
-/// 画像をエンコード設定を指定して `out_dir` に新規ファイルとして保存する (既存ファイルは上書きしない)
+/// 画像をエンコード設定を指定して `out_dir` に新規ファイルとして保存する (既定では既存ファイルを上書きしない)
 ///
 /// `{stem}.{ext}` が既に存在する場合は `{stem}_2.{ext}`, `_3`, ... と連番を付ける
+/// `options.overwrite` が有効なときは連番を付けず、`{stem}.{ext}` を `save_image_with` と同じ方法で上書きする
 /// 一時ファイルへ書き込んでから、存在確認と作成を同時に行う方法で公開するため、
 /// 並行する保存とも衝突せず、中断しても書きかけのファイルが保存先に残らない
 ///
@@ -184,6 +191,10 @@ pub fn save_image_unique_with(
     options: SaveOptions,
 ) -> Result<(PathBuf, bool), SaveError> {
     let base = out_dir.join(format!("{stem}.{ext}"));
+    if options.overwrite {
+        save_image_with(img, icc_profile, dpi, &base, options)?;
+        return Ok((base, false));
+    }
     let bytes = encode_image(
         img,
         icc_profile,
@@ -254,6 +265,7 @@ pub fn save_trimmed_output(
 /// トリミング結果をエンコード設定を指定して `out_dir` に新規ファイルとして保存する
 ///
 /// ファイル名は `trimmed_file_name` と同じ規則で、衝突時は連番サフィックスを付ける
+/// (`options.overwrite` が有効なときは上書きする)
 /// 自動保存と一括トリミングで共通に使う
 ///
 /// # Arguments

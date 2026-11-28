@@ -2,11 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::runner::{estimate_peak_bytes, run_batch_trim_with_workers, run_batch_with};
+use super::runner::{
+    estimate_peak_bytes, max_output_bytes, run_batch_trim_with_workers, run_batch_with,
+};
 use super::*;
+use crate::consts::{MAX_IMAGE_HEIGHT, MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH, PADDING_MAX};
 use crate::image_output::{OutputFormat, SaveOptions};
 use crate::test_helpers::bordered_rgba;
-use crate::trim::TrimOptions;
+use crate::trim::{AspectFit, AspectRatio, TrimOptions};
 
 // ======================================================================
 // ヘルパー
@@ -58,6 +61,42 @@ fn peak_estimate_includes_extended_output() {
 
     assert_eq!(peak, output * 3);
     assert!(peak > decoded * 3);
+}
+
+/// 出力サイズの上限が四辺の余白の最大分だけ大きく、向きの補正で入れ替わる場合も含むこと
+#[test]
+fn max_output_bytes_includes_padding_and_rotation() {
+    let pad = u64::from(PADDING_MAX) * 2;
+    // 100x50 の RGBA8
+    assert_eq!(
+        max_output_bytes(100, 50, 100 * 50 * 4, None),
+        (100 + pad) * (50 + pad) * 4
+    );
+    // 90 度回転で幅と高さが入れ替わっても、大きい方の見積もりを使う
+    assert_eq!(
+        max_output_bytes(50, 100, 100 * 50 * 4, None),
+        max_output_bytes(100, 50, 100 * 50 * 4, None)
+    );
+}
+
+/// 余白を足してアスペクト比を合わせる場合の上限が、その結果を下回らないこと
+#[test]
+fn max_output_bytes_covers_aspect_expand() {
+    let ratio = AspectRatio {
+        w: 1,
+        h: 4,
+        fit: AspectFit::Expand,
+    };
+    // 幅 100+200 に対して高さは 4 倍の 1200 まで伸びる (元の高さ 50+200 より大きい)
+    let bytes = max_output_bytes(100, 50, 100 * 50 * 4, Some(&ratio));
+    assert!(bytes >= 300 * 1200 * 4);
+}
+
+/// 出力サイズの上限が `MAX_IMAGE_PIXELS` を超えないこと
+#[test]
+fn max_output_bytes_is_capped_by_image_limits() {
+    let bytes = max_output_bytes(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, 1, None);
+    assert!(bytes <= MAX_IMAGE_PIXELS);
 }
 
 /// 見積もりの計算がオーバーフローせず飽和すること
@@ -224,6 +263,73 @@ fn batch_avoids_overwriting_existing_output() {
     assert_eq!(existing, b"existing");
 }
 
+/// 上書き設定が有効なときは既存出力を連番で避けず上書きすること
+#[test]
+fn batch_overwrites_existing_output_when_enabled() {
+    let ws = TempDir::new();
+    let out = ws.path("out");
+    fs::create_dir_all(&out).expect("out dir");
+    let input = ws.path("photo.png");
+    write_bordered_png(&input);
+    fs::write(out.join("photo_trimmed.png"), b"existing").expect("placeholder");
+
+    let cancel = AtomicBool::new(false);
+    let result = run_batch_trim(
+        &[input],
+        &out,
+        BatchTrimParams {
+            save_options: SaveOptions {
+                overwrite: true,
+                ..SaveOptions::default()
+            },
+            ..default_params()
+        },
+        &cancel,
+        |_, _| {},
+    );
+
+    assert_eq!(result.saved, 1);
+    assert_eq!(result.renamed, 0);
+    assert!(!out.join("photo_trimmed_2.png").exists());
+    assert_ne!(
+        fs::read(out.join("photo_trimmed.png")).expect("read"),
+        b"existing"
+    );
+}
+
+/// 上書き設定が有効でも、同じ実行内の同名出力は連番で避けて互いに上書きしないこと
+#[test]
+fn batch_overwrite_keeps_outputs_of_same_run_apart() {
+    let ws = TempDir::new();
+    let out = ws.path("out");
+    fs::create_dir_all(&out).expect("out dir");
+    let inputs: Vec<PathBuf> = (0..3)
+        .map(|i| {
+            let dir = ws.path(&format!("d{i}"));
+            fs::create_dir_all(&dir).expect("in dir");
+            let p = dir.join("same.png");
+            write_bordered_png(&p);
+            p
+        })
+        .collect();
+
+    let params = BatchTrimParams {
+        save_options: SaveOptions {
+            overwrite: true,
+            ..SaveOptions::default()
+        },
+        ..default_params()
+    };
+    let cancel = AtomicBool::new(false);
+    let result = run_batch_trim_with_workers(&inputs, &out, params, &cancel, |_, _| {}, 3);
+
+    assert_eq!(result.saved, 3);
+    assert_eq!(result.renamed, 2);
+    assert!(out.join("same_trimmed.png").is_file());
+    assert!(out.join("same_trimmed_2.png").is_file());
+    assert!(out.join("same_trimmed_3.png").is_file());
+}
+
 /// キャンセル後は未処理ファイルを処理しないこと
 ///
 /// 完了時点で着手済みのファイルを確定させるため、並列数 1 で検証する
@@ -308,8 +414,8 @@ fn batch_parallel_saves_all_files_and_reports_progress() {
         4,
     );
 
-    assert_eq!(result.saved, inputs.len());
     assert_eq!(result.errors.len(), 0, "{:?}", result.errors);
+    assert_eq!(result.saved, inputs.len());
     assert!(!result.cancelled);
     for i in 0..inputs.len() {
         assert!(out.join(format!("img{i}_trimmed.png")).is_file());
@@ -388,12 +494,15 @@ fn batch_parallel_orders_errors_by_input() {
         run_batch_trim_with_workers(&inputs, &out, default_params(), &cancel, |_, _| {}, 4);
 
     assert_eq!(result.saved, 1);
-    let names: Vec<_> = result
-        .errors
-        .iter()
-        .map(|e| e.split(':').next().unwrap_or_default())
-        .collect();
-    assert_eq!(names, ["missing1.png", "missing2.png", "missing3.png"]);
+    // エラーは入力パスで始まるため、失敗した入力の順と前方一致で照合する
+    let missing = [&inputs[0], &inputs[2], &inputs[3]];
+    assert_eq!(result.errors.len(), missing.len());
+    for (error, input) in result.errors.iter().zip(missing) {
+        assert!(
+            error.starts_with(&format!("{}: ", input.display())),
+            "{error}"
+        );
+    }
 }
 
 /// 1 ファイルの処理が panic しても、そのファイルをエラーとして数えて残りを続けること
@@ -429,6 +538,31 @@ fn batch_counts_panicked_file_as_error_and_continues() {
         // panic したファイルも処理済みとして進捗に含める
         assert_eq!(last_progress, Some((4, 4)));
     }
+}
+
+/// 別フォルダの同名ファイルが失敗した場合、エラーを入力パスで区別できること
+#[test]
+fn batch_errors_show_input_paths_for_same_named_files() {
+    let inputs = vec![Path::new("a").join("x.png"), Path::new("b").join("x.png")];
+    let cancel = AtomicBool::new(false);
+    let result = run_batch_with(
+        &inputs,
+        Path::new("out"),
+        &cancel,
+        |_, _| {},
+        1,
+        |_| Err(BatchFileError::Panic("失敗".into())),
+    );
+
+    // 入力順のまま、フォルダを含むパスで始まる
+    assert_eq!(result.errors.len(), 2);
+    for (error, input) in result.errors.iter().zip(&inputs) {
+        assert!(
+            error.starts_with(&format!("{}: ", input.display())),
+            "{error}"
+        );
+    }
+    assert_ne!(result.errors[0], result.errors[1]);
 }
 
 /// 空の入力では何もせず正常終了すること

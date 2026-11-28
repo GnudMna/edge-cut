@@ -2,20 +2,24 @@
 //!
 //! ファイル単位の並列処理・キャンセル・集計を担う。
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError, mpsc};
 use std::thread;
 
 use super::error::BatchFileError;
 use super::memory_budget::MemoryBudget;
 use super::result::{BatchTrimParams, BatchTrimResult};
-use crate::consts::{BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK_MEMORY_FACTOR};
+use crate::consts::{
+    BATCH_MAX_CONCURRENCY, BATCH_MEMORY_BUDGET_BYTES, BATCH_PEAK_MEMORY_FACTOR, MAX_IMAGE_HEIGHT,
+    MAX_IMAGE_PIXELS, MAX_IMAGE_WIDTH, PADDING_MAX,
+};
 use crate::image_load::{LoadedImage, open_image_with_icc_reserving};
-use crate::image_output::save_trimmed_output_with;
+use crate::image_output::{save_image_unique_with, save_trimmed_output_with, trimmed_file_stem};
 use crate::panic_message::catch_panic;
-use crate::trim::{apply_trim, detect_trim_with_options};
+use crate::trim::{AspectFit, AspectRatio, apply_trim, detect_trim_with_options};
 
 // ======================================================================
 // 一括処理
@@ -69,8 +73,9 @@ pub(super) fn run_batch_trim_with_workers(
     workers: usize,
 ) -> BatchTrimResult {
     let budget = MemoryBudget::new(BATCH_MEMORY_BUDGET_BYTES);
+    let written = Mutex::new(HashMap::new());
     run_batch_with(paths, out_dir, cancel, on_progress, workers, |path| {
-        process_one(path, out_dir, params, &budget)
+        process_one(path, out_dir, params, &budget, &written)
     })
 }
 
@@ -131,17 +136,11 @@ pub(super) fn run_batch_with(
 
     // 完了順に依存しないよう、エラーは入力順に並べる
     tally.errors.sort_unstable_by_key(|(index, _)| *index);
+    // 別フォルダの同名ファイルを区別し、一覧から元のファイルを探せるよう入力パスで示す
     let errors = tally
         .errors
         .into_iter()
-        .map(|(index, e)| {
-            let name = paths[index]
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            format!("{name}: {e}")
-        })
+        .map(|(index, e)| format!("{}: {e}", paths[index].display()))
         .collect();
 
     BatchTrimResult {
@@ -232,12 +231,18 @@ fn process_guarded(
 /// 1 ファイル分の読み込み・トリム・保存
 ///
 /// ヘッダから見積もったピークメモリを `budget` から確保し、保存し終えるまで保持する
-/// 余白の追加で出力が元画像より大きくなる場合は、出力サイズが分かった時点で確保量を増やす
+/// 出力サイズはトリム結果を待たず、ヘッダの寸法と設定から求めた上限で見積もる
+/// (確保後に増やすと、待つ間に元画像が残ったまま他のワーカーがデコードして予算を超えるため)
+/// 上書き設定が有効でも、この実行で同じ出力名になる入力同士は連番で分け、互いに上書きしないようにする
+///
+/// # Arguments
+/// * `written` - この実行で割り当てた出力名ごとの件数 (上書き設定が有効なときだけ使う)
 fn process_one(
     path: &Path,
     out_dir: &Path,
     params: BatchTrimParams,
     budget: &MemoryBudget,
+    written: &Mutex<HashMap<String, usize>>,
 ) -> Result<bool, BatchFileError> {
     // ヘッダの検証後、デコード前に見積もり分を確保する
     let (
@@ -248,20 +253,48 @@ fn process_one(
             source_format,
             ..
         },
-        mut permit,
-    ) = open_image_with_icc_reserving(path, |decoded_bytes| {
-        budget.acquire(decoded_bytes.saturating_mul(BATCH_PEAK_MEMORY_FACTOR))
+        _permit,
+    ) = open_image_with_icc_reserving(path, |width, height, decoded_bytes| {
+        let output_bytes =
+            max_output_bytes(width, height, decoded_bytes, params.trim.aspect.as_ref());
+        budget.acquire(estimate_peak_bytes(decoded_bytes, output_bytes))
     })?;
     let bounds = detect_trim_with_options(&image, &params.trim);
-    let bytes_per_pixel = u64::from(image.color().bytes_per_pixel());
-    let decoded_bytes = u64::from(image.width()) * u64::from(image.height()) * bytes_per_pixel;
-    let output_bytes =
-        u64::from(bounds.info.trim_w) * u64::from(bounds.info.trim_h) * bytes_per_pixel;
-    // 出力キャンバスはデコード後の画像より大きくなりうるため、切り出し前に不足分を確保する
-    permit.grow_to(estimate_peak_bytes(decoded_bytes, output_bytes));
     let trimmed = apply_trim(&image, &bounds.info);
     // エンコード中のピークを見積もり内に収めるため、元画像は切り出し後すぐに解放する
     drop(image);
+    if params.save_options.overwrite {
+        let stem = trimmed_file_stem(path);
+        let ext = params.format.resolve_extension(path, source_format);
+        // この実行で同じ出力名になる入力は、2 件目から `_2`, `_3`, ... の名前で上書きする
+        // 先頭の入力が基底名を取るため、並列でも互いの出力を上書きしない
+        // Windows のファイル名は大文字小文字を区別しないため、小文字にそろえて数える
+        let key = out_dir
+            .join(format!("{stem}.{ext}"))
+            .to_string_lossy()
+            .to_lowercase();
+        let nth = {
+            let mut counts = written.lock().unwrap_or_else(PoisonError::into_inner);
+            let count = counts.entry(key).or_insert(0_usize);
+            *count += 1;
+            *count
+        };
+        let stem = if nth == 1 {
+            stem
+        } else {
+            format!("{stem}_{nth}")
+        };
+        save_image_unique_with(
+            &trimmed,
+            icc_profile.as_deref(),
+            dpi,
+            out_dir,
+            &stem,
+            &ext,
+            params.save_options,
+        )?;
+        return Ok(nth > 1);
+    }
     let (_, file_renamed) = save_trimmed_output_with(
         &trimmed,
         icc_profile.as_deref(),
@@ -273,6 +306,50 @@ fn process_one(
         params.save_options,
     )?;
     Ok(file_renamed)
+}
+
+/// デコード前の寸法から、トリム後の出力画像のバイト数の上限を求める
+///
+/// 余白は各辺 `PADDING_MAX` までのため、出力の矩形は `(w + 2 * PADDING_MAX)` x
+/// `(h + 2 * PADDING_MAX)` に収まる。アスペクト比を余白で合わせる場合は、
+/// 長い方に合わせて短い方を足した寸法も上限に含める
+/// 結果は `MAX_IMAGE_*` を超えない。向きの補正で幅と高さが入れ替わる場合も含める
+///
+/// # Arguments
+/// * `width` - 向きの補正前の幅 (px)
+/// * `height` - 向きの補正前の高さ (px)
+/// * `decoded_bytes` - デコード後の画像のバイト数
+/// * `aspect` - 固定するアスペクト比
+///
+/// # Returns
+/// * `u64` - 出力画像のバイト数の上限
+pub(super) fn max_output_bytes(
+    width: u32,
+    height: u32,
+    decoded_bytes: u64,
+    aspect: Option<&AspectRatio>,
+) -> u64 {
+    let pixels = u64::from(width) * u64::from(height);
+    let bytes_per_pixel = (decoded_bytes / pixels.max(1)).max(1);
+    let max_pixels = |w: u32, h: u32| -> u64 {
+        let pad = u64::from(PADDING_MAX) * 2;
+        let (w, h) = (u64::from(w) + pad, u64::from(h) + pad);
+        let (w, h) = match aspect {
+            Some(ratio) if ratio.fit == AspectFit::Expand => {
+                let (aw, ah) = (u64::from(ratio.w.max(1)), u64::from(ratio.h.max(1)));
+                (w.max((h * aw).div_ceil(ah)), h.max((w * ah).div_ceil(aw)))
+            }
+            _ => (w, h),
+        };
+        let (w, h) = (
+            w.min(u64::from(MAX_IMAGE_WIDTH)),
+            h.min(u64::from(MAX_IMAGE_HEIGHT)),
+        );
+        (w * h).min(MAX_IMAGE_PIXELS)
+    };
+    max_pixels(width, height)
+        .max(max_pixels(height, width))
+        .saturating_mul(bytes_per_pixel)
 }
 
 /// 1 ファイルのピークメモリを見積もる

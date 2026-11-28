@@ -1,33 +1,41 @@
-//! gh-release-bridge 経由のアプリ更新確認・適用
+//! GitHub Releases によるアプリ更新確認・適用
 //!
-//! version API の各アセットに GitHub Release Asset の `digest` (`sha256:<hex>`) が
-//! 含まれることを前提とする。ダウンロード中は宣言サイズ超過または絶対上限で打ち切り、
-//! 完了後にサイズと SHA-256 を検証する
+//! 本体は更新の有無を確かめ (`check`)、更新プログラム (`EdgeCutUpdater.exe`) を起動する (`session`)。
+//! 更新プログラムはダウンロード・検証 (`prepare`)、本体の終了待ち、無人インストール (`install`)、
+//! 再起動までを進める (`flow` / `ops`)。画面は `app::updater` が担う
+//!
+//! GitHub API が返す各アセットに `digest` (`sha256:<hex>`) が含まれることを前提とする。
+//! ダウンロード中は宣言サイズ超過または絶対上限で打ち切り、完了後にサイズと SHA-256 を検証する
 //! 適用前に `<asset>.minisig` の minisign 署名をビルド時埋め込み公開鍵で検証し、
-//! 配信経路や version API の digest を差し替えられても正規の秘密鍵で署名されていない MSI は適用しない
-//! 保護対象タグのアセット DL にはビルド時埋め込みキー (`EDGE_CUT_KEY_FILE` が指すファイル) を
-//! ChaCha20-Poly1305 で暗号化して埋め込み、復号した値を `Authorization: Bearer` で付与する
+//! 配信経路や API の digest を差し替えられても正規の秘密鍵で署名されていない配布物は適用しない
 
-mod apply;
-mod bridge_key;
-mod bridge_key_obfuscate;
 mod check;
-mod cipher;
 mod error;
+mod extract;
+pub(crate) mod flow;
 mod http;
+mod install;
+mod ops;
+mod prepare;
+mod session;
 mod signature;
 mod types;
 mod verify;
 
-pub(crate) use apply::{apply_update, cleanup_stale_update_dirs};
 pub(crate) use check::check_for_update;
-pub(crate) use types::{AvailableUpdate, UpdateApplyOutcome, UpdateCheckOutcome};
+pub(crate) use error::UpdateError;
+pub(crate) use ops::{SystemOps, UpdaterArgs};
+pub(crate) use prepare::cleanup_stale_update_dirs;
+pub(crate) use session::{UpdaterEvent, UpdaterSession, launch_updater};
+pub(crate) use types::{AvailableUpdate, UpdateCheckOutcome, UpdatePackageKind};
 
 // ======================================================================
 // 定数
 // ======================================================================
-/// gh-release-bridge のベース URL
-pub(crate) const BRIDGE_BASE_URL: &str = "https://gh-release-bridge.gnudlemna-4656.workers.dev";
+/// GitHub REST API のベース URL (最新リリースの照会)
+pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+/// GitHub のベース URL (リリースアセットのダウンロード)
+pub(crate) const GITHUB_BASE_URL: &str = "https://github.com";
 /// GitHub リポジトリ所有者
 pub(crate) const RELEASE_OWNER: &str = "GnudMna";
 /// GitHub リポジトリ名

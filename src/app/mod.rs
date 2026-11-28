@@ -1,26 +1,32 @@
 //! アプリケーションモジュール
+//!
+//! tao のウィンドウに wry の `WebView` を載せ、`TypeScript` (`React`) の UI を表示する。
+//! 状態と処理は Rust 側 (`state` / `actions` / 各ワーカー) が持ち、UI とは `ipc` のコマンドと
+//! 画面状態でやり取りする。イベントループは `event_loop` に置く。
+//! 更新プログラム (`EdgeCutUpdater.exe`) の画面は `updater` が同じ UI を使って表示する
+
 mod actions;
 mod bundled;
 mod clipboard_worker;
-mod fonts;
+mod event_loop;
 mod icon;
 mod image_convert;
+mod ipc;
 mod load_worker;
+mod protocol;
 mod save_dir;
-mod shortcuts;
+mod settings_store;
+mod single_instance;
 mod state;
-mod theme;
-mod title_bar;
 mod trim_worker;
-mod view;
+mod updater;
+mod waker;
 
-use eframe::egui;
+use std::error::Error;
 
-use crate::{consts, panic_hook};
+use crate::panic_hook;
 
-/// 日本語フォントが見つからなかった場合にステータスバーへ表示するメッセージ
-const FONT_MISSING_MESSAGE: &str =
-    "日本語フォントが見つからないため、文字が正しく表示されない場合があります";
+pub use updater::run_updater;
 
 // ======================================================================
 // アプリケーション起動
@@ -28,44 +34,38 @@ const FONT_MISSING_MESSAGE: &str =
 /// アプリケーションの実行
 ///
 /// # Returns
-/// * `eframe::Result` - ネイティブアプリの実行結果
+/// * `Result<(), Box<dyn Error>>` - 正常終了、またはウィンドウ・`WebView` の初期化エラー
 ///
 /// # Errors
-/// ネイティブウィンドウの初期化またはイベントループの実行に失敗した場合
-pub fn run() -> eframe::Result {
+/// ウィンドウまたは `WebView` (`WebView2` ランタイム) の初期化に失敗した場合
+pub fn run() -> Result<(), Box<dyn Error>> {
     // コンソールの無いリリースビルドでも panic の原因を追えるよう、最初に登録する
     panic_hook::install();
 
-    // 過去の更新で残った MSI は、起動を遅らせないようバックグラウンドで削除する
+    // 設定の保存・更新プログラムの終了依頼・作業フォルダの掃除が成り立つよう、本体は 1 つに限る。
+    // ロックを取れない (別のウィンドウが起動中) 場合は、掃除などを行わずに知らせて終了する
+    let _instance = match single_instance::acquire() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => {
+            // 既存のウィンドウを前面に出せれば十分。見つからないとき (起動直後など) だけ知らせる
+            if !single_instance::activate_existing_window() {
+                rfd::MessageDialog::new()
+                    .set_title("EdgeCut")
+                    .set_level(rfd::MessageLevel::Info)
+                    .set_description("EdgeCut はすでに起動しています。")
+                    .show();
+            }
+            return Ok(());
+        }
+        // ロックの仕組みが使えない環境では、多重起動を防げなくても起動を妨げない
+        Err(err) => {
+            eprintln!("多重起動の防止を無効にして起動する: {err}");
+            None
+        }
+    };
+
+    // 過去の更新で残った作業フォルダ (配布物・更新プログラムのコピー) は、起動を遅らせないようバックグラウンドで削除する
     std::thread::spawn(crate::update::cleanup_stale_update_dirs);
 
-    // 数 MB のフォントファイルの読み込みを、ウィンドウ・GPU の初期化と並行して行う
-    let font_loader = std::thread::spawn(fonts::load_system_fonts);
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(consts::APP_NAME)
-            .with_inner_size(consts::DEFAULT_WINDOW_SIZE)
-            .with_min_inner_size(consts::MIN_WINDOW_SIZE)
-            .with_drag_and_drop(true)
-            .with_icon(icon::load_icon()),
-        ..Default::default()
-    };
-    eframe::run_native(
-        consts::APP_NAME,
-        options,
-        Box::new(|cc| {
-            // フォントの追加 (読み込みスレッドが panic した場合は全て未発見として扱う)
-            let fonts = font_loader.join().unwrap_or_default();
-            let font_registered = fonts::register_system_fonts(&cc.egui_ctx, fonts);
-            theme::install(&cc.egui_ctx);
-
-            let mut app = state::App::new(cc.storage);
-            app.set_dialog_parent(cc);
-            if !font_registered {
-                app.status = FONT_MISSING_MESSAGE.into();
-            }
-            Ok(Box::new(app))
-        }),
-    )
+    event_loop::run()
 }

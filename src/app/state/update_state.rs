@@ -2,6 +2,8 @@
 
 use std::sync::mpsc;
 
+use crate::update::{AvailableUpdate, UpdateCheckOutcome, UpdaterSession};
+
 // ======================================================================
 // 更新確認
 // ======================================================================
@@ -19,27 +21,22 @@ pub(in crate::app) enum UpdateUiPhase {
         current_version: String,
     },
     /// 更新あり
-    Available(crate::update::AvailableUpdate),
-    /// MSI ダウンロード・検証中
-    Downloading {
-        /// 確認済みの更新情報
-        update: crate::update::AvailableUpdate,
-    },
+    Available(AvailableUpdate),
     /// 失敗
     Error {
         /// ユーザー向けメッセージ
         message: String,
     },
-    /// MSI を起動済み (アプリ終了待ち)
-    MsiStarted,
+    /// 更新プログラムを起動済み (ダウンロード中も本体は使える)
+    UpdaterRunning(AvailableUpdate),
+    /// 更新プログラムから終了を依頼された (保存の完了を待って終了する)
+    Exiting,
 }
 
 /// バックグラウンド更新処理の結果
 pub(in crate::app) enum UpdateWorkerMsg {
     /// 更新確認の結果
-    Check(crate::update::UpdateCheckOutcome),
-    /// 更新適用の結果
-    Apply(crate::update::UpdateApplyOutcome),
+    Check(UpdateCheckOutcome),
 }
 
 /// アプリ更新の UI / ワーカー状態
@@ -49,24 +46,23 @@ pub(in crate::app) struct UpdateState {
     pub phase: UpdateUiPhase,
     /// バックグラウンドからの結果受信
     pub rx: Option<mpsc::Receiver<UpdateWorkerMsg>>,
+    /// 起動中の更新プログラムとの接続 (本体の終了まで保持する)
+    pub session: Option<UpdaterSession>,
     /// 更新ダイアログを表示中か
     pub dialog_open: bool,
 }
 
 impl UpdateState {
-    /// 確認または適用が進行中か
+    /// 確認中か、更新プログラムが動作中か
     pub(in crate::app) fn is_busy(&self) -> bool {
         matches!(
             self.phase,
-            UpdateUiPhase::Checking | UpdateUiPhase::Downloading { .. }
+            UpdateUiPhase::Checking | UpdateUiPhase::UpdaterRunning(_) | UpdateUiPhase::Exiting
         )
     }
 
-    /// 更新の適用が始まり、アプリの終了へ向かっているか
+    /// 更新の適用のため、アプリの終了へ向かっているか
     pub(in crate::app) fn is_applying(&self) -> bool {
-        matches!(
-            self.phase,
-            UpdateUiPhase::Downloading { .. } | UpdateUiPhase::MsiStarted
-        )
+        matches!(self.phase, UpdateUiPhase::Exiting)
     }
 }

@@ -1,10 +1,11 @@
 //! ドラッグ & ドロップされたファイル・フォルダの処理
 
+use std::cmp::Ordering;
 use std::fs;
-use std::path::PathBuf;
+use std::iter::Peekable;
+use std::path::{Path, PathBuf};
+use std::str::Chars;
 use std::thread;
-
-use eframe::egui;
 
 use super::batch::skipped_note;
 use crate::app::state::{App, IoMsg, ScannedDrop};
@@ -22,13 +23,8 @@ impl App {
     /// `poll_io` から `apply_scanned_drop` で処理する。新しいドロップが始まると古い結果は無視する
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト (完了時の再描画に使用)
     /// * `paths` - ドロップされたパス
-    pub(in crate::app) fn handle_dropped_paths(
-        &mut self,
-        ctx: &egui::Context,
-        paths: Vec<PathBuf>,
-    ) {
+    pub(in crate::app) fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
@@ -37,12 +33,12 @@ impl App {
         self.status = "ドロップされたファイルを確認中...".into();
 
         let tx = self.io.tx.clone();
-        let ctx = ctx.clone();
+        let waker = self.waker.clone();
         thread::spawn(move || {
             let result = catch_panic(|| scan_dropped_paths(paths))
                 .map_err(|msg| format!("ドロップの処理中にエラーが発生しました: {msg}"));
             let _ = tx.send(IoMsg::DropScanned { request_id, result });
-            ctx.request_repaint();
+            waker.wake();
         });
     }
 
@@ -52,9 +48,8 @@ impl App {
     /// 保存先フォルダを選択させて一括トリミングする。
     ///
     /// # Arguments
-    /// * `ctx` - egui のコンテキスト
     /// * `scanned` - 展開・振り分け済みのドロップ対象
-    pub(in crate::app) fn apply_scanned_drop(&mut self, ctx: &egui::Context, scanned: ScannedDrop) {
+    pub(in crate::app) fn apply_scanned_drop(&mut self, scanned: ScannedDrop) {
         let ScannedDrop {
             images,
             skipped,
@@ -69,7 +64,7 @@ impl App {
                 self.status = format!("対応していないファイルです ({skipped} 件)");
             }
             [path] if !has_dir => {
-                self.load_image_from_path(ctx, path);
+                self.load_image_from_path(path);
                 if skipped > 0 {
                     let note = skipped_note(skipped);
                     self.status.push_str(&note);
@@ -89,7 +84,7 @@ impl App {
                     images.len()
                 );
             }
-            _ => self.start_batch_trim(ctx, images, skipped),
+            _ => self.start_batch_trim(images, skipped),
         }
     }
 }
@@ -118,7 +113,7 @@ fn scan_dropped_paths(paths: Vec<PathBuf>) -> ScannedDrop {
 
 /// フォルダを展開したドロップ対象
 struct ExpandedDrop {
-    /// ファイルのパスと、フォルダ直下のエントリ (フォルダごとに名前順)
+    /// ファイルのパスと、フォルダ直下のエントリ (フォルダごとに名前の自然順)
     paths: Vec<PathBuf>,
     /// フォルダを 1 つ以上含んでいたか
     has_dir: bool,
@@ -129,7 +124,7 @@ struct ExpandedDrop {
 /// ドロップされたパスのうちフォルダを直下のエントリに展開する
 ///
 /// サブフォルダは再帰せずそのままエントリとして残す (後段の振り分けで除外される)
-/// `read_dir` の順序は OS 依存のため、フォルダごとに名前順へ並べ替える
+/// `read_dir` の順序は OS 依存のため、フォルダごとに名前の自然順 (`natural_cmp`) へ並べ替える
 ///
 /// # Arguments
 /// * `paths` - ドロップされたパス
@@ -153,10 +148,79 @@ fn expand_dropped_dirs(paths: Vec<PathBuf>) -> ExpandedDrop {
             continue;
         };
         let mut children: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        children.sort();
+        children.sort_by(|a, b| natural_cmp_file_names(a, b));
         expanded.paths.extend(children);
     }
     expanded
+}
+
+/// 2 つのパスをファイル名の自然順で比べる
+///
+/// 名前が自然順で等しい場合はパス全体のバイト順で決め、並びを一意にする
+fn natural_cmp_file_names(a: &Path, b: &Path) -> Ordering {
+    let name = |p: &Path| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    natural_cmp(&name(a), &name(b)).then_with(|| a.cmp(b))
+}
+
+/// 文字列を自然順 (数字の並びは数値として比べる) で比べる
+///
+/// エクスプローラーの名前順に合わせ、`img2` を `img10` より前にする
+/// 英字は大文字・小文字を区別せずに比べる。数値が等しい場合は先頭の 0 が少ない方を前にし、
+/// それでも等しい場合は元の文字列の順とする
+///
+/// # Arguments
+/// * `a` - 比べる文字列
+/// * `b` - 比べる文字列
+///
+/// # Returns
+/// * `Ordering` - `a` と `b` の順序
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut ai, mut bi) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (x_digits, y_digits) = (take_digits(&mut ai), take_digits(&mut bi));
+                let (x_num, y_num) = (
+                    x_digits.trim_start_matches('0'),
+                    y_digits.trim_start_matches('0'),
+                );
+                // 先頭の 0 を除いた桁数、同じ桁数なら各桁で数値の大小を決める
+                let ord = x_num
+                    .len()
+                    .cmp(&y_num.len())
+                    .then_with(|| x_num.cmp(y_num))
+                    .then_with(|| x_digits.len().cmp(&y_digits.len()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let ord = x.to_lowercase().cmp(y.to_lowercase());
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                ai.next();
+                bi.next();
+            }
+        }
+    }
+}
+
+/// 先頭から連続する ASCII 数字を取り出す
+fn take_digits(chars: &mut Peekable<Chars<'_>>) -> String {
+    let mut digits = String::new();
+    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+        digits.push(c);
+    }
+    digits
 }
 
 /// パスを対応画像ファイルとそれ以外に振り分ける
@@ -191,9 +255,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use eframe::egui;
-
-    use super::{expand_dropped_dirs, partition_supported_images};
+    use super::{expand_dropped_dirs, natural_cmp, partition_supported_images};
     use crate::app::actions::test_helpers::{make_test_image, poll_io_until};
     use crate::app::state::{App, IoMsg, ScannedDrop};
 
@@ -231,11 +293,10 @@ mod tests {
     /// 対応ファイルがない場合に件数をステータスへ表示し、読み込みを行わないこと
     #[test]
     fn handle_dropped_paths_reports_unsupported_only() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
-        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.txt"), PathBuf::from("b.pdf")]);
+        app.handle_dropped_paths(vec![PathBuf::from("a.txt"), PathBuf::from("b.pdf")]);
         // 展開はワーカースレッドで行うため、結果が届くまで待つ
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("対応していない"));
+        let done = poll_io_until(&mut app, |a| a.status.contains("対応していない"));
 
         assert!(done, "status = {}", app.status);
         assert!(app.status.contains("2 件"), "status = {}", app.status);
@@ -245,10 +306,9 @@ mod tests {
     /// 空のドロップではステータスを変更しないこと
     #[test]
     fn handle_dropped_paths_ignores_empty() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         let status_before = app.status.clone();
-        app.handle_dropped_paths(&ctx, Vec::new());
+        app.handle_dropped_paths(Vec::new());
         assert_eq!(app.status, status_before);
         // ワーカーを起動しないこと
         assert!(app.io.rx.try_recv().is_err());
@@ -257,19 +317,18 @@ mod tests {
     /// 対応画像が 1 件ならプレビューで開き、完了後のステータスにも除外件数を残すこと
     #[test]
     fn handle_dropped_paths_loads_single_image_with_note() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("input.png");
         make_test_image().save(&path).unwrap();
 
         let mut app = App::default();
-        app.handle_dropped_paths(&ctx, vec![tmp.path().join("readme.txt"), path]);
+        app.handle_dropped_paths(vec![tmp.path().join("readme.txt"), path]);
         // 展開が終わり、読み込みを始めた時点で除外件数を表示する
-        let loading = poll_io_until(&mut app, &ctx, |a| a.status.contains("読み込み中"));
+        let loading = poll_io_until(&mut app, |a| a.status.contains("読み込み中"));
         assert!(loading, "status = {}", app.status);
         assert!(app.status.contains("除外"), "status = {}", app.status);
 
-        let done = poll_io_until(&mut app, &ctx, |a| a.image.original.is_some());
+        let done = poll_io_until(&mut app, |a| a.image.original.is_some());
 
         // 読み込み完了で上書きされても補足は残る
         assert!(done, "元画像が設定されなかった: {}", app.status);
@@ -283,24 +342,20 @@ mod tests {
     /// 一括トリミングの実行中は複数ファイルのドロップを受け付けないこと
     #[test]
     fn handle_dropped_paths_rejects_batch_while_running() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         app.batch.running = true;
-        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("受け付けません"));
+        app.handle_dropped_paths(vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
+        let done = poll_io_until(&mut app, |a| a.status.contains("受け付けません"));
         assert!(done, "status = {}", app.status);
     }
 
     /// ダイアログ表示中の複数ファイルのドロップは、処理されなかったことをステータスに示すこと
     #[test]
     fn handle_dropped_paths_reports_discarded_while_dialog_open() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         app.io.dialog_open = true;
-        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
-        let done = poll_io_until(&mut app, &ctx, |a| {
-            a.status.contains("処理できませんでした")
-        });
+        app.handle_dropped_paths(vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
+        let done = poll_io_until(&mut app, |a| a.status.contains("処理できませんでした"));
 
         assert!(done, "status = {}", app.status);
         assert!(app.status.contains("2 件"), "status = {}", app.status);
@@ -339,6 +394,53 @@ mod tests {
         assert_eq!(expanded.unreadable_dirs, 0);
     }
 
+    /// フォルダ内の番号付きファイルを数値の順に展開すること
+    #[test]
+    fn expand_dropped_dirs_sorts_numbers_naturally() {
+        let ws = tempfile::tempdir().unwrap();
+        let tmp = ws.path();
+        for name in ["img10.png", "img2.png", "B.png", "img1.png", "a.png"] {
+            fs::write(tmp.join(name), b"").unwrap();
+        }
+
+        let expanded = expand_dropped_dirs(vec![tmp.to_path_buf()]);
+
+        // 数字は数値として、英字は大文字・小文字を区別せずに並べる
+        let names: Vec<_> = expanded
+            .paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["a.png", "B.png", "img1.png", "img2.png", "img10.png"]
+        );
+    }
+
+    /// 自然順の比較で数値・先頭の 0・大文字小文字・長さの違いを順序付けること
+    #[test]
+    fn natural_cmp_orders_numbers_by_value() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+
+        // 数字の並びは数値として比べる
+        assert_eq!(natural_cmp("img2", "img10"), Less);
+        assert_eq!(natural_cmp("10", "9"), Greater);
+        // 数値が等しい場合は先頭の 0 が少ない方が前
+        assert_eq!(natural_cmp("img1", "img01"), Less);
+        assert_eq!(natural_cmp("007", "7"), Greater);
+        // u64 に収まらない桁数でも比べられる
+        assert_eq!(
+            natural_cmp("99999999999999999999", "100000000000000000000"),
+            Less
+        );
+        // 英字は大文字・小文字を区別せず、等しければ元の文字列の順
+        assert_eq!(natural_cmp("B", "a"), Greater);
+        assert_eq!(natural_cmp("A", "a"), Less);
+        // 前方一致では短い方が前
+        assert_eq!(natural_cmp("img", "img1"), Less);
+        assert_eq!(natural_cmp("img1", "img1"), Equal);
+    }
+
     /// フォルダを含まない場合は入力をそのまま返すこと
     #[test]
     fn expand_dropped_dirs_keeps_files_as_is() {
@@ -351,14 +453,13 @@ mod tests {
     /// 対応画像のないフォルダでは専用のメッセージと除外件数を表示すること
     #[test]
     fn handle_dropped_paths_reports_folder_without_images() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("sub")).unwrap();
         fs::write(tmp.path().join("readme.txt"), b"").unwrap();
 
         let mut app = App::default();
-        app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
-        let done = poll_io_until(&mut app, &ctx, |a| {
+        app.handle_dropped_paths(vec![tmp.path().to_path_buf()]);
+        let done = poll_io_until(&mut app, |a| {
             a.status.contains("フォルダに対応画像がありません")
         });
 
@@ -371,7 +472,6 @@ mod tests {
     /// 対応画像が 1 件だけのフォルダでもプレビューではなく一括トリミングとして扱うこと
     #[test]
     fn handle_dropped_paths_treats_folder_as_batch() {
-        let ctx = egui::Context::default();
         let tmp = tempfile::tempdir().unwrap();
         make_test_image()
             .save(tmp.path().join("input.png"))
@@ -380,8 +480,8 @@ mod tests {
         // 保存先ダイアログを開かずに一括トリミング経路へ入ったことを確認するため実行中にしておく
         let mut app = App::default();
         app.batch.running = true;
-        app.handle_dropped_paths(&ctx, vec![tmp.path().to_path_buf()]);
-        let done = poll_io_until(&mut app, &ctx, |a| a.status.contains("受け付けません"));
+        app.handle_dropped_paths(vec![tmp.path().to_path_buf()]);
+        let done = poll_io_until(&mut app, |a| a.status.contains("受け付けません"));
 
         assert!(done, "status = {}", app.status);
         assert!(app.io.load_note.is_none());
@@ -390,9 +490,8 @@ mod tests {
     /// 展開中は UI スレッドを待たせず、確認中であることをステータスに示すこと
     #[test]
     fn handle_dropped_paths_shows_scanning_status_immediately() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
-        app.handle_dropped_paths(&ctx, vec![PathBuf::from("a.txt")]);
+        app.handle_dropped_paths(vec![PathBuf::from("a.txt")]);
 
         assert!(app.status.contains("確認中"), "status = {}", app.status);
     }
@@ -400,7 +499,6 @@ mod tests {
     /// 後続のドロップで無効化された展開結果を無視すること
     #[test]
     fn poll_io_discards_stale_drop_scan() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         let stale_id = app.io.drop_request_id;
         app.io.drop_request_id += 1;
@@ -416,7 +514,7 @@ mod tests {
                 }),
             })
             .unwrap();
-        app.poll_io(&ctx);
+        app.poll_io();
 
         assert_eq!(app.status, "確認中");
     }
@@ -424,7 +522,6 @@ mod tests {
     /// 展開の失敗をステータスに表示すること
     #[test]
     fn poll_io_reports_drop_scan_failure() {
-        let ctx = egui::Context::default();
         let mut app = App::default();
         app.io
             .tx
@@ -433,7 +530,7 @@ mod tests {
                 result: Err("失敗".into()),
             })
             .unwrap();
-        app.poll_io(&ctx);
+        app.poll_io();
 
         assert_eq!(app.status, "失敗");
     }

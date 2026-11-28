@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use eframe::egui::{self, ColorImage};
-use image::DynamicImage;
+use image::{DynamicImage, RgbaImage};
 
-use super::image_convert::to_preview_color_image;
+use super::image_convert::to_preview_image;
 use super::state::{TrimPreview, TrimWorkerResult};
+use super::waker::Waker;
 use crate::panic_message::catch_panic;
 use crate::trim::{TrimOptions, detect_trim_with_options};
 
@@ -29,7 +29,7 @@ pub(super) struct TrimJob {
     pub icc_profile: Option<Arc<[u8]>>,
     pub options: TrimOptions,
     pub refresh_orig_tex: bool,
-    pub ctx: egui::Context,
+    pub waker: Waker,
 }
 
 /// プレビュートリミング専用の永続ワーカースレッド
@@ -46,7 +46,7 @@ impl TrimWorkerHandle {
             while let Ok(job) = job_rx.recv() {
                 let job = take_latest(job, &job_rx);
                 let _ = result_tx.send(run_guarded(&job, make_orig_color, detect_job));
-                job.ctx.request_repaint();
+                job.waker.wake();
             }
         });
         Self {
@@ -76,7 +76,7 @@ impl TrimWorkerHandle {
 ///   プレビュー画像の生成が panic した場合は `orig_color` が `None`
 fn run_guarded(
     job: &TrimJob,
-    make_orig: impl FnOnce(&TrimJob) -> ColorImage,
+    make_orig: impl FnOnce(&TrimJob) -> RgbaImage,
     detect: impl FnOnce(&TrimJob) -> TrimPreview,
 ) -> TrimWorkerResult {
     // ジョブはワーカー外と可変状態を共有しないため、panic 後も不整合にならない
@@ -93,8 +93,8 @@ fn run_guarded(
 }
 
 /// 元画像のプレビュー画像を生成する
-fn make_orig_color(job: &TrimJob) -> ColorImage {
-    to_preview_color_image(job.original.as_ref(), job.icc_profile.as_deref())
+fn make_orig_color(job: &TrimJob) -> RgbaImage {
+    to_preview_image(job.original.as_ref(), job.icc_profile.as_deref())
 }
 
 /// トリミング矩形を検出する
@@ -148,7 +148,6 @@ mod tests {
     fn coalesces_pending_jobs_to_latest() {
         let (result_tx, result_rx) = mpsc::channel();
         let handle = TrimWorkerHandle::spawn(result_tx);
-        let ctx = egui::Context::default();
         let original = solid_image();
 
         for id in 1..=5 {
@@ -158,7 +157,7 @@ mod tests {
                 icc_profile: None,
                 options: TrimOptions::default(),
                 refresh_orig_tex: false,
-                ctx: ctx.clone(),
+                waker: Waker::noop(),
             });
         }
 
@@ -190,7 +189,7 @@ mod tests {
             icc_profile: None,
             options: TrimOptions::default(),
             refresh_orig_tex: false,
-            ctx: egui::Context::default(),
+            waker: Waker::noop(),
         };
 
         // panic は Err に変換される
@@ -214,7 +213,7 @@ mod tests {
             icc_profile: None,
             options: TrimOptions::default(),
             refresh_orig_tex: true,
-            ctx: egui::Context::default(),
+            waker: Waker::noop(),
         };
 
         let result = run_guarded(&job, make_orig_color, |_| panic!("テスト用の panic"));
@@ -230,7 +229,6 @@ mod tests {
     /// 破棄したジョブのテクスチャ再生成要求が最新のジョブへ引き継がれること
     #[test]
     fn take_latest_carries_over_refresh_orig_tex() {
-        let ctx = egui::Context::default();
         let original = solid_image();
         let job = |request_id, refresh_orig_tex| TrimJob {
             request_id,
@@ -238,7 +236,7 @@ mod tests {
             icc_profile: None,
             options: TrimOptions::default(),
             refresh_orig_tex,
-            ctx: ctx.clone(),
+            waker: Waker::noop(),
         };
 
         // 先頭の再生成要求が、後続 2 件を経ても最新のジョブに残る

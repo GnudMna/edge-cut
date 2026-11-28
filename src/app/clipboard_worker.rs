@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-use eframe::egui;
 use image::DynamicImage;
 
 use super::image_convert::convert_to_srgb;
 use super::state::IoMsg;
+use super::waker::Waker;
 use crate::image_load::{check_dimensions, validate_clipboard_rgba};
 use crate::panic_message::catch_panic;
 use crate::trim::{TrimInfo, apply_trim};
@@ -33,7 +33,7 @@ pub(super) enum ClipboardJob {
         info: TrimInfo,
         /// 元画像の ICC プロファイル。あれば sRGB へ変換してからコピーする
         icc_profile: Option<Arc<[u8]>>,
-        ctx: egui::Context,
+        waker: Waker,
     },
     /// クリップボードの画像を取得し、完了を `IoMsg::Pasted` で通知する
     ///
@@ -42,11 +42,11 @@ pub(super) enum ClipboardJob {
     Paste {
         /// 読み込み要求 ID。古い結果を無視するために使用する
         request_id: u64,
-        ctx: egui::Context,
+        waker: Waker,
     },
     /// 実クリップボードに触れず、`IoMsg::Copied` の成功を返すだけのジョブ
     #[cfg(test)]
-    Probe { ctx: egui::Context },
+    Probe { waker: Waker },
 }
 
 // ======================================================================
@@ -74,7 +74,7 @@ impl ClipboardWorkerHandle {
                         image,
                         info,
                         icc_profile,
-                        ctx,
+                        waker,
                     } => {
                         let result = run_guarded("コピー", &mut clipboard, |clipboard| {
                             let trimmed = apply_trim(&image, &info);
@@ -84,9 +84,9 @@ impl ClipboardWorkerHandle {
                             })
                         });
                         let _ = result_tx.send(IoMsg::Copied { result });
-                        ctx.request_repaint();
+                        waker.wake();
                     }
-                    ClipboardJob::Paste { request_id, ctx } => {
+                    ClipboardJob::Paste { request_id, waker } => {
                         let result = run_guarded("貼り付け", &mut clipboard, |clipboard| {
                             get_clipboard(clipboard).and_then(read_paste_content)
                         });
@@ -104,12 +104,12 @@ impl ClipboardWorkerHandle {
                             },
                         };
                         let _ = result_tx.send(msg);
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                     #[cfg(test)]
-                    ClipboardJob::Probe { ctx } => {
+                    ClipboardJob::Probe { waker } => {
                         let _ = result_tx.send(IoMsg::Copied { result: Ok(()) });
-                        ctx.request_repaint();
+                        waker.wake();
                     }
                 }
             }
@@ -171,13 +171,12 @@ fn run_guarded<T>(
 fn get_clipboard(
     clipboard: &mut Option<arboard::Clipboard>,
 ) -> Result<&mut arboard::Clipboard, String> {
-    if clipboard.is_none() {
-        *clipboard = Some(
-            arboard::Clipboard::new()
-                .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?,
-        );
+    if let Some(clipboard) = clipboard {
+        return Ok(clipboard);
     }
-    Ok(clipboard.as_mut().unwrap())
+    let created = arboard::Clipboard::new()
+        .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
+    Ok(clipboard.insert(created))
 }
 
 // ======================================================================
@@ -370,7 +369,7 @@ mod tests {
         let handle = ClipboardWorkerHandle::terminated();
         let job = ClipboardJob::Paste {
             request_id: 9,
-            ctx: egui::Context::default(),
+            waker: Waker::noop(),
         };
         match handle.submit(job) {
             Err(ClipboardJob::Paste { request_id, .. }) => assert_eq!(request_id, 9),

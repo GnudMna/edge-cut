@@ -13,12 +13,12 @@ use crate::image_output::OutputFormat;
 use crate::trim::TrimInfo;
 
 /// 保存処理の種別
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) enum SaveKind {
     /// ファイルダイアログからの手動保存
     Manual,
-    /// 保存先フォルダへの自動保存
-    Auto,
+    /// 保存先フォルダへの自動保存 (保存を始めた内容のキーを持つ)
+    Auto(AutoSaveKey),
 }
 
 /// 画像ファイル I/O ワーカーからの通知
@@ -29,6 +29,8 @@ pub(in crate::app) enum IoMsg {
         request_id: u64,
         /// ステータス表示用のファイル名
         file_name: String,
+        /// 元画像のあるフォルダ
+        source_dir: Option<PathBuf>,
         /// 読み込んだ画像、または失敗時のステータスメッセージ
         result: Result<LoadedImage, String>,
     },
@@ -133,6 +135,8 @@ pub(in crate::app) struct IoState {
     pub rx: mpsc::Receiver<IoMsg>,
     /// 読み込み要求 ID。新しい読み込み・貼り付け・クリアで更新する
     pub load_request_id: u64,
+    /// ファイルを読み込み中か (最新の読み込み要求の結果を待っている間)
+    pub loading: bool,
     /// 実行中の保存スレッド
     pub save_handles: Vec<JoinHandle<()>>,
     /// ドロップ要求 ID。新しいドロップのたびに更新し、古い展開結果を無視する
@@ -168,6 +172,8 @@ pub(in crate::app) struct AutoSaveKey {
     pub jpeg_quality: u8,
     /// WebP のエンコード品質
     pub webp_quality: u8,
+    /// 同名の既存ファイルを上書きするか
+    pub overwrite: bool,
     /// 保存先ディレクトリ
     pub dir: PathBuf,
 }
@@ -179,6 +185,7 @@ impl Default for IoState {
             tx,
             rx,
             load_request_id: 0,
+            loading: false,
             drop_request_id: 0,
             save_handles: Vec::new(),
             load_note: None,
@@ -196,6 +203,7 @@ impl IoState {
     pub(in crate::app) fn abort_load(&mut self) {
         self.load_request_id = self.load_request_id.wrapping_add(1);
         self.load_note = None;
+        self.loading = false;
     }
 
     /// 保存が進行中かどうか

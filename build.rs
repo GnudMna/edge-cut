@@ -1,21 +1,18 @@
-//! Windows リソース埋め込み、gh-release-bridge キーの暗号化、更新署名の公開鍵埋め込み
+//! Windows リソース埋め込み、更新署名の公開鍵埋め込み、UI のビルドと埋め込み
 //!
-//! `EDGE_CUT_KEY_FILE` が指すファイルのキーを ChaCha20-Poly1305 で暗号化して `OUT_DIR` へ書き出す
-//! `keys/update-signing/*.pub` の minisign 公開鍵を `OUT_DIR` へ書き出す
+//! `keys/update-signing/*.pub` の minisign 公開鍵を `OUT_DIR` へ書き出す。
+//! `ui/` の TypeScript を pnpm でビルドし、出力を `include_bytes!` する一覧を `OUT_DIR` へ書き出す
 
-#[path = "src/update/bridge_key_obfuscate.rs"]
-mod bridge_key_obfuscate;
+#![expect(
+    clippy::expect_used,
+    reason = "ビルドスクリプトは失敗時に panic してビルドを中断するのが正規の挙動"
+)]
 
 use std::env;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use zeroize::{Zeroize, Zeroizing};
-
-use bridge_key_obfuscate::{OBFUSCATE_MASK_LEN, xor_obfuscate};
+use std::process::Command;
 
 const LEGAL_COPYRIGHT: &str = "Copyright (c) 2026 Yuto Hirata";
 
@@ -24,32 +21,34 @@ const APP_NAME: &str = "EdgeCut";
 /// exe に埋め込むアイコン
 const ICON_PATH: &str = "assets/icons/icon.ico";
 
-/// ChaCha20-Poly1305 の nonce 長
-const NONCE_LEN: usize = 12;
-/// bridge ダウンロードキーの最大バイト数
-const MAX_BRIDGE_KEY_BYTES: usize = 1024;
-/// bridge ダウンロードキーを保存したファイルのパスを渡す環境変数
-const BRIDGE_KEY_FILE_ENV: &str = "EDGE_CUT_KEY_FILE";
-/// 廃止した、キーを直接渡す環境変数
-const LEGACY_BRIDGE_KEY_ENV: &str = "EDGE_CUT_KEY";
-/// UTF-8 の BOM
-const UTF8_BOM: &[u8] = &[0xef, 0xbb, 0xbf];
-
 /// 更新署名の公開鍵 (minisign 形式 `*.pub`) を置くディレクトリ
 const UPDATE_SIGNING_KEYS_DIR: &str = "keys/update-signing";
+
+/// UI (TypeScript) のソースディレクトリ
+const UI_DIR: &str = "ui";
+
+/// ビルド済みの UI を使う場合に出力ディレクトリを指定する環境変数 (pnpm でのビルドを省く)
+const UI_DIST_ENV: &str = "EDGECUT_UI_DIST";
+
+/// UI の再ビルド条件にするファイル・ディレクトリ (`ui/` からの相対パス)
+const UI_INPUTS: &[&str] = &[
+    "src",
+    "index.html",
+    "package.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json",
+    "vite.config.ts",
+];
 
 /// minisign 公開鍵の Base64 長 (署名方式 2 + 鍵 ID 8 + Ed25519 公開鍵 32 バイト)
 const MINISIGN_PUBLIC_KEY_B64_LEN: usize = 56;
 
 fn main() {
-    // 更新ダウンロードキー (gh-release-bridge) の埋め込み対象
-    println!("cargo::rerun-if-changed=src/update/bridge_key_obfuscate.rs");
-    println!("cargo::rerun-if-env-changed={BRIDGE_KEY_FILE_ENV}");
     println!("cargo::rerun-if-changed={UPDATE_SIGNING_KEYS_DIR}");
 
     warn_if_crt_not_static();
-    embed_bridge_key();
     embed_update_signing_keys();
+    embed_ui();
 
     // exe にリソース情報を埋め込む
     // アイコンパスを再実行条件に追加
@@ -91,262 +90,6 @@ fn warn_if_crt_not_static() {
         println!(
             "cargo::warning=CRT が静的リンクされません。環境変数 RUSTFLAGS などがあると .cargo/config.toml の rustflags は使われないため、必要なら -C target-feature=+crt-static を加えてください"
         );
-    }
-}
-
-// ======================================================================
-// 更新ダウンロードキー
-// ======================================================================
-/// `EDGE_CUT_KEY_FILE` が指すファイルのキーを暗号化して `OUT_DIR` へ書き出す
-///
-/// キーを環境変数で受け取ると `rerun-if-env-changed` の値が Cargo の fingerprint に平文で残るため、
-/// ファイルのパスだけを受け取る。未設定なら空の埋め込みにする
-///
-/// # Panics
-/// `OUT_DIR` が無い、キーファイルが読めない・不正、または生成ファイルの書き込みに失敗した場合
-fn embed_bridge_key() {
-    let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
-    let dest = Path::new(&out_dir).join("bridge_key_blob.rs");
-
-    let source = match env::var_os(BRIDGE_KEY_FILE_ENV) {
-        Some(path) if !path.is_empty() => {
-            let path = PathBuf::from(path);
-            println!("cargo::rerun-if-changed={}", path.display());
-            let key = read_bridge_key_file(&path);
-            encrypt_bridge_key(&key)
-        }
-        _ => {
-            // 値を fingerprint に残さないよう、廃止した変数は rerun-if-env-changed で監視しない
-            if env::var_os(LEGACY_BRIDGE_KEY_ENV).is_some() {
-                println!(
-                    "cargo::warning=環境変数 {LEGACY_BRIDGE_KEY_ENV} は廃止しました。キーは埋め込まれません。キーをファイルに保存し、{BRIDGE_KEY_FILE_ENV} にそのパスを設定してください"
-                );
-            }
-            empty_bridge_key_source()
-        }
-    };
-    fs::write(&dest, source).unwrap_or_else(|err| {
-        panic!("bridge キー埋め込みファイルの書き込みに失敗: {err}");
-    });
-}
-
-/// キーファイルを読み、BOM と前後の空白・改行を除いたキーを返す
-///
-/// # Arguments
-/// * `path` - キーファイル
-///
-/// # Returns
-/// * `Zeroizing<String>` - キー (破棄時にゼロ化する)
-///
-/// # Panics
-/// ファイルが読めない、UTF-16 または UTF-8 でない、または空の場合
-fn read_bridge_key_file(path: &Path) -> Zeroizing<String> {
-    let mut bytes = fs::read(path).unwrap_or_else(|err| {
-        panic!(
-            "エラー: {BRIDGE_KEY_FILE_ENV} のキーファイルを読めません: {}: {err}",
-            path.display()
-        );
-    });
-    assert!(
-        !bytes.starts_with(&[0xff, 0xfe]) && !bytes.starts_with(&[0xfe, 0xff]),
-        "エラー: キーファイルが UTF-16 です。UTF-8 で保存してください: {}",
-        path.display()
-    );
-
-    let body = bytes.strip_prefix(UTF8_BOM).unwrap_or(&bytes);
-    let key = std::str::from_utf8(body)
-        .map(|text| Zeroizing::new(text.trim().to_owned()))
-        .ok();
-    bytes.zeroize();
-
-    let key = key.unwrap_or_else(|| {
-        panic!(
-            "エラー: キーファイルが UTF-8 ではありません: {}",
-            path.display()
-        )
-    });
-    assert!(
-        !key.is_empty(),
-        "エラー: キーファイルが空です: {}",
-        path.display()
-    );
-    key
-}
-
-/// キーが無いときの埋め込み用ソースを返す
-///
-/// # Returns
-/// * `String` - `BRIDGE_KEY_PRESENT = false` の空の埋め込み
-fn empty_bridge_key_source() -> String {
-    format!(
-        "// build.rs が生成する。平文のダウンロードキーは含めない。\n\
-         const BRIDGE_KEY_PRESENT: bool = false;\n\
-         static BRIDGE_KEY_BLOB: &[u8] = &[];\n\
-         const BRIDGE_KEY_WRAP: [u8; {OBFUSCATE_MASK_LEN}] = [0u8; {OBFUSCATE_MASK_LEN}];\n\
-         const BRIDGE_KEY_MASK: [u8; {OBFUSCATE_MASK_LEN}] = [0u8; {OBFUSCATE_MASK_LEN}];\n"
-    )
-}
-
-/// 平文キーを ChaCha20-Poly1305 で暗号化し、埋め込み用ソースを返す
-///
-/// 暗号化した blob と復号鍵は、同じ乱数マスクで XOR 難読化してから書き出す
-///
-/// # Arguments
-/// * `plaintext` - 平文キー
-///
-/// # Returns
-/// * `String` - 埋め込み用ソース
-///
-/// # Panics
-/// キーが長すぎる、乱数取得に失敗、または暗号化往復検証に失敗した場合
-fn encrypt_bridge_key(plaintext: &str) -> String {
-    let plain_bytes = plaintext.as_bytes();
-    assert!(
-        plain_bytes.len() <= MAX_BRIDGE_KEY_BYTES,
-        "エラー: bridge ダウンロードキーが長すぎます (最大 {MAX_BRIDGE_KEY_BYTES} バイト)"
-    );
-
-    let mut wrap_key = [0u8; OBFUSCATE_MASK_LEN];
-    let mut mask = [0u8; OBFUSCATE_MASK_LEN];
-    let mut nonce = [0u8; NONCE_LEN];
-    getrandom::fill(&mut wrap_key).expect("wrap key 乱数");
-    getrandom::fill(&mut mask).expect("mask 乱数");
-    getrandom::fill(&mut nonce).expect("nonce 乱数");
-
-    let mut blob = aead_encrypt(&wrap_key, &nonce, plain_bytes);
-    nonce.zeroize();
-
-    let mut wrap_stored = wrap_key;
-    xor_obfuscate(&mut blob, &mask);
-    xor_obfuscate(&mut wrap_stored, &mask);
-
-    verify_roundtrip(plaintext.as_bytes(), &blob, &wrap_stored, &mask);
-
-    let source = format!(
-        "// build.rs が生成する。平文のダウンロードキーは含めない。\n\
-         const BRIDGE_KEY_PRESENT: bool = true;\n\
-         static BRIDGE_KEY_BLOB: &[u8] = {};\n\
-         const BRIDGE_KEY_WRAP: [u8; {OBFUSCATE_MASK_LEN}] = {};\n\
-         const BRIDGE_KEY_MASK: [u8; {OBFUSCATE_MASK_LEN}] = {};\n",
-        format_byte_slice(&blob),
-        format_byte_array_32(&wrap_stored),
-        format_byte_array_32(&mask),
-    );
-
-    wrap_key.zeroize();
-    wrap_stored.zeroize();
-    mask.zeroize();
-    blob.zeroize();
-    source
-}
-
-/// 埋め込み blob が平文へ戻ることをビルド時に検証する
-///
-/// # Arguments
-/// * `plaintext` - 平文キー
-/// * `blob` - 難読化した `nonce || ciphertext`
-/// * `wrap_stored` - 難読化した復号鍵
-/// * `mask` - XOR マスク
-///
-/// # Panics
-/// 復号失敗、または平文と一致しない場合
-fn verify_roundtrip(
-    plaintext: &[u8],
-    blob: &[u8],
-    wrap_stored: &[u8; OBFUSCATE_MASK_LEN],
-    mask: &[u8; OBFUSCATE_MASK_LEN],
-) {
-    let mut blob_check = blob.to_vec();
-    let mut wrap_check = *wrap_stored;
-    xor_obfuscate(&mut blob_check, mask);
-    xor_obfuscate(&mut wrap_check, mask);
-    let decrypted = aead_decrypt(&wrap_check, &blob_check)
-        .expect("bridge ダウンロードキーの暗号化往復に失敗しました");
-    assert_eq!(
-        decrypted, plaintext,
-        "bridge ダウンロードキーの暗号化往復結果が一致しません"
-    );
-    wrap_check.zeroize();
-    blob_check.zeroize();
-}
-
-/// `nonce || ciphertext` を組み立てる
-///
-/// # Arguments
-/// * `key` - ChaCha20-Poly1305 鍵
-/// * `nonce` - nonce
-/// * `plaintext` - 平文
-///
-/// # Returns
-/// * `Vec<u8>` - `nonce || ciphertext`
-///
-/// # Panics
-/// 鍵長・nonce 長が不正、または AEAD 暗号化に失敗した場合
-fn aead_encrypt(
-    key: &[u8; OBFUSCATE_MASK_LEN],
-    nonce: &[u8; NONCE_LEN],
-    plaintext: &[u8],
-) -> Vec<u8> {
-    let key = Key::try_from(key.as_slice()).expect("key len");
-    let cipher = ChaCha20Poly1305::new(&key);
-    let nonce_arr = Nonce::try_from(nonce.as_slice()).expect("nonce len");
-    let ciphertext = cipher.encrypt(&nonce_arr, plaintext).expect("aead encrypt");
-    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(nonce);
-    out.extend_from_slice(&ciphertext);
-    out
-}
-
-/// `nonce || ciphertext` を復号する
-///
-/// # Arguments
-/// * `key` - ChaCha20-Poly1305 鍵
-/// * `blob` - `nonce || ciphertext`
-///
-/// # Returns
-/// * `Option<Vec<u8>>` - 平文。形式不正または認証失敗なら `None`
-fn aead_decrypt(key: &[u8; OBFUSCATE_MASK_LEN], blob: &[u8]) -> Option<Vec<u8>> {
-    if blob.len() <= NONCE_LEN {
-        return None;
-    }
-    let (nonce, ciphertext) = blob.split_at(NONCE_LEN);
-    let key = Key::try_from(key.as_slice()).ok()?;
-    let cipher = ChaCha20Poly1305::new(&key);
-    let nonce = Nonce::try_from(nonce).ok()?;
-    cipher.decrypt(&nonce, ciphertext).ok()
-}
-
-/// バイト列を Rust のスライスリテラルにする
-fn format_byte_slice(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return String::from("&[]");
-    }
-    let mut out = String::from("&[\n");
-    append_hex_bytes(&mut out, bytes, 12);
-    out.push_str("\n]");
-    out
-}
-
-/// 32 バイトの配列を Rust の配列リテラルにする
-fn format_byte_array_32(bytes: &[u8; OBFUSCATE_MASK_LEN]) -> String {
-    let mut out = String::from("[\n");
-    append_hex_bytes(&mut out, bytes, 8);
-    out.push_str("\n]");
-    out
-}
-
-/// バイト列を 16 進表記で `per_line` 個ずつ改行して追記する
-fn append_hex_bytes(out: &mut String, bytes: &[u8], per_line: usize) {
-    for (i, byte) in bytes.iter().enumerate() {
-        if i % per_line == 0 {
-            if i > 0 {
-                out.push('\n');
-            }
-            out.push_str("    ");
-        } else {
-            out.push(' ');
-        }
-        write!(out, "0x{byte:02x},").expect("write hex");
     }
 }
 
@@ -411,4 +154,136 @@ fn read_minisign_public_key(path: &Path) -> String {
         path.display()
     );
     key.to_string()
+}
+
+// ======================================================================
+// UI
+// ======================================================================
+/// UI をビルドし、出力ファイルを埋め込む一覧を `OUT_DIR/ui_assets.rs` へ書き出す
+///
+/// `EDGECUT_UI_DIST` があればそのディレクトリをビルド済みの出力として使う
+fn embed_ui() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    println!("cargo::rerun-if-env-changed={UI_DIST_ENV}");
+
+    let dist = if let Some(dist) = env::var_os(UI_DIST_ENV) {
+        PathBuf::from(dist)
+    } else {
+        for input in UI_INPUTS {
+            println!("cargo::rerun-if-changed={UI_DIR}/{input}");
+        }
+        let dist = out_dir.join("ui-dist");
+        build_ui(&dist);
+        dist
+    };
+
+    let mut files = Vec::new();
+    collect_files(&dist, &mut files);
+    files.sort();
+    assert!(
+        files.iter().any(|f| f.ends_with("index.html")),
+        "UI のビルド結果に index.html がありません: {}",
+        dist.display()
+    );
+
+    let mut source = String::from(
+        "// build.rs が生成する。UI のビルド結果 (パス, MIME タイプ, 内容)\n\
+         static UI_ASSETS: &[(&str, &str, &[u8])] = &[\n",
+    );
+    let dist = dist.canonicalize().expect("UI の出力ディレクトリ");
+    for file in &files {
+        let abs = file.canonicalize().expect("UI の出力ファイルのパス");
+        let rel = abs
+            .strip_prefix(&dist)
+            .expect("出力ディレクトリ配下")
+            .to_string_lossy()
+            .replace('\\', "/");
+        writeln!(
+            source,
+            "    ({rel:?}, {:?}, include_bytes!({:?})),",
+            mime_type(&rel),
+            abs.display().to_string()
+        )
+        .expect("write asset");
+    }
+    source.push_str("];\n");
+    fs::write(out_dir.join("ui_assets.rs"), source).unwrap_or_else(|err| {
+        panic!("UI 埋め込みファイルの書き込みに失敗: {err}");
+    });
+}
+
+/// pnpm で UI をビルドする
+///
+/// 依存が未インストールならロックファイルどおりにインストールしてからビルドする
+///
+/// # Arguments
+/// * `dist` - 出力ディレクトリ
+fn build_ui(dist: &Path) {
+    if !Path::new(UI_DIR).join("node_modules").is_dir() {
+        run_pnpm(&["install", "--frozen-lockfile"]);
+    }
+    let dist = dist.to_string_lossy();
+    run_pnpm(&["run", "build", "--outDir", &dist, "--emptyOutDir"]);
+}
+
+/// `ui/` で pnpm を実行し、失敗したらビルドを止める
+///
+/// Windows の pnpm はバッチファイル (`pnpm.cmd`) のため `cmd /C` から起動する
+///
+/// # Arguments
+/// * `args` - pnpm の引数
+fn run_pnpm(args: &[&str]) {
+    let status = Command::new("cmd")
+        .args(["/C", "pnpm"])
+        .args(args)
+        .current_dir(UI_DIR)
+        .status()
+        .unwrap_or_else(|err| {
+            panic!("pnpm を起動できません (Node.js と pnpm が必要です): {err}");
+        });
+    assert!(
+        status.success(),
+        "pnpm {} が失敗しました ({status})",
+        args.join(" ")
+    );
+}
+
+/// ディレクトリ配下のファイルを再帰的に集める
+///
+/// # Arguments
+/// * `dir` - 探すディレクトリ
+/// * `files` - 見つけたファイルの追加先
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|err| panic!("UI の出力を読めません: {}: {err}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("UI の出力の列挙").path();
+        if path.is_dir() {
+            collect_files(&path, files);
+        } else {
+            files.push(path);
+        }
+    }
+}
+
+/// 拡張子から MIME タイプを決める
+///
+/// # Arguments
+/// * `path` - ファイルのパス
+///
+/// # Returns
+/// * `&str` - MIME タイプ
+fn mime_type(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or_default();
+    match ext {
+        "html" => "text/html",
+        "js" => "text/javascript",
+        "css" => "text/css",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "json" => "application/json",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }

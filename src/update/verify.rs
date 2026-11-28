@@ -34,10 +34,10 @@ const RESERVED_DEVICE_NAMES: [&str; 22] = [
 // ======================================================================
 /// アセットの完全性文字列を正規化した SHA-256 16進へ変換する
 ///
-/// GitHub Release Asset の `digest` (`sha256:<hex>`) と素の16進の両方を受け付ける
+/// GitHub Release Asset の `digest` の形式 (`sha256:<hex>`) だけを受け付ける
 ///
 /// # Arguments
-/// * `raw` - `digest` / `sha256` フィールドの生文字列
+/// * `raw` - `digest` フィールドの生文字列
 ///
 /// # Returns
 /// * `Result<String, UpdateError>` - 小文字16進 64 桁、またはエラー
@@ -47,29 +47,23 @@ pub(crate) fn parse_asset_digest(raw: &str) -> Result<String, UpdateError> {
         return Err(UpdateError::DigestEmpty);
     }
 
-    let hex = trimmed
+    trimmed
         .strip_prefix("sha256:")
-        .or_else(|| trimmed.strip_prefix("SHA256:"))
-        .unwrap_or(trimmed)
-        .trim();
-
-    if hex.len() != SHA256_HEX_LEN || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(UpdateError::DigestInvalid {
+        .filter(|hex| hex.len() == SHA256_HEX_LEN && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| UpdateError::DigestInvalid {
             raw: trimmed.to_string(),
-        });
-    }
-
-    Ok(hex.to_ascii_lowercase())
+        })
 }
 
 /// アセット名が単一のファイル名として安全に扱えるか検証する
 ///
-/// アセット名は作業ディレクトリ配下の保存先パスと bridge のダウンロード URL に
+/// アセット名は作業ディレクトリ配下の保存先パスとダウンロード URL に
 /// そのまま使うため、ASCII 英数字と `.` `-` `_` だけからなる名前に限る
 /// パス区切り・ドライブ指定・`..`・URL で意味を持つ文字・Windows の予約デバイス名を拒否する
 ///
 /// # Arguments
-/// * `name` - version API が報告するアセット名
+/// * `name` - GitHub API が報告するアセット名
 ///
 /// # Returns
 /// * `Result<(), UpdateError>` - 安全なファイル名なら `Ok(())`
@@ -93,7 +87,7 @@ pub(crate) fn validate_asset_name(name: &str) -> Result<(), UpdateError> {
 /// アセットの宣言サイズがダウンロード可能な範囲か検証する
 ///
 /// # Arguments
-/// * `expected_size` - version API が報告するバイト数
+/// * `expected_size` - GitHub API が報告するバイト数
 ///
 /// # Returns
 /// * `Result<(), UpdateError>` - 許容範囲なら `Ok(())`
@@ -109,7 +103,7 @@ pub(crate) fn validate_declared_download_size(expected_size: u64) -> Result<(), 
     Ok(())
 }
 
-/// 指定キーで URL からファイルへダウンロードし、サイズと SHA-256 を検証する
+/// URL からファイルへダウンロードし、サイズと SHA-256 を検証する
 ///
 /// 期待サイズ超過または絶対上限超過の時点で読み取りを打ち切る
 /// 検証に失敗した場合は保存済みファイルを削除する
@@ -119,18 +113,18 @@ pub(crate) fn validate_declared_download_size(expected_size: u64) -> Result<(), 
 /// * `dest` - 保存先パス
 /// * `expected_size` - 期待バイト数 (0 は拒否)
 /// * `expected_sha256` - 期待する SHA-256 (小文字16進 64 桁)
-/// * `download_key` - bridge ダウンロードキー (`None` なら無認証)
+/// * `on_progress` - 受信済みバイト数の通知先。`false` を返すと中止する
 ///
 /// # Returns
-/// * `Result<(), UpdateError>` - 成功時 `Ok(())`
-pub(crate) fn download_and_verify_with_key(
+/// * `Result<(), UpdateError>` - 成功時 `Ok(())`。中止した場合は `Canceled`
+pub(crate) fn download_and_verify(
     url: &str,
     dest: &Path,
     expected_size: u64,
     expected_sha256: &str,
-    download_key: Option<&str>,
+    on_progress: &mut dyn FnMut(u64) -> bool,
 ) -> Result<(), UpdateError> {
-    let result = download_and_verify_inner(url, dest, expected_size, expected_sha256, download_key);
+    let result = download_and_verify_inner(url, dest, expected_size, expected_sha256, on_progress);
     if result.is_err() {
         let _ = fs::remove_file(dest);
     }
@@ -146,26 +140,30 @@ fn download_and_verify_inner(
     dest: &Path,
     expected_size: u64,
     expected_sha256: &str,
-    download_key: Option<&str>,
+    on_progress: &mut dyn FnMut(u64) -> bool,
 ) -> Result<(), UpdateError> {
     validate_declared_download_size(expected_size)?;
 
-    let mut request = http::download_agent().get(url);
-    if let Some(key) = download_key {
-        request = request.header("Authorization", &format!("Bearer {key}"));
-    }
-    let mut response = request.call().map_err(|err| match err {
-        ureq::Error::StatusCode(401) => UpdateError::DownloadUnauthorized,
-        ureq::Error::StatusCode(status) => UpdateError::DownloadHttp { status },
-        err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
-        _ => UpdateError::DownloadFailed,
-    })?;
+    let mut response = http::download_agent(url, expected_size)
+        .get(url)
+        .call()
+        .map_err(|err| match err {
+            ureq::Error::StatusCode(status) => UpdateError::DownloadHttp { status },
+            err if http::is_timeout(&err) => UpdateError::NetworkTimeout,
+            _ => UpdateError::DownloadFailed,
+        })?;
 
     let mut reader = response.body_mut().as_reader();
     let mut file = File::create(dest).map_err(|_| UpdateError::SaveFailed)?;
 
     let mut hasher = Sha256::new();
-    let written = copy_and_hash_limited(&mut reader, &mut file, &mut hasher, expected_size)?;
+    let written = copy_and_hash_limited(
+        &mut reader,
+        &mut file,
+        &mut hasher,
+        expected_size,
+        on_progress,
+    )?;
     file.flush().map_err(|_| UpdateError::SaveFailed)?;
     // 以降は読み取り検証のみにする
     drop(file);
@@ -186,11 +184,14 @@ fn download_and_verify_inner(
 }
 
 /// Reader から Writer へコピーしつつ SHA-256 を更新し、上限超過で打ち切る
+///
+/// 書き込むたびに累計バイト数を `on_progress` へ渡し、`false` が返れば中止する
 fn copy_and_hash_limited<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
     hasher: &mut Sha256,
     cap: u64,
+    on_progress: &mut dyn FnMut(u64) -> bool,
 ) -> Result<u64, UpdateError> {
     let mut written = 0u64;
     let mut buffer = vec![0u8; 64 * 1024];
@@ -219,6 +220,9 @@ fn copy_and_hash_limited<R: Read, W: Write>(
             .map_err(|_| UpdateError::SaveFailed)?;
         hasher.update(&buffer[..n]);
         written = next;
+        if !on_progress(written) {
+            return Err(UpdateError::Canceled);
+        }
     }
     Ok(written)
 }
@@ -320,15 +324,12 @@ mod tests {
         assert_eq!(parsed, hex);
     }
 
-    /// 素の16進と大文字プレフィックスを正規化できるようにすること
+    /// 大文字の16進を小文字へ正規化できるようにすること
     #[test]
     fn parse_asset_digest_normalizes_hex_case() {
         let upper = "B".repeat(SHA256_HEX_LEN);
-        let parsed = parse_asset_digest(&format!("SHA256:{upper}")).expect("digest");
+        let parsed = parse_asset_digest(&format!("sha256:{upper}")).expect("digest");
         assert_eq!(parsed, "b".repeat(SHA256_HEX_LEN));
-
-        let bare = parse_asset_digest(&upper).expect("bare");
-        assert_eq!(bare, "b".repeat(SHA256_HEX_LEN));
     }
 
     /// 不正な digest は拒否すること
@@ -336,7 +337,12 @@ mod tests {
     fn parse_asset_digest_rejects_invalid() {
         assert!(parse_asset_digest("").is_err());
         assert!(parse_asset_digest("sha256:abcd").is_err());
-        assert!(parse_asset_digest(&"g".repeat(SHA256_HEX_LEN)).is_err());
+        assert!(parse_asset_digest(&format!("sha256:{}", "g".repeat(SHA256_HEX_LEN))).is_err());
+
+        // 接頭辞なし・別アルゴリズムは受け付けない
+        let hex = "a".repeat(SHA256_HEX_LEN);
+        assert!(parse_asset_digest(&hex).is_err());
+        assert!(parse_asset_digest(&format!("sha512:{hex}")).is_err());
     }
 
     /// 宣言サイズ 0 と絶対上限超過を拒否すること
@@ -355,9 +361,14 @@ mod tests {
         let mut out = Vec::new();
         let mut hasher = Sha256::new();
 
-        let written =
-            copy_and_hash_limited(&mut reader, &mut out, &mut hasher, payload.len() as u64)
-                .expect("copy");
+        let written = copy_and_hash_limited(
+            &mut reader,
+            &mut out,
+            &mut hasher,
+            payload.len() as u64,
+            &mut |_| true,
+        )
+        .expect("copy");
         assert_eq!(written, payload.len() as u64);
         assert_eq!(out, payload);
         assert_eq!(to_hex(&hasher.finalize()), to_hex(&Sha256::digest(payload)));
@@ -371,7 +382,8 @@ mod tests {
         let mut out = Vec::new();
         let mut hasher = Sha256::new();
 
-        let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 4).expect_err("cap");
+        let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 4, &mut |_| true)
+            .expect_err("cap");
         assert!(err.to_string().contains("サイズ"));
         assert_eq!(out, b"");
     }
@@ -407,8 +419,28 @@ mod tests {
         let mut out = Vec::new();
         let mut hasher = Sha256::new();
 
-        let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 6).expect_err("cap");
+        let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 6, &mut |_| true)
+            .expect_err("cap");
         assert!(err.to_string().contains("サイズ"));
         assert_eq!(out, b"abcdef");
+    }
+
+    /// 進捗の通知先が `false` を返すと中止すること
+    #[test]
+    fn copy_and_hash_limited_stops_when_canceled() {
+        let payload = vec![7u8; 10];
+        let mut reader = Cursor::new(payload);
+        let mut out = Vec::new();
+        let mut hasher = Sha256::new();
+        let mut seen = Vec::new();
+
+        let err = copy_and_hash_limited(&mut reader, &mut out, &mut hasher, 10, &mut |n| {
+            seen.push(n);
+            false
+        })
+        .expect_err("cancel");
+
+        assert_eq!(err, UpdateError::Canceled);
+        assert_eq!(seen, [10]);
     }
 }

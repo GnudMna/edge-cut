@@ -1,59 +1,39 @@
 //! 更新確認・適用で扱う型
 //!
-//! gh-release-bridge の version API のレスポンス、確認済みの更新 (`AvailableUpdate`)、
-//! 確認と適用の結果 (`UpdateCheckOutcome` / `UpdateApplyOutcome`) を定義する。
+//! GitHub API の最新リリース、確認済みの更新 (`AvailableUpdate`)、
+//! 確認の結果 (`UpdateCheckOutcome`)、配布物の種類と検証済みの配布物を定義する。
+
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use super::error::UpdateError;
+use crate::install_layout::is_portable_dir;
 
 // ======================================================================
 // リリース照会
 // ======================================================================
-/// gh-release-bridge の version API レスポンス
+/// GitHub API の最新リリース (使う項目のみ)
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct VersionApiResponse {
+pub(crate) struct LatestRelease {
     /// リリースタグ (例: `v0.1.1`)
-    pub tag: String,
-    /// 許可されたアセット一覧
+    pub tag_name: String,
+    /// リリースアセット一覧
     #[serde(default)]
-    pub assets: Vec<VersionApiAsset>,
+    pub assets: Vec<ReleaseAsset>,
 }
 
-/// version API のアセット要素
+/// GitHub リリースのアセット要素
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct VersionApiAsset {
+pub(crate) struct ReleaseAsset {
     /// アセットファイル名
     pub name: String,
     /// バイトサイズ
     #[serde(default)]
     pub size: u64,
-    /// GitHub Release Asset の digest (例: `sha256:<hex>`)
+    /// アセットの digest (例: `sha256:<hex>`)
     #[serde(default)]
     pub digest: Option<String>,
-    /// digest の代替フィールド (素の16進も可)
-    #[serde(default)]
-    pub sha256: Option<String>,
-}
-
-impl VersionApiAsset {
-    /// 完全性検証に使う生文字列を返す
-    ///
-    /// # Arguments
-    /// * `self` - 自身
-    ///
-    /// # Returns
-    /// * `Option<&str>` - 値がある場合は `Some`、ない場合は `None`
-    pub fn integrity_raw(&self) -> Option<&str> {
-        self.digest
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                self.sha256
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-            })
-    }
 }
 
 /// 適用可能な更新アセット
@@ -119,41 +99,122 @@ impl From<&UpdateError> for UpdateCheckOutcome {
     }
 }
 
-/// 更新適用の結果
-#[derive(Debug, Clone)]
-pub enum UpdateApplyOutcome {
-    /// MSI インストーラーを起動した (アプリ終了が必要)
-    MsiStarted,
-    /// 適用に失敗
-    Error {
-        /// ユーザー向けメッセージ (`UpdateError` の `Display`)
-        message: String,
-    },
+// ======================================================================
+// 配布物
+// ======================================================================
+/// インストール形態に応じて選ぶ配布物の種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpdatePackageKind {
+    /// MSI インストーラー
+    Msi,
+    /// ポータブル ZIP
+    PortableZip,
 }
 
-impl UpdateApplyOutcome {
-    /// 型付きエラーから適用失敗 Outcome を組み立てる
+impl UpdatePackageKind {
+    /// 本体の実行フォルダから配布物の種類を返す
     ///
     /// # Arguments
-    /// * `err` - 更新適用の失敗理由
+    /// * `install_dir` - `EdgeCut.exe` のあるフォルダ
     ///
     /// # Returns
-    /// * `Self` - `Error { message }`
-    pub(crate) fn from_error(err: &UpdateError) -> Self {
-        Self::Error {
-            message: err.to_string(),
+    /// * `Self` - `portable` マーカーがあれば `PortableZip`、それ以外は `Msi`
+    pub(crate) fn for_install_dir(install_dir: &Path) -> Self {
+        if is_portable_dir(install_dir) {
+            Self::PortableZip
+        } else {
+            Self::Msi
+        }
+    }
+
+    /// アセット名がこの種類の配布物か判定する
+    ///
+    /// # Arguments
+    /// * `name` - アセット名
+    ///
+    /// # Returns
+    /// * `bool` - 種類が一致すれば `true` (署名ファイル `.minisig` は一致しない)
+    pub(crate) fn matches_asset_name(self, name: &str) -> bool {
+        match self {
+            Self::Msi => Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("msi")),
+            Self::PortableZip => name.to_ascii_lowercase().ends_with("-portable.zip"),
+        }
+    }
+
+    /// 利用者向けの名前
+    ///
+    /// # Returns
+    /// * `&'static str` - エラーメッセージに使う名前
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Msi => "MSI",
+            Self::PortableZip => "ポータブル版 ZIP",
         }
     }
 }
 
-impl From<UpdateError> for UpdateApplyOutcome {
-    fn from(err: UpdateError) -> Self {
-        Self::from_error(&err)
-    }
+/// 検証を終え、インストールできる状態の配布物
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreparedPackage {
+    /// 検証済みの MSI
+    Msi {
+        /// ダウンロードした MSI
+        path: PathBuf,
+    },
+    /// 展開済みのポータブル配布物
+    Portable {
+        /// 展開ルート (新しい `EdgeCut.exe` があるフォルダ)
+        source_dir: PathBuf,
+    },
 }
 
-impl From<&UpdateError> for UpdateApplyOutcome {
-    fn from(err: &UpdateError) -> Self {
-        Self::from_error(err)
+/// 配布物のインストール結果
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallOutcome {
+    /// インストールが完了した
+    Installed,
+    /// 完了に Windows の再起動が必要
+    RebootRequired,
+}
+
+// ======================================================================
+// テスト
+// ======================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// アセット名の拡張子・接尾辞で配布物の種類を判定すること
+    #[test]
+    fn matches_asset_name_follows_kind() {
+        let msi = UpdatePackageKind::Msi;
+        let zip = UpdatePackageKind::PortableZip;
+        assert!(msi.matches_asset_name("edge-cut-2.1.0-x86_64.msi"));
+        assert!(msi.matches_asset_name("edge-cut-2.1.0-x86_64.MSI"));
+        assert!(!msi.matches_asset_name("edge-cut-2.1.0-x86_64.msi.minisig"));
+        assert!(zip.matches_asset_name("edge-cut-2.1.0-x86_64-portable.zip"));
+        assert!(!zip.matches_asset_name("edge-cut-2.1.0-x86_64-portable.zip.minisig"));
+        assert!(!zip.matches_asset_name("edge-cut-2.1.0-x86_64.zip"));
+    }
+
+    /// `portable` マーカーの有無で配布物の種類を判定すること
+    #[test]
+    fn package_kind_follows_portable_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            UpdatePackageKind::for_install_dir(tmp.path()),
+            UpdatePackageKind::Msi
+        );
+        std::fs::write(
+            tmp.path().join(crate::install_layout::PORTABLE_MARKER_FILE),
+            b"",
+        )
+        .expect("marker");
+        assert_eq!(
+            UpdatePackageKind::for_install_dir(tmp.path()),
+            UpdatePackageKind::PortableZip
+        );
     }
 }

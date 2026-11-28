@@ -40,7 +40,7 @@ pub struct BatchTrimResult {
     pub saved: usize,
     /// 連番サフィックスで衝突回避した保存数
     pub renamed: usize,
-    /// 失敗したファイルごとのメッセージ (`{ファイル名}: {理由}`)
+    /// 失敗したファイルごとのメッセージ (`{入力パス}: {理由}`)
     pub errors: Vec<String>,
     /// ユーザーにより途中キャンセルされたか
     pub cancelled: bool,

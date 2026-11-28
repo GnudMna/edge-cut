@@ -172,10 +172,13 @@ struct ContentBounds {
     right: u32,
 }
 
-/// 背景以外の画素が `ignore` 個を超える行・列だけを内容とみなし、最小矩形を走査する
+/// 背景以外の画素が `ignore` 個を超える行だけを内容の行とし、その行の中で最小矩形を走査する
 ///
 /// `ignore` が 0 のときは早期終了する走査で、1 画素でも内容とする
-/// 1 以上のときは行・列ごとの画素数を数える。内容とみなせる列が 1 つもない場合は `None`
+/// 1 以上のときは、まず行ごとの画素数を数えて内容の行を決め、列は内容の行だけで数える
+/// 列の基準は `ignore` と (内容の行数 - 1) の小さい方を超える画素数とし、
+/// 高さ 1 px の横線のように内容の行が少ない場合でも列が内容として残る
+/// 内容とみなせる行が 1 つもない場合は `None`
 fn find_content_bounds(
     w: u32,
     h: u32,
@@ -191,14 +194,39 @@ fn find_content_bounds(
         .max(1);
     let (width, height) = (w as usize, h as usize);
 
-    // 行ごとの内容画素数と列ごとの内容画素数を 1 回の走査で数える
+    // 1 回目の走査: 行ごとの内容画素数を数える
     let mut rows = vec![0u32; height];
-    let count_block = |mut cols: Vec<u32>, (i, chunk): (usize, &mut [u32])| {
+    let count_rows = |(i, chunk): (usize, &mut [u32])| {
         for (j, row_count) in chunk.iter_mut().enumerate() {
+            let y = u32::try_from(i * block_rows + j).unwrap_or(u32::MAX);
+            *row_count = (0..w)
+                .filter(|&x| !is_bg(x, y))
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
+        }
+    };
+    if parallel {
+        rows.par_chunks_mut(block_rows)
+            .enumerate()
+            .for_each(count_rows);
+    } else {
+        rows.chunks_mut(block_rows).enumerate().for_each(count_rows);
+    }
+    let is_content = |&count: &u32| count > ignore;
+    let top = rows.iter().position(is_content)?;
+    let bottom = rows.iter().rposition(is_content)?;
+    let content_rows = rows.iter().filter(|c| is_content(c)).count();
+
+    // 2 回目の走査: 内容の行だけで列ごとの内容画素数を数える
+    let count_block = |mut cols: Vec<u32>, (i, chunk): (usize, &[u32])| {
+        for (j, &row_count) in chunk.iter().enumerate() {
+            if row_count <= ignore {
+                continue;
+            }
             let y = u32::try_from(i * block_rows + j).unwrap_or(u32::MAX);
             for x in 0..w {
                 if !is_bg(x, y) {
-                    *row_count += 1;
                     cols[x as usize] += 1;
                 }
             }
@@ -206,7 +234,7 @@ fn find_content_bounds(
         cols
     };
     let cols = if parallel {
-        rows.par_chunks_mut(block_rows)
+        rows.par_chunks(block_rows)
             .enumerate()
             .fold(|| vec![0u32; width], count_block)
             .reduce(
@@ -217,17 +245,18 @@ fn find_content_bounds(
                 },
             )
     } else {
-        rows.chunks_mut(block_rows)
+        rows.chunks(block_rows)
             .enumerate()
             .fold(vec![0u32; width], count_block)
     };
 
-    let is_content = |&count: &u32| count > ignore;
+    let col_ignore = ignore.min(u32::try_from(content_rows - 1).unwrap_or(u32::MAX));
+    let is_content_col = |&count: &u32| count > col_ignore;
     Some(ContentBounds {
-        top: u32::try_from(rows.iter().position(is_content)?).ok()?,
-        bottom: u32::try_from(rows.iter().rposition(is_content)?).ok()?,
-        left: u32::try_from(cols.iter().position(is_content)?).ok()?,
-        right: u32::try_from(cols.iter().rposition(is_content)?).ok()?,
+        top: u32::try_from(top).ok()?,
+        bottom: u32::try_from(bottom).ok()?,
+        left: u32::try_from(cols.iter().position(is_content_col)?).ok()?,
+        right: u32::try_from(cols.iter().rposition(is_content_col)?).ok()?,
     })
 }
 
@@ -528,6 +557,24 @@ mod tests {
             // 内容の行・列の画素数 (10) 以上を指定すると内容も無視される
             assert_eq!(rect(10), (0, 0, w, h), "{w}x{h}");
         }
+    }
+
+    /// 高さ 1 px の横線だけの画像でもノイズ除外を指定して線を内容として残すこと
+    #[test]
+    fn detect_trim_keeps_one_pixel_line_with_ignore() {
+        let mut img = RgbaImage::from_pixel(40, 30, Rgba([255, 255, 255, 255]));
+        for x in 5..35 {
+            img.put_pixel(x, 12, Rgba([0, 0, 0, 255]));
+        }
+        let b = detect_trim_with_options(
+            &DynamicImage::ImageRgba8(img),
+            &TrimOptions {
+                ignore_pixels: 1,
+                ..TrimOptions::new(0, 0, None)
+            },
+        )
+        .info;
+        assert_eq!((b.offset_x, b.offset_y, b.trim_w, b.trim_h), (5, 12, 30, 1));
     }
 
     /// RGBA8 以外の画像でも `detect_trim` が矩形を求めること

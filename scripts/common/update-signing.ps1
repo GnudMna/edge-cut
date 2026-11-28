@@ -83,8 +83,10 @@ function Invoke-UpdateAssetSigning {
         [string]$SecretKeyPath
     )
 
+    # MSI (target\wix) とポータブル版の ZIP (target\portable) を対象にする
     $assets = @(
         Get-ChildItem -Path (Join-Path $ProjectRoot 'target\wix') -Filter "edge-cut-$Version-*.msi" -File -ErrorAction SilentlyContinue
+        Get-ChildItem -Path (Join-Path $ProjectRoot 'target\portable') -Filter "edge-cut-$Version-*-portable.zip" -File -ErrorAction SilentlyContinue
     )
     if ($assets.Count -eq 0) {
         throw "エラー: 署名対象の更新アセットが見つかりません (version=$Version)"

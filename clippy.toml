@@ -1,0 +1,3 @@
+# テストでは unwrap / expect で失敗を示してよい (本体コードは Cargo.toml の lint で警告する)
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -26,36 +26,40 @@ pub(in crate::app) enum PreviewMode {
     SideBySide,
 }
 
-impl PreviewMode {
-    /// 切り替えの並び順
-    pub const ALL: [Self; 3] = [Self::Range, Self::Result, Self::SideBySide];
-
-    /// 切り替えボタンの表示名
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Range => "範囲",
-            Self::Result => "結果",
-            Self::SideBySide => "並べて",
-        }
-    }
-
-    /// 切り替えボタンの説明
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Range => "元画像に、削られる領域とトリミング範囲を重ねて表示する",
-            Self::Result => "トリミング後の画像だけを表示する",
-            Self::SideBySide => "元画像とトリミング後の画像を左右に並べて表示する",
-        }
-    }
-
-    /// 元画像を表示するか (スポイトで元画像をクリックできるか)
-    pub fn shows_original(self) -> bool {
-        self != Self::Result
-    }
+/// 配色テーマの指定
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::app) enum ThemeMode {
+    /// Windows の「アプリ モード」に合わせる
+    System,
+    /// ライトテーマ
+    Light,
+    /// ダークテーマ
+    Dark,
 }
 
-/// 永続化する設定キー
-pub(in crate::app) const SETTINGS_KEY: &str = "settings";
+/// 設定パネルの既定の幅 (論理 px)
+pub(in crate::app) const PANEL_WIDTH_DEFAULT: u32 = 340;
+
+/// 設定パネルの最小幅 (論理 px)
+pub(in crate::app) const PANEL_WIDTH_MIN: u32 = 280;
+
+/// 設定パネルの最大幅 (論理 px)
+pub(in crate::app) const PANEL_WIDTH_MAX: u32 = 560;
+
+/// 終了時のウィンドウの位置と大きさ (物理 px)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::app) struct WindowGeometry {
+    /// 左上の x 座標
+    pub x: i32,
+    /// 左上の y 座標
+    pub y: i32,
+    /// 内側の幅
+    pub width: u32,
+    /// 内側の高さ
+    pub height: u32,
+    /// 最大化していたか
+    pub maximized: bool,
+}
 
 /// UI・トリミング設定
 ///
@@ -94,7 +98,21 @@ pub(in crate::app) struct Settings {
     /// アスペクト比の合わせ方
     pub aspect_fit: AspectFit,
     /// ダークモードの有効/無効
+    ///
+    /// `theme` を導入する前の保存データとの互換のために残す。`theme` が無い保存データを
+    /// 読み込んだときだけ `theme` の決定に使う
     pub dark_mode: bool,
+    /// 配色テーマ。`None` は `theme` を導入する前の保存データで、`normalize` で `dark_mode` から決める
+    ///
+    /// 保存データに無い場合は構造体の既定値 (`System`) ではなく `None` として読み込む
+    #[serde(default)]
+    pub theme: Option<ThemeMode>,
+    /// 設定パネルを開いているか
+    pub panel_open: bool,
+    /// 設定パネルの幅 (論理 px)
+    pub panel_width: u32,
+    /// 終了時のウィンドウの位置と大きさ。初回起動時は `None`
+    pub window: Option<WindowGeometry>,
     /// 自動保存モードの有効/無効
     pub auto_save: bool,
     /// 自動保存先ディレクトリ
@@ -113,6 +131,8 @@ pub(in crate::app) struct Settings {
     pub jpeg_quality: u8,
     /// WebP 保存時のエンコード品質 (1–100)。最大値のときだけロスレス
     pub webp_quality: u8,
+    /// 自動保存・一括トリミングで同名の既存ファイルを連番で避けず上書きする
+    pub overwrite_output: bool,
 }
 
 impl Default for Settings {
@@ -129,6 +149,10 @@ impl Default for Settings {
             aspect_h: 1,
             aspect_fit: AspectFit::default(),
             dark_mode: true,
+            theme: Some(ThemeMode::System),
+            panel_open: true,
+            panel_width: PANEL_WIDTH_DEFAULT,
+            window: None,
             auto_save: false,
             auto_save_dir: default_auto_save_dir(),
             preview_mode: PreviewMode::default(),
@@ -136,6 +160,7 @@ impl Default for Settings {
             output_format: OutputFormat::default(),
             jpeg_quality: JPEG_QUALITY_DEFAULT,
             webp_quality: WEBP_QUALITY_DEFAULT,
+            overwrite_output: false,
         }
     }
 }
@@ -168,7 +193,7 @@ impl Settings {
     ///
     /// 手動編集や将来のバージョン差分で範囲外の値が保存されていても、
     /// 読み込み時にクランプして安全に復元する
-    pub(super) fn normalize(mut self) -> Self {
+    pub(in crate::app) fn normalize(mut self) -> Self {
         self.tolerance = self.tolerance.clamp(TOL_MIN, TOL_MAX);
         self.ignore_pixels = self.ignore_pixels.clamp(SPECK_MIN, SPECK_MAX);
         self.padding = self.padding.clamp(PADDING_MIN, PADDING_MAX);
@@ -184,6 +209,13 @@ impl Settings {
         self.aspect_h = self.aspect_h.clamp(ASPECT_PART_MIN, ASPECT_PART_MAX);
         self.jpeg_quality = self.jpeg_quality.clamp(JPEG_QUALITY_MIN, JPEG_QUALITY_MAX);
         self.webp_quality = self.webp_quality.clamp(WEBP_QUALITY_MIN, WEBP_QUALITY_MAX);
+        self.panel_width = self.panel_width.clamp(PANEL_WIDTH_MIN, PANEL_WIDTH_MAX);
+        let theme = self.theme.unwrap_or(if self.dark_mode {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        });
+        self.theme = Some(theme);
         if self.auto_save_dir.as_os_str().is_empty() {
             self.auto_save_dir = default_auto_save_dir();
         }
@@ -341,6 +373,30 @@ mod tests {
         .normalize();
         assert!(!s.auto_save_dir.as_os_str().is_empty());
     }
+    /// テーマを持たない旧形式の保存データは `dark_mode` からテーマを決めること
+    #[test]
+    fn settings_normalize_derives_theme_from_legacy_dark_mode() {
+        let light: Settings = serde_json::from_str(r#"{"dark_mode":false}"#).unwrap();
+        assert_eq!(light.normalize().theme, Some(ThemeMode::Light));
+        let dark: Settings = serde_json::from_str(r#"{"dark_mode":true}"#).unwrap();
+        assert_eq!(dark.normalize().theme, Some(ThemeMode::Dark));
+        // テーマを保存済みならそれを優先する
+        let system: Settings =
+            serde_json::from_str(r#"{"dark_mode":false,"theme":"System"}"#).unwrap();
+        assert_eq!(system.normalize().theme, Some(ThemeMode::System));
+    }
+
+    /// 範囲外のパネル幅が読み込み時にクランプされること
+    #[test]
+    fn settings_normalize_clamps_panel_width() {
+        let s = Settings {
+            panel_width: 10,
+            ..Settings::default()
+        }
+        .normalize();
+        assert_eq!(s.panel_width, PANEL_WIDTH_MIN);
+    }
+
     /// デフォルト設定で手動背景色が未指定であること
     #[test]
     fn settings_default_bg_override_is_none() {

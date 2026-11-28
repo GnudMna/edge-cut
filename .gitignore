@@ -25,7 +25,6 @@ wix/*
 !wix/main.wxs
 !wix/Banner.bmp
 !wix/Dialog.bmp
-!wix/Eula.rtf
 
 # cargo-about 生成物 (MSI 作成時に自動生成)
 THIRD_PARTY_NOTICES
@@ -38,3 +37,7 @@ THIRD_PARTY_NOTICES
 
 # rustc が内部コンパイラエラー時に出力するスタックトレース
 rustc-ice-*.txt
+
+# UI (TypeScript) の依存とビルド出力 (ビルド出力は通常 build.rs が OUT_DIR へ書く)
+ui/node_modules/
+ui/dist/

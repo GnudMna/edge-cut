@@ -11,19 +11,23 @@ git checkout -b release/v0.3.0
 
 1. `Cargo.toml` / `Cargo.lock` のバージョンを更新し、`CHANGELOG.md` の `[Unreleased]` 節をリリース見出しへ移す (空だと失敗する)
 2. `check.ps1` で品質チェックを実行し (`-SkipCheck` で省略)、`Release: v{version}` でコミットする (`-NoCommit` で省略)
-3. `build-msi.ps1` で MSI を作成し、`minisign` で `<MSI>.minisig` を作って `keys/update-signing/*.pub` で検証する (`-SkipMsi` で両方省略)
+3. `build-msi.ps1` で MSI を作成して内容を検証し ([MSI の検証](setup.md#msi-の検証))、`build-portable.ps1` でポータブル版の ZIP (`target\portable\edge-cut-{version}-x86_64-portable.zip`) を作成し、`minisign` で `<アセット>.minisig` を作って `keys/update-signing/*.pub` で検証する (`-SkipMsi` でいずれも省略)
 
 **前提:**
 
-- 環境変数 `EDGE_CUT_KEY_FILE` (gh-release-bridge の Worker Secret と同値を保存したファイルのパス。[更新ダウンロードキー](setup.md#更新ダウンロードキー)) と `EDGE_CUT_SIGNING_KEY` (minisign 秘密鍵のパス) を設定しておく。キーファイルと署名の準備はビルド前に確認する
+- 環境変数 `EDGE_CUT_SIGNING_KEY` (minisign 秘密鍵のパス) を設定しておく。署名の準備はビルド前に確認する
 - MSI 作成には [開発環境とビルド](setup.md#前提条件) と同じ前提 (cargo-wix・cargo-about・mdBook・WiX Toolset v3) が必要。mdBook の未導入や版違いはビルド前に検出して止まる
 - 既定では作業ツリーがクリーンであること (`-AllowDirty` で上書き可)
 
-**手動で残る作業:** `release/v{version}` を push し、Gitea 上で `v{version}` タグを付与する。GitHub Release へ MSI と署名ファイル (`*.msi.minisig`) をアップロードしたあと、gh-release-bridge の version API が MSI の `digest` を返し、署名ファイルも同じ URL 形式 (`/{owner}/{repo}/{tag}/{asset}.minisig`) で取得できることを確認する。
+**手動で残る作業:** `release/v{version}` を push し、Gitea 上で `v{version}` タグを付与する。GitHub Release へ MSI・ポータブル版の ZIP と署名ファイル (`*.msi.minisig` / `*-portable.zip.minisig`) をアップロードして公開し (ドラフト・プレリリースはアプリの更新対象にならない)、次を確認する。
+
+- `https://api.github.com/repos/GnudMna/edge-cut/releases/latest` がこの版を返し、MSI と ZIP に `digest` (`sha256:<hex>`) がある (MSI 版は `.msi`、ポータブル版は `-portable.zip` のアセットで更新する)
+- 署名ファイルをアセットと同じ URL 形式 (`https://github.com/GnudMna/edge-cut/releases/download/{tag}/{asset}.minisig`) で取得できる
+- 2.0.0 以前のアプリは gh-release-bridge からしか更新できない。bridge を止めるまでは、Worker Secret `EDGE_CUT_KEY` を変えない (配布済みのアプリに同じ値が埋め込まれている)
 
 ## 更新署名鍵
 
-アプリ更新は、version API の digest (SHA-256) に加えて MSI の minisign (Ed25519) 署名を検証してから `msiexec` を起動する。署名の信頼コメント (`edge-cut-update version={version} file={アセット名}`) も照合するため、配信経路や digest を差し替えられても、正規の秘密鍵で署名されていない MSI や別バージョン向けの署名済み MSI は適用しない。
+アプリ更新は、GitHub API の digest (SHA-256) に加えて MSI・ZIP の minisign (Ed25519) 署名を検証してから、更新プログラムがインストール (MSI は `msiexec /qn`、ポータブル版はファイルの差し替え) する。署名の信頼コメント (`edge-cut-update version={version} file={アセット名}`) も照合するため、配信経路や digest を差し替えられても、正規の秘密鍵で署名されていない MSI や別バージョン向けの署名済み MSI は適用しない。
 
 公開鍵は `keys/update-signing/*.pub` に置き、`build.rs` がビルド時にすべて埋め込む。秘密鍵はリポジトリに置かない。`src/update/signature.rs` の信頼コメント形式は `scripts/common/update-signing.ps1` と揃える。
 

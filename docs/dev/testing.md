@@ -2,7 +2,7 @@
 
 ## 品質チェック
 
-`scripts/windows/check.ps1` で fmt / clippy / doc / 許可リスト同期 / deny / test / doctest を一括実行する。変更後はこれが通ることを確認する。cargo のコマンドは `--locked` 付きで実行し、`Cargo.lock` の更新漏れもエラーにする。
+`scripts/windows/check.ps1` で UI (TypeScript) の型検査・静的解析・テスト・ライセンス・脆弱性監査と、fmt / clippy / doc / 許可リスト同期 / deny / test / doctest を一括実行する。変更後はこれが通ることを確認する。cargo のコマンドは `--locked` 付きで実行し、`Cargo.lock` の更新漏れもエラーにする。
 
 個別に実行する場合:
 
@@ -14,11 +14,17 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items # rustdo
 cargo test --all-targets                  # ユニット・統合テスト
 cargo test --doc                          # doctest
 cargo test <テスト名>                      # 単一テスト
+
+pnpm --dir ui run typecheck               # UI の型検査
+pnpm --dir ui run lint                    # UI の静的解析 (ESLint)
+pnpm --dir ui test                        # UI のテスト (Vitest)
+pnpm --dir ui run licenses:check          # UI に同梱する npm パッケージのライセンス検証
+pnpm --dir ui audit --prod                # UI に同梱する npm パッケージの脆弱性監査
 ```
 
 | スクリプト | 説明 |
 | :--- | :--- |
-| `windows/check.ps1` | 一括チェック (fmt / clippy / doc / 許可リスト同期 / deny / test / doctest) |
+| `windows/check.ps1` | 一括チェック (UI の型検査・静的解析・テスト・ライセンス・監査 / fmt / clippy / doc / 許可リスト同期 / deny / test / doctest) |
 | `windows/test.ps1` | テスト実行 |
 | `windows/clippy.ps1` | Clippy による静的解析 |
 | `windows/format.ps1` | コードフォーマット |
@@ -27,7 +33,7 @@ cargo test <テスト名>                      # 単一テスト
 
 Git フックは任意で有効にする。一時的に省略する場合は `git push --no-verify` を使う。フックは push するコミットではなく作業ツリーの内容を検査する。
 
-- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (許可するのは `src/app/title_bar.rs` のみ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする
+- `clippy::pedantic` を warn で有効化し、`unsafe_code` は deny (理由付きの `#[expect(unsafe_code, reason = ...)]` で許可するのは `src/app/single_instance.rs` の `win32` モジュールだけ)。`clippy::undocumented_unsafe_blocks` も warn で有効化し、`unsafe` ブロックには `// SAFETY:` コメントを必須とする。`clippy::unwrap_used` / `clippy::expect_used` も warn で有効化し、本体コードでは `unwrap` / `expect` を使わない (テストは `clippy.toml` で対象外。`build.rs` は理由付きの `#![expect]` で許可)
 - rustfmt の `max_width` は 100
 - doctest は Clippy の対象外のため、`src/lib.rs` の `#![doc(test(attr(deny(warnings))))]` で警告をエラーにする
 
@@ -38,11 +44,14 @@ Git フックは任意で有効にする。一時的に省略する場合は `gi
 | 各モジュールの `#[cfg(test)]` | ユニットテスト |
 | `tests/` | lib クレートの公開 API に対する統合テスト |
 | `tests/malformed_image_test.rs` | 壊れた画像 (切り詰め・ランダム破損・寸法偽装・不正な ICC) を `open_image_with_icc` に通し、panic せず上限を守ることを確認する |
-| `src/update/tests.rs` | 更新フローの結合テスト。ローカルの HTTP サーバーを bridge の代わりに立て、version API から SHA-256・minisign 署名の検証までを通す (`msiexec` は起動しない) |
+| `src/update/tests/` | 更新フローの結合テスト。ローカルの HTTP サーバーを GitHub の代わりに立て、最新リリース API から SHA-256・minisign 署名の検証までを通す (`msiexec` は起動しない)。更新プログラムの進行 (`flow`) の単体テストは `src/update/flow/tests.rs` |
 | `tests/common/` | 画像生成ヘルパー。`src/test_helpers.rs` が `include!` してユニットテストでも共有する |
+| `ui/src/**/*.test.ts` | UI のテスト (Vitest)。ズーム・パンの計算、表示用の文字列、ショートカットの判定、ライセンス式の判定 |
 
 ## 依存関係の監査
 
 [`deny.toml`](../../deny.toml) で依存関係の脆弱性・ライセンス・取得元を検証する。Windows (`x86_64-pc-windows-msvc`) のみを対象にする。
 
 依存を追加する場合は `deny.toml` の許可ライセンス (パーミッシブのみ) に収まるか確認し、`about.toml` の許可リストも同じ内容に揃える。許可ライセンスとターゲットの差分は `scripts/common/license-allowlist-check.ps1` が検出し、`check.ps1` から呼び出される。
+
+UI に同梱する npm パッケージ (`ui/package.json` の `dependencies` とその依存) も同じ許可リストで検証する (`ui/scripts/check-licenses.mjs` が `deny.toml` の `allow` を読む)。ビルド時だけ使う `devDependencies` は配布物に含まれないため対象外とする。脆弱性は `pnpm audit --prod` で監査する。

@@ -7,7 +7,6 @@
 # 出力 (WiX 必須サイズ):
 #   wix/Banner.bmp  - 493 x 58  (上部バナー。左白 + 右装飾)
 #   wix/Dialog.bmp  - 493 x 312 (ようこそ画面。左装飾 + 右白背景)
-#   wix/Eula.rtf    - ライセンス同意画面 (LICENSE から生成)
 # ========================================================================
 
 #requires -Version 7.0
@@ -153,71 +152,6 @@ function New-DialogBitmap {
     }
 }
 
-function ConvertTo-RtfUnicodeText {
-    param([string]$Text)
-
-    $builder = [System.Text.StringBuilder]::new()
-    foreach ($char in $Text.ToCharArray()) {
-        $code = [int][char]$char
-        switch ($char) {
-            '\' { [void]$builder.Append('\\') }
-            '{' { [void]$builder.Append('\{') }
-            '}' { [void]$builder.Append('\}') }
-            default {
-                if ($code -gt 127) {
-                    [void]$builder.Append("\u${code}?")
-                } else {
-                    [void]$builder.Append($char)
-                }
-            }
-        }
-    }
-
-    return $builder.ToString()
-}
-
-function ConvertTo-RtfParagraphs {
-    param([string[]]$Lines)
-
-    $result = [System.Text.StringBuilder]::new()
-    foreach ($line in $Lines) {
-        if ($result.Length -gt 0) {
-            # 直後が英字だと \parAll 等の制御語と誤認識されるため区切りに空白を入れる
-            [void]$result.Append('\par ')
-        }
-        [void]$result.Append((ConvertTo-RtfUnicodeText $line))
-    }
-
-    return $result.ToString()
-}
-
-function New-EulaRtf {
-    param(
-        [string]$LicensePath,
-        [string]$OutputPath,
-        [string]$ProductName
-    )
-
-    $lines = Get-Content -LiteralPath $LicensePath -Encoding utf8
-    $body = ConvertTo-RtfParagraphs -Lines $lines
-    $title = ConvertTo-RtfUnicodeText "$ProductName 使用許諾契約"
-
-    $rtf = @"
-{\rtf1\ansi\ansicpg932\deff0\deflang1041
-{\fonttbl{\f0\fnil\fcharset128 MS UI Gothic;}{\f1\fswiss\fcharset0 Segoe UI;}}
-\viewkind4\uc1\pard\sa200\sl276\slmult1
-{\pard\qc\b\f1\fs28 $title\b0\par}
-{\pard\qc\f1\fs20 License Agreement\par}
-\pard\par
-\f0\fs22
-$body
-\par
-}
-"@
-
-    [System.IO.File]::WriteAllText($OutputPath, $rtf, [System.Text.Encoding]::ASCII)
-}
-
 Invoke-ScriptMain {
     . (Join-Path $PSScriptRoot '..\common\cd-project-root.ps1')
 
@@ -230,13 +164,6 @@ Invoke-ScriptMain {
 
     $bannerPath = Join-Path $wixDir 'Banner.bmp'
     $dialogPath = Join-Path $wixDir 'Dialog.bmp'
-    $eulaPath = Join-Path $wixDir 'Eula.rtf'
-    $licensePath = Join-Path $ProjectRoot 'LICENSE'
-
-    if (-not (Test-Path -LiteralPath $licensePath)) {
-        throw "LICENSE が見つかりません: $licensePath"
-    }
-
     $iconPath = Join-Path $ProjectRoot 'assets\icons\icon.png'
     if (-not (Test-Path -LiteralPath $iconPath)) {
         throw "アイコンが見つかりません: $iconPath"
@@ -248,11 +175,9 @@ Invoke-ScriptMain {
         Write-Host 'WiX インストーラー用アセットを生成しています...'
         New-BannerBitmap -OutputPath $bannerPath -Icon $icon
         New-DialogBitmap -OutputPath $dialogPath -Icon $icon
-        New-EulaRtf -LicensePath $licensePath -OutputPath $eulaPath -ProductName 'EdgeCut'
 
         Write-Host "  $bannerPath"
         Write-Host "  $dialogPath"
-        Write-Host "  $eulaPath"
         Write-Host '完了'
     }
     finally {

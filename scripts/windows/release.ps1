@@ -1,14 +1,12 @@
 # ========================================================================
 # Script Name : release.ps1
-# Description : リリース手順を一括実行する (バージョン更新 / CHANGELOG / 品質チェック / Git / MSI / 署名)
+# Description : リリース手順を一括実行する (バージョン更新 / CHANGELOG / 品質チェック / Git / MSI / ポータブル版 / 署名)
 # Usage       : git checkout -b release/v0.1.3
 #               ./release.ps1 -Version 0.1.3
 #               ./release.ps1 -Bump Patch -DryRun
 # Requires    : PowerShell 7.0+, Git
 #
 # 前提:
-#   - 環境変数 EDGE_CUT_KEY_FILE に gh-release-bridge ダウンロードキーを保存したファイルのパスを設定すること (ビルド時埋め込み)
-#     (廃止した EDGE_CUT_KEY は設定しないこと)
 #   - 環境変数 EDGE_CUT_SIGNING_KEY に更新署名用 minisign 秘密鍵のパスを設定すること
 #     (keys/update-signing/*.pub に対応する公開鍵があり、minisign コマンドが使えること)
 #   - mdBook (MSI に同梱する利用者向けドキュメントの生成。版は scripts/common/build-user-docs.ps1 に固定)
@@ -21,7 +19,7 @@
 #   -Date yyyy-MM-dd           リリース日 (既定: 本日)
 #   -DryRun                    変更内容を表示するのみ
 #   -SkipCheck                 check.ps1 (fmt / clippy / doc / 許可リスト同期 / deny / test / doctest) をスキップ
-#   -SkipMsi                   build-msi.ps1 と署名をスキップ
+#   -SkipMsi                   build-msi.ps1・build-portable.ps1 と署名をスキップ
 #   -NoCommit                  Git コミットを作成しない
 #   -AllowDirty                未コミット変更があっても続行する
 # ========================================================================
@@ -65,24 +63,9 @@ Invoke-ScriptMain {
         throw 'エラー: -Version と -Bump は同時に指定できません'
     }
 
-    # MSI を作る場合のみビルド前に前提を確認する (build-msi.ps1 も EDGE_CUT_KEY_FILE を検証する)
+    # MSI を作る場合のみビルド前に前提を確認する
     $signingSecretKey = $null
     if (-not $SkipMsi) {
-        # キーの中身は build.rs が検証するので、ここではファイルの有無と空でないことだけ確かめる
-        if ($null -ne [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY')) {
-            throw 'エラー: 環境変数 EDGE_CUT_KEY は廃止しました。キーをファイルに保存して EDGE_CUT_KEY_FILE にそのパスを設定し、EDGE_CUT_KEY は削除してください'
-        }
-        $bridgeKeyFile = [Environment]::GetEnvironmentVariable('EDGE_CUT_KEY_FILE')
-        if ([string]::IsNullOrWhiteSpace($bridgeKeyFile)) {
-            throw 'エラー: 環境変数 EDGE_CUT_KEY_FILE が未設定です (gh-release-bridge のダウンロードキーを保存したファイルのパス。ビルド時に埋め込まれます)'
-        }
-        if (-not (Test-Path -LiteralPath $bridgeKeyFile -PathType Leaf)) {
-            throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが見つかりません: $bridgeKeyFile"
-        }
-        if ((Get-Item -LiteralPath $bridgeKeyFile).Length -eq 0) {
-            throw "エラー: EDGE_CUT_KEY_FILE のキーファイルが空です: $bridgeKeyFile"
-        }
-
         # 署名なしのアセットはアプリが適用しないため、ビルド前に署名の準備を確認する
         $signingSecretKey = Assert-UpdateSigningReady -ProjectRoot $ProjectRoot
 
@@ -171,11 +154,21 @@ Invoke-ScriptMain {
         }
         Write-Host ''
 
+        Write-Host 'ポータブル版を作成します (build-portable.ps1)...'
+        Write-Host ''
+        $portableScript = Join-Path $PSScriptRoot 'build-portable.ps1'
+        # MSI の作成でリリースビルド済みのため、ビルドは省く
+        & $portableScript -SkipBuild
+        if ($LASTEXITCODE -ne 0) {
+            throw "エラー: build-portable.ps1 が終了コード $LASTEXITCODE で失敗しました"
+        }
+        Write-Host ''
+
         Write-Host '更新アセットへ署名します (minisign)...'
         Invoke-UpdateAssetSigning -ProjectRoot $ProjectRoot -Version $newVersion -SecretKeyPath $signingSecretKey
         Write-Host ''
     } else {
-        Write-Host 'MSI 作成と署名をスキップしました (-SkipMsi)'
+        Write-Host 'MSI・ポータブル版の作成と署名をスキップしました (-SkipMsi)'
         Write-Host ''
     }
 
@@ -185,7 +178,8 @@ Invoke-ScriptMain {
     Write-Host '  - 操作・表示の変更が docs/user/ と README.md に反映されているか確認'
     Write-Host "  - リモートへ push: git push -u origin $releaseBranch"
     Write-Host "  - Gitea 上で v$newVersion タグを付与する"
-    Write-Host '  - GitHub Release へ MSI と署名ファイル (.minisig) をアップロードする'
+    Write-Host '  - GitHub Release へ MSI・ポータブル版と署名ファイル (.minisig) をアップロードする'
     Write-Host '      target\wix\edge-cut-{version}-{arch}.msi (+ .msi.minisig)'
+    Write-Host '      target\portable\edge-cut-{version}-{arch}-portable.zip (+ .zip.minisig)'
     Write-Host '      (署名ファイルが無いとアプリは更新を適用しない)'
 }
